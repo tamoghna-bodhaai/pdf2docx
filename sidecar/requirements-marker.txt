@@ -1,0 +1,8 @@
+# Install these inside the marker sidecar environment only (.venv-marker).
+# marker-pdf brings torch and the Surya VLM stack with it, which is exactly why
+# it does not go anywhere near the application's environment.
+marker-pdf>=2.0.0
+fastapi==0.115.14
+uvicorn[standard]==0.34.3
+python-multipart==0.0.20
+anyio==4.9.0

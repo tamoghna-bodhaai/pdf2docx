@@ -125,8 +125,18 @@
       <option value="structured">Editable document — keep the layout, keep it editable</option>
       <option value="replica">Visual replica — reproduce the page exactly</option>
       <option value="flow">Editable flow — rewrite as ordinary Word content</option>
+      <option value="marker">marker — convert locally and keep its output as it comes</option>
     </select>
     <div class="hint" id="layout-hint"></div>
+
+    <div id="columns-field" class="hidden">
+      <label class="field" for="columns">Columns</label>
+      <select id="columns">
+        <option value="natural">Natural — one flowing column</option>
+        <option value="multi">Multi-column — as many columns as the source page</option>
+      </select>
+      <div class="hint" id="columns-hint"></div>
+    </div>
 
     <label class="field" for="model">Vision model <span id="model-note"></span></label>
     <select id="model"><option>Loading models…</option></select>
@@ -155,6 +165,7 @@
     <div class="actions hidden" id="actions">
       <a class="btn primary" id="dl-docx">Download .docx</a>
       <a class="btn" id="dl-md">Download .md</a>
+      <a class="btn hidden" id="dl-marker">Download marker's own Markdown</a>
       <button id="toggle-md">Show Markdown</button>
     </div>
     <pre class="hidden" id="md-preview"></pre>
@@ -210,19 +221,34 @@ const historySummary = document.getElementById('history-summary');
 const historyActions = document.getElementById('history-actions');
 const layoutSelect = document.getElementById('layout');
 const layoutHint = document.getElementById('layout-hint');
+const columnsField = document.getElementById('columns-field');
+const columnsSelect = document.getElementById('columns');
+const columnsHint = document.getElementById('columns-hint');
 const modelSelect = document.getElementById('model');
 const modelNote = document.getElementById('model-note');
 
 let poll = null;
 let currentJob = null;
+// How many columns the uploaded PDF is set in — null until a PDF has been read.
+let sourceColumns = null;
+
+// The modes that build the document out of one linear stream of text, and so are
+// the ones with a column decision left to make. The replica modes put every
+// block back at the coordinate it came from, columns and all.
+const FLOWING = ['flow', 'marker'];
+// What PDF2DOCX_COLUMNS can say for "one column, whatever the source did". It
+// speaks a wider vocabulary than these two choices — it can also force a fixed
+// count — so anything else starts the page on the choice that reads the source.
+const SINGLE_COLUMN = ['natural', 'off', '0', '1', 'none', 'single'];
 
 fetch('/api/config').then(r => r.json()).then(cfg => {
   hint.textContent = `via ${cfg.provider} · ${cfg.dpi} DPI · ${cfg.concurrency} pages in parallel`
     + (cfg.reasoning_effort ? ` · reasoning ${cfg.reasoning_effort}` : '');
   if (!cfg.api_key_configured) document.getElementById('keywarn').classList.remove('hidden');
   if (cfg.layout) layoutSelect.value = cfg.layout;
+  if (cfg.columns) columnsSelect.value = SINGLE_COLUMN.includes(cfg.columns) ? 'natural' : 'multi';
   describeLayout();
-}).catch(() => { hint.textContent = 'Ready'; });
+}).catch(() => { hint.textContent = 'Ready'; describeLayout(); });
 
 const LAYOUT_NOTES = {
   structured: 'The PDF\'s own text, fonts, images and tables are rebuilt as flowing Word '
@@ -232,9 +258,40 @@ const LAYOUT_NOTES = {
     + 'original coordinates, page for page. Blocks do not reflow when you edit them.',
   flow: 'The page is read by the model and rewritten as ordinary flowing Word content. '
     + 'Fully editable, but layout and figures are not preserved.',
+  marker: 'The whole PDF is converted locally by marker-pdf, and what it returns is kept '
+    + 'as it comes — its Markdown is saved untouched beside the document, so what you see '
+    + 'is marker\'s own quality. Needs the marker sidecar running; costs nothing.',
 };
-function describeLayout() { layoutHint.textContent = LAYOUT_NOTES[layoutSelect.value] || ''; }
+function describeLayout() {
+  layoutHint.textContent = LAYOUT_NOTES[layoutSelect.value] || '';
+  columnsField.classList.toggle('hidden', !FLOWING.includes(layoutSelect.value));
+  describeColumns();
+}
 layoutSelect.addEventListener('change', describeLayout);
+
+function describeColumns() {
+  const multi = columnsSelect.querySelector('option[value="multi"]');
+  if (sourceColumns === null) {
+    multi.disabled = false;
+    columnsHint.textContent = 'Read from the PDF when you upload it.';
+    return;
+  }
+  if (sourceColumns < 2) {
+    // Not a choice: a source set in one column has no second column for the
+    // output to put anything in, so natural is the only thing it can be.
+    multi.disabled = true;
+    columnsSelect.value = 'natural';
+    columnsHint.textContent = 'This PDF is set in a single column, so the document can only be '
+      + 'single-column.';
+    return;
+  }
+  multi.disabled = false;
+  columnsHint.textContent = columnsSelect.value === 'multi'
+    ? `This PDF has ${sourceColumns}-column pages, and each page is set the same way. Where one `
+      + 'column breaks to the next is left to Word, which reflows it for the page size you print on.'
+    : `This PDF has ${sourceColumns}-column pages; its text is poured into one column instead.`;
+}
+columnsSelect.addEventListener('change', describeColumns);
 
 fetch('/api/models').then(r => r.json()).then(data => {
   modelSelect.innerHTML = '';
@@ -305,9 +362,12 @@ toggleMd.addEventListener('click', async () => {
 
 function describe(job) {
   const size = job.size_bytes ? `${(job.size_bytes / 1048576).toFixed(1)} MB · ` : '';
-  const mode = { flow: 'editable flow', structured: 'editable document' }[job.layout]
+  const mode = { flow: 'editable flow', structured: 'editable document', marker: 'marker' }[job.layout]
     || 'visual replica';
-  return `${size}${job.pages} page${job.pages === 1 ? '' : 's'} · ${mode} · ${job.model}`;
+  const columns = FLOWING.includes(job.layout) && job.columns
+    ? ` · ${job.columns === 'multi' ? 'multi-column' : 'natural columns'}`
+    : '';
+  return `${size}${job.pages} page${job.pages === 1 ? '' : 's'} · ${mode}${columns} · ${job.model}`;
 }
 
 async function upload(file) {
@@ -323,11 +383,15 @@ async function upload(file) {
   fileEl.textContent = file.name;
   metaEl.textContent = `${(file.size / 1048576).toFixed(1)} MB · uploading…`;
   startBtn.disabled = true;
+  // Whatever the last PDF was set in says nothing about this one.
+  sourceColumns = null;
+  describeColumns();
 
   const body = new FormData();
   body.append('file', file);
   body.append('model', modelSelect.value || '');
   body.append('layout', layoutSelect.value || '');
+  body.append('columns', columnsChoice());
 
   let res;
   try {
@@ -347,9 +411,19 @@ async function upload(file) {
 
   const job = await res.json();
   currentJob = job.id;
+  // The server read the PDF's own layout while it was storing it; the choice
+  // offered from here on is the one that PDF can actually be given.
+  sourceColumns = job.source_columns || 1;
+  describeColumns();
   metaEl.textContent = `${describe(job)} · ready to convert`;
   startBtn.disabled = false;
   loadHistory();
+}
+
+// Empty unless the chosen mode can act on it, so a replica job is not recorded
+// as having made a decision that its own geometry had already made.
+function columnsChoice() {
+  return FLOWING.includes(layoutSelect.value) ? columnsSelect.value : '';
 }
 
 async function startJob(id) {
@@ -358,6 +432,7 @@ async function startJob(id) {
   const body = new FormData();
   body.append('model', modelSelect.value || '');
   body.append('layout', layoutSelect.value || '');
+  body.append('columns', columnsChoice());
 
   const res = await fetch(`/api/jobs/${id}/start`, { method: 'POST', body });
   if (!res.ok) {
@@ -378,6 +453,24 @@ async function startJob(id) {
   poll = setInterval(() => check(id), 900);
   check(id);
 }
+function extractionSummary(job) {
+  if (job.layout === 'flow') return 'extractor: vision';
+  const diagnostics = job.diagnostics || [];
+  if (!diagnostics.length) return job.layout === 'marker' ? 'extractor: marker' : 'extractor: PyMuPDF';
+  const extractors = [...new Set(diagnostics.map(item => item.extractor))].join(' + ');
+  // Blank pages get their own phrasing and their page numbers. They are not a
+  // fallback — nothing was retried — and a job that finishes with pages that
+  // converted to nothing should not read as an unqualified success.
+  const blank = diagnostics.filter(item => item.fallback_reason === 'empty_output').map(item => item.page);
+  const fallbacks = [...new Set(diagnostics
+    .map(item => item.fallback_reason)
+    .filter(reason => reason && reason !== 'empty_output'))];
+  let note = '';
+  if (blank.length) note += ` · ${blank.length} blank page${blank.length === 1 ? '' : 's'} (${blank.join(', ')})`;
+  if (fallbacks.length) note += ` · fallback: ${fallbacks.join(', ').replaceAll('_', ' ')}`;
+  return `extractor: ${extractors}${note}`;
+}
+
 
 async function check(id) {
   const res = await fetch(`/api/jobs/${id}`);
@@ -395,8 +488,14 @@ async function check(id) {
   if (job.status === 'done') {
     clearInterval(poll);
     setProgress(100, `Done — ${total} page${total === 1 ? '' : 's'} converted.`, 'ok');
+    metaEl.textContent = `${describe(job)} · ${extractionSummary(job)}`;
     document.getElementById('dl-docx').href = `/api/jobs/${id}/download?format=docx`;
     document.getElementById('dl-md').href = `/api/jobs/${id}/download?format=md`;
+    // The unedited copy, offered next to the .docx because comparing the two is
+    // the point of the marker mode.
+    const marker = document.getElementById('dl-marker');
+    marker.href = `/api/jobs/${id}/download?format=marker-md`;
+    marker.classList.toggle('hidden', !job.has_marker);
     actions.classList.remove('hidden');
     loadHistory();
     return;
@@ -424,11 +523,15 @@ function money(value, known) {
 function showCost(job) {
   costValue.textContent = money(job.cost, job.cost_known);
   const tokens = job.prompt_tokens + job.completion_tokens;
-  if (job.cost_known && tokens) {
-    costNote.textContent =
-      `· ${tokens.toLocaleString()} tokens` + (job.status === 'done' ? '' : ' so far');
+  const calls = job.calls || 0;
+  if (job.status === 'done' && calls === 0) {
+    costNote.textContent = '· no remote calls';
+  } else if (job.cost_known && calls) {
+    const tokenNote = tokens ? ` · ${tokens.toLocaleString()} tokens` : '';
+    costNote.textContent = `· ${calls} remote call${calls === 1 ? '' : 's'}${tokenNote}`
+      + (job.status === 'done' ? '' : ' so far');
   } else if (job.status === 'done') {
-    costNote.textContent = '· this provider did not report a price';
+    costNote.textContent = `· ${calls} remote call${calls === 1 ? '' : 's'} · price unavailable`;
   } else {
     costNote.textContent = '';
   }
@@ -473,11 +576,12 @@ async function loadHistory() {
     const links = [];
     if (job.has_docx) links.push(`<a href="/api/jobs/${job.id}/download?format=docx">.docx</a>`);
     if (job.has_md) links.push(`<a href="/api/jobs/${job.id}/download?format=md">.md</a>`);
+    if (job.has_marker) links.push(`<a href="/api/jobs/${job.id}/download?format=marker-md">raw</a>`);
     tr.innerHTML = `
       <td class="name" title="${job.filename.replace(/"/g, '&quot;')}">${job.filename}</td>
       <td>${when(job.created_at)}</td>
       <td class="num">${job.pages || '—'}</td>
-      <td>${{ flow: 'flow', structured: 'editable' }[job.layout] || 'replica'}</td>
+      <td>${{ flow: 'flow', structured: 'editable', marker: 'marker' }[job.layout] || 'replica'}</td>
       <td class="name" title="${job.model}">${job.model.split('/').pop()}</td>
       <td class="num">${money(job.cost, job.cost_known)}</td>
       <td>${statusPill(job)}</td>

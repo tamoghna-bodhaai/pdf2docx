@@ -4,3 +4,9 @@ __pycache__/
 *.pyc
 *.docx
 *.md.out
+.pytest_cache/
+.venv-extract-kit/
+.venv-marker/
+models/pdf-extract-kit-1.0/
+vendor/PDF-Extract-Kit/
+vendor/llama/

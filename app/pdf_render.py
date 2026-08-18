@@ -23,6 +23,19 @@ def page_count(pdf_path: Path) -> int:
         return doc.page_count
 
 
+def page_zoom(width_pt: float, height_pt: float) -> float:
+    """The zoom a page is rendered at: `settings.dpi`, capped by `settings.max_edge`.
+
+    Written down once because anything that shows a model a second view of the
+    same page has to agree with the first about how large that page is.
+    """
+    zoom = settings.dpi / 72.0
+    long_edge = max(width_pt, height_pt)
+    if long_edge * zoom > settings.max_edge:
+        zoom = settings.max_edge / long_edge
+    return zoom
+
+
 def render_pages(pdf_path: Path, out_dir: Path) -> list[RenderedPage]:
     """Render every page of `pdf_path` to a PNG under `out_dir`.
 
@@ -38,13 +51,9 @@ def render_pages(pdf_path: Path, out_dir: Path) -> list[RenderedPage]:
         if settings.max_pages > 0:
             limit = min(limit, settings.max_pages)
 
-        base_zoom = settings.dpi / 72.0
         for index in range(limit):
             page = doc.load_page(index)
-            zoom = base_zoom
-            long_edge_pt = max(page.rect.width, page.rect.height)
-            if long_edge_pt * zoom > settings.max_edge:
-                zoom = settings.max_edge / long_edge_pt
+            zoom = page_zoom(page.rect.width, page.rect.height)
 
             pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
             path = out_dir / f"page-{index + 1:04d}.png"

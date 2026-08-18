@@ -1,0 +1,2 @@
+# Install this inside the Python 3.10 sidecar environment only.
+git+https://github.com/opendatalab/PDF-Extract-Kit.git@fdb25fd4bd9058ba4e13ac16cb68d4f06b23df56

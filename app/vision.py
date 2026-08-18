@@ -38,8 +38,9 @@ Transcribe every symbol, subscript, superscript, fraction, and limit exactly.
 on the page as integers from 0 to 1000, measured from the top-left corner (x across, \
 y down). The box must enclose the whole figure — every arrow, label and axis value \
 that belongs to it — and nothing else. Give a box for every figure; omit the comment \
-only if you genuinely cannot locate it. Transcribe any text labels or axis values \
-that are legible inside the figure underneath that line.
+only if you genuinely cannot locate it. Text labels and axis values inside the figure \
+belong inside its reported box. Do not repeat them as Markdown beneath the figure line; \
+they will be preserved in the cropped figure.
 - Omit running headers, running footers, page numbers, and watermarks.
 - Rejoin words that are hyphenated across a line break, and join lines that are part \
 of the same paragraph. Keep a real paragraph break as a blank line.
@@ -67,6 +68,8 @@ class PageTranscript:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     priced: bool = False  # False when the provider reported no cost for this page
+    calls: int = 1
+    priced_calls: int | None = None
 
 
 @dataclass
@@ -78,6 +81,8 @@ class MathResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     priced: bool = False
+    calls: int = 1
+    priced_calls: int | None = None
 
 
 MATH_PROMPT = """\

@@ -59,6 +59,7 @@ SYMBOLS = {
     "Im": "ℑ", "aleph": "ℵ", "wp": "℘", "surd": "√", "checkmark": "✓",
     "langle": "⟨", "rangle": "⟩", "lceil": "⌈", "rceil": "⌉",
     "lfloor": "⌊", "rfloor": "⌋", "vert": "|", "Vert": "‖",
+    "backslash": "\\",
     "%": "%", "$": "$", "&": "&", "#": "#", "_": "_", "{": "{", "}": "}",
 }
 
@@ -138,6 +139,10 @@ def tokenize(latex: str) -> list[Token]:
         kind = match.lastgroup
         value = match.group()
         if kind == "ws":
+            # Kept, not dropped: `\text{...}` is not mathematics, and the spaces
+            # inside it are content — "radius of path", "20 T". The maths parser
+            # steps over these at the cursor, exactly as LaTeX ignores them.
+            tokens.append(Token(value, "ws"))
             continue
         if kind == "cmd":
             tokens.append(Token(value[1:], "cmd"))
@@ -157,7 +162,7 @@ def tokenize(latex: str) -> list[Token]:
 # --------------------------------------------------------------------------- #
 
 
-def _run(text: str, upright: bool = False, bold: bool = False) -> str:
+def _text_run(text: str, upright: bool = False, bold: bool = False) -> str:
     if not upright:
         # A hyphen-minus in mathematics is a minus sign, and saying so is not
         # only correct typography. LibreOffice reads a run holding the ASCII
@@ -173,6 +178,56 @@ def _run(text: str, upright: bool = False, bold: bool = False) -> str:
             inner += '<m:sty m:val="b"/>'
         props = f"<m:rPr>{inner}</m:rPr>"
     return f'<m:r>{props}<m:t xml:space="preserve">{escape(text)}</m:t></m:r>'
+
+
+# The characters LibreOffice cannot carry through an `<m:nor/>` run. It imports
+# such a run as StarMath literal text, escapes the characters StarMath itself
+# gives meaning to, and then prints the escape instead of consuming it — so the
+# `\text{(a) arg}` that labels a multiple-choice option reaches the page as
+# `\(a\) arg`, and a double quote is swallowed outright. Word has no such
+# trouble, but the .docx has to read the same wherever it is opened.
+_STARMATH_LITERAL_RE = re.compile(r'[(){}"]')
+
+
+def _run(text: str, upright: bool = False, bold: bool = False) -> str:
+    """One OMML run, or the few it takes to say the same thing safely.
+
+    Upright text is split so that the characters above are carried by ordinary
+    mathematical runs, which every reader renders as themselves, and only the
+    words in between are marked as literal text. Brackets and quotes are upright
+    in mathematics anyway, so nothing about the expression looks different for
+    it — in Word the split is invisible.
+    """
+    if not upright or not _STARMATH_LITERAL_RE.search(text):
+        return _text_run(text, upright=upright, bold=bold)
+
+    runs: list[str] = []
+    cursor = 0
+    for match in _STARMATH_LITERAL_RE.finditer(text):
+        if match.start() > cursor:
+            runs.append(_text_run(text[cursor : match.start()], upright=True, bold=bold))
+        runs.append(_text_run(match.group(), upright=False, bold=bold))
+        cursor = match.end()
+    if cursor < len(text):
+        runs.append(_text_run(text[cursor:], upright=True, bold=bold))
+    return "".join(runs)
+
+
+def _literal(char: str) -> str:
+    """A character that has to be drawn rather than interpreted.
+
+    A delimiter standing on its own is not always a delimiter. A transcription
+    that ends `\\leq |z_1| + |z_2|]` has a bracket in it that opens nothing, and
+    a bar that means "such that" is not the side of a modulus. LibreOffice reads
+    both structurally regardless: the lone bracket becomes one whose operand
+    never came, drawn as an inverted question mark, and the lone bar becomes the
+    logical `or`, drawn as `∨`. Marked as literal text they are drawn as
+    themselves, which is what was written.
+
+    Not for `(`, `)`, `{` or `}` — those survive an ordinary run intact, and it
+    is being marked literal that breaks them. See `_run`.
+    """
+    return _text_run(char, upright=True)
 
 
 def _frac(num: str, den: str, bar: bool = True) -> str:
@@ -232,14 +287,62 @@ def _nary(char: str, lim_loc: str, sub: str | None, sup: str | None, body: str) 
     )
 
 
+# A relation opening an expression, as the first thing in the emitted body.
+_LEADS_WITH_RELATION_RE = re.compile(
+    r'^<m:r><m:t xml:space="preserve">(?:[=≠≈≡≤≥∝≃≅∼]|&lt;|&gt;)'
+)
+
+
+def _guard_leading_relation(body: str) -> str:
+    """Let an expression begin with `=` without losing it.
+
+    A worked solution is set as a column of continuation lines — `= 2\\pi r`,
+    `= 3.14` — each of which opens with a relation whose left operand is the
+    line above. LibreOffice reads that as an operator with a missing operand,
+    draws the inverted question mark it uses for one, and drops the relation
+    itself: `= -3.2 \\times 10^{-14}` is displayed as `¿-3.2 × 10⁻¹⁴`. Marking
+    the relation as literal text keeps it — it is upright either way, so nothing
+    about the equation looks different for it.
+    """
+    if not _LEADS_WITH_RELATION_RE.match(body):
+        return body
+    return body.replace("<m:r>", "<m:r><m:rPr><m:nor/></m:rPr>", 1)
+
+
 def _matrix(rows: list[list[str]], align: str = "center") -> str:
     columns = max((len(row) for row in rows), default=1)
     props = (
         f"<m:mPr><m:mcs><m:mc><m:mcPr><m:count m:val=\"{columns}\"/>"
         f'<m:mcJc m:val="{align}"/></m:mcPr></m:mc></m:mcs></m:mPr>'
     )
+    # Every cell is guarded, not just the first thing in the equation. An
+    # `aligned` environment puts the alignment marker exactly where the relation
+    # is — `x &= 1` is a cell holding `x` beside a cell holding `= 1` — so in a
+    # column of worked steps it is the cells, not the equation, that open with a
+    # relation whose left operand is elsewhere.
+    #
+    # Short rows are padded out to the full count. `aligned` lets a line carry
+    # fewer alignment markers than the lines around it — a step written without
+    # a relation in it is one cell where its neighbours are two — but `m:m` does
+    # not: every `m:mr` owes `m:count` cells, and LibreOffice answers a row that
+    # hands over fewer by dropping every cell it did hand over and drawing an
+    # inverted question mark in each place.
+    #
+    # The padding is a space rather than the empty `<m:e/>` the schema allows,
+    # because an empty one is drawn as a missing operand and comes out as the
+    # same question mark. A cell can also be empty because the line began with
+    # its alignment marker — `\\&= 2\\pi r`, the continuation of the line above —
+    # and it is filled the same way, for the same reason.
+    padded = [
+        [cell if cell else _run(" ", upright=True) for cell in row]
+        + [_run(" ", upright=True)] * (columns - len(row))
+        for row in rows
+    ]
     body = "".join(
-        "<m:mr>" + "".join(f"<m:e>{cell}</m:e>" for cell in row) + "</m:mr>" for row in rows
+        "<m:mr>"
+        + "".join(f"<m:e>{_guard_leading_relation(cell)}</m:e>" for cell in row)
+        + "</m:mr>"
+        for row in padded
     )
     return f"<m:m>{props}{body}</m:m>"
 
@@ -258,11 +361,28 @@ class Parser:
 
     # -- token helpers ----------------------------------------------------- #
 
+    def _significant(self, start: int) -> int:
+        """The next index the maths parser can see, stepping over whitespace."""
+        index = start
+        while index < len(self.tokens) and self.tokens[index].kind == "ws":
+            index += 1
+        return index
+
     def peek(self) -> Token | None:
-        return self.tokens[self.pos] if self.pos < len(self.tokens) else None
+        index = self._significant(self.pos)
+        return self.tokens[index] if index < len(self.tokens) else None
 
     def next(self) -> Token | None:
-        token = self.peek()
+        index = self._significant(self.pos)
+        if index >= len(self.tokens):
+            self.pos = index
+            return None
+        self.pos = index + 1
+        return self.tokens[index]
+
+    def next_raw(self) -> Token | None:
+        """The next token including whitespace, for text that is not mathematics."""
+        token = self.tokens[self.pos] if self.pos < len(self.tokens) else None
         if token is not None:
             self.pos += 1
         return token
@@ -343,6 +463,34 @@ class Parser:
             return body
         return self.parse_atom()
 
+    def parse_matrix_group(self, align: str = "center") -> str:
+        """Consume a braced group whose ``\\`` separators form stacked rows."""
+        if not self.at("{"):
+            return self.parse_required_group()
+        self.next()
+        rows: list[list[str]] = [[]]
+        while True:
+            token = self.peek()
+            if token is None or (token.kind == "char" and str(token) == "}"):
+                break
+            if token.kind == "rowsep":
+                self.next()
+                rows.append([])
+                continue
+            if token.kind == "char" and str(token) == "&":
+                self.next()
+                rows[-1].append("")
+                continue
+            cell = self.parse_element()
+            if rows[-1]:
+                rows[-1][-1] += cell
+            else:
+                rows[-1].append(cell)
+        if self.at("}"):
+            self.next()
+        rows = [row for row in rows if any(cell.strip() for cell in row)] or [[""]]
+        return _matrix(rows, align=align)
+
     def read_raw_group(self) -> str:
         """Consume `{...}` and return its literal text (for \\text{...})."""
         if not self.at("{"):
@@ -352,7 +500,7 @@ class Parser:
         depth = 1
         chunks: list[str] = []
         while True:
-            token = self.next()
+            token = self.next_raw()
             if token is None:
                 break
             if token.kind == "char" and str(token) == "{":
@@ -363,7 +511,8 @@ class Parser:
                     break
             if token.kind == "cmd":
                 chunks.append(SYMBOLS.get(str(token), GREEK.get(str(token), " ")))
-            elif token.kind == "rowsep":
+            elif token.kind in ("rowsep", "ws"):
+                # A run of spaces, a tab or a newline is one space, as in LaTeX.
                 chunks.append(" ")
             else:
                 chunks.append(str(token))
@@ -398,7 +547,7 @@ class Parser:
             # closing the pair anyway prints a bracket the source never had.
             return _delim(char, "", body)
         if char in (")", "]"):
-            return _run(char)
+            return _literal(char) if char == "]" else _run(char)
         if char == "|" and self.has_closing("|"):
             # A matched pair of bars is a modulus, and saying so structurally is
             # what makes it one object. Left as two loose characters the bars are
@@ -409,6 +558,8 @@ class Parser:
             if self.at("|"):
                 self.next()
             return _delim("|", "|", body)
+        if char == "|":
+            return _literal(char)
         if char in ("^", "_"):
             # Stray script marker with no base — attach it to an empty base.
             argument = self.parse_script_argument()
@@ -477,6 +628,16 @@ class Parser:
                 f'<m:groupChr><m:groupChrPr><m:chr m:val="{"⏞" if position == "top" else "⏟"}"/>'
                 f'<m:pos m:val="{position}"/></m:groupChrPr><m:e>{body}</m:e></m:groupChr>'
             )
+        if name in ("overset", "stackrel"):
+            upper = self.parse_required_group()
+            body = self.parse_required_group()
+            return f"<m:limUpp><m:e>{body}</m:e><m:lim>{upper}</m:lim></m:limUpp>"
+        if name == "underset":
+            lower = self.parse_required_group()
+            body = self.parse_required_group()
+            return f"<m:limLow><m:e>{body}</m:e><m:lim>{lower}</m:lim></m:limLow>"
+        if name == "substack":
+            return self.parse_matrix_group()
         if name in TEXT_COMMANDS:
             return _run(self.read_raw_group(), upright=True)
         if name in BOLD_COMMANDS:
@@ -655,28 +816,6 @@ def looks_incomplete(latex: str) -> bool:
     if body.count(r"\left") != body.count(r"\right"):
         return True
     return bool(_DANGLING_RE.search(body))
-
-
-# A relation opening an expression, as the first thing in the emitted body.
-_LEADS_WITH_RELATION_RE = re.compile(
-    r'^<m:r><m:t xml:space="preserve">(?:[=≠≈≡≤≥∝≃≅∼]|&lt;|&gt;)'
-)
-
-
-def _guard_leading_relation(body: str) -> str:
-    """Let an expression begin with `=` without losing it.
-
-    A worked solution is set as a column of continuation lines — `= 2\\pi r`,
-    `= 3.14` — each of which opens with a relation whose left operand is the
-    line above. LibreOffice reads that as an operator with a missing operand,
-    draws the inverted question mark it uses for one, and drops the relation
-    itself: `= -3.2 \\times 10^{-14}` is displayed as `¿-3.2 × 10⁻¹⁴`. Marking
-    the relation as literal text keeps it — it is upright either way, so nothing
-    about the equation looks different for it.
-    """
-    if not _LEADS_WITH_RELATION_RE.match(body):
-        return body
-    return body.replace("<m:r>", "<m:r><m:rPr><m:nor/></m:rPr>", 1)
 
 
 def latex_to_omml_body(latex: str) -> str:

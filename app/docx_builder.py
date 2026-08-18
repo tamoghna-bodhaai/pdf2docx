@@ -7,10 +7,12 @@ from io import BytesIO
 from pathlib import Path
 
 from docx import Document
+from docx.enum.section import WD_SECTION
 from docx.enum.style import WD_STYLE_TYPE
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import parse_xml
+from docx.oxml.ns import qn
 from docx.shared import Emu, Pt, RGBColor
 
 from .latex_omml import display_math_xml, inline_math_xml
@@ -167,12 +169,44 @@ def rule_border(paragraph) -> None:
     )
 
 
+def resolve_picture(base_dir: Path | None, src: str) -> Path | None:
+    """Where a Markdown image reference actually is on disk, or None to refuse it.
+
+    References are written relative to the job's working directory — see
+    `figures.place_figures` — so resolving them is the reader's job, and
+    confining them is part of it. The Markdown being read here came back from a
+    vision model, which is to say from the page it was pointed at: a reference
+    that climbs out of the working directory is either a mistake or an attempt
+    to have some other file on this host embedded in the document and handed to
+    whoever downloads it. Neither is worth honouring, and a figure is a small
+    thing to lose.
+
+    Without a working directory there is nothing to resolve against and nothing
+    to confine to, so the reference is taken as it stands.
+    """
+    if base_dir is None:
+        return Path(src)
+    root = base_dir.resolve()
+    # An absolute `src` replaces `root` outright here, which the check below is
+    # what catches.
+    candidate = (root / src).resolve()
+    if candidate == root or root not in candidate.parents:
+        return None
+    return candidate
+
+
 def place_picture(paragraph, source, width_pt: float, height_pt: float | None = None) -> bool:
     """Add a picture at its natural size, shrunk to fit the space available.
 
     Scaled down but never up: a figure cut out of a page is already the size the
     page drew it at, and stretching a 200-pixel diagram across the column would
     only make its own scan noise larger.
+
+    "The size the page drew it at" is the picture's pixel count over the
+    resolution recorded in its header, so it is only true of a picture that
+    records one honestly — `figures.place_figures` does. A picture that declares
+    nothing is read as 72 DPI, which is how a 300 DPI crop came to be placed
+    four times too large.
     """
     if isinstance(source, (bytes, bytearray)):
         source = BytesIO(bytes(source))
@@ -191,9 +225,44 @@ def place_picture(paragraph, source, width_pt: float, height_pt: float | None = 
     return True
 
 
+# The space between columns, in points. Word's own default for a two-column
+# section, and about the width of the gutter in a book set the same way.
+COLUMN_GAP_PT = 18.0
+
+
+def set_columns(section, count: int, gap_pt: float = COLUMN_GAP_PT) -> None:
+    """Divide `section` into `count` columns of equal width.
+
+    The `w:cols` element is edited in place rather than appended, because
+    `w:sectPr` is an ordered sequence and Word discards the whole property set
+    when it is written out of order — the same trap as `CT_DPr` in
+    `latex_omml._delim`. python-docx's template already carries a `w:cols`, so
+    in practice there is one to edit; the fallback puts a new one where the
+    schema says it goes, before `w:docGrid`.
+    """
+    properties = section._sectPr
+    cols = properties.find(qn("w:cols"))
+    if cols is None:
+        cols = parse_xml(
+            '<w:cols xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"/>'
+        )
+        grid = properties.find(qn("w:docGrid"))
+        if grid is not None:
+            grid.addprevious(cols)
+        else:
+            properties.append(cols)
+    cols.set(qn("w:num"), str(max(1, count)))
+    cols.set(qn("w:space"), str(int(gap_pt * 20)))  # twentieths of a point
+    cols.set(qn("w:equalWidth"), "1")
+
+
 class DocxWriter:
-    def __init__(self, title: str | None = None) -> None:
+    def __init__(self, title: str | None = None, base_dir: Path | None = None) -> None:
+        # The working directory the Markdown's figure references are relative to.
+        self.base_dir = base_dir
         self.document = Document()
+        self.columns = 1
+        self._paged = False
         ensure_styles(self.document)
         normal = self.document.styles["Normal"]
         normal.font.name = "Calibri"
@@ -236,12 +305,22 @@ class DocxWriter:
 
     @property
     def column(self) -> float:
-        """Width of the text column, in points."""
-        section = self.document.sections[0]
+        """Width of the text column, in points.
+
+        The text column, not the page: on a two-column page a figure scaled to
+        the width of the page is a figure that overruns the column it is in.
+        """
+        section = self.document.sections[-1]
         usable = section.page_width - section.left_margin - section.right_margin
-        return max(Emu(usable).pt, 72.0)
+        count = max(1, self.columns)
+        if count > 1:
+            usable -= Pt(COLUMN_GAP_PT * (count - 1))
+        return max(Emu(usable).pt / count, 72.0)
 
     def add_picture(self, path: str, caption: str = "") -> None:
+        source = resolve_picture(self.base_dir, path)
+        if source is None:
+            return
         section = self.document.sections[0]
         # A figure taller than the page it is on pushes everything after it onto
         # the next one and leaves the page it came from empty.
@@ -249,7 +328,7 @@ class DocxWriter:
         height = max(Emu(usable).pt, 72.0)
         paragraph = self.document.add_paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        if not place_picture(paragraph, path, self.column, height * 0.85):
+        if not place_picture(paragraph, str(source), self.column, height * 0.85):
             return
         if caption:
             self.add_quote(f"_{caption}_")
@@ -281,6 +360,29 @@ class DocxWriter:
 
     def add_page_break(self) -> None:
         self.document.add_page_break()
+
+    def start_page(self, columns: int = 1) -> None:
+        """Begin the source's next page, set in `columns` columns.
+
+        A page break cannot carry a column count — columns are a property of the
+        section — so a page whose layout differs from the one before it starts a
+        new section instead. A section break of type `nextPage` breaks the page
+        as well, so nothing is lost by using one, and a run of pages set the same
+        way stays in the section it is already in rather than accumulating one
+        section apiece.
+        """
+        columns = max(1, columns)
+        if not self._paged:
+            self._paged = True
+            self.columns = columns
+            set_columns(self.document.sections[-1], columns)
+            return
+        if columns == self.columns:
+            self.add_page_break()
+            return
+        self.document.add_section(WD_SECTION.NEW_PAGE)
+        self.columns = columns
+        set_columns(self.document.sections[-1], columns)
 
     def save(self, path: Path) -> None:
         self.document.save(path)
@@ -447,6 +549,7 @@ def render_markdown(writer: DocxWriter, markdown: str) -> None:  # noqa: C901 - 
                     or BULLET_RE.match(follow)
                     or ORDERED_RE.match(follow)
                     or HEADING_RE.match(follow)
+                    or IMAGE_RE.match(follow)
                     or follow.strip().startswith(("$$", "|", ">", "```"))
                 ):
                     break

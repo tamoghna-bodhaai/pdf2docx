@@ -5,10 +5,12 @@ colours, images, diagrams, tables and positions, page for page — with **native
 equations** you can click into and edit.
 
 ```
-             ┌── text spans (font, size, colour, bbox) ─┐
-PDF ─┬─ PyMuPDF ─┼── images, vector artwork, rules ─────────┼─▶ positioned .docx
-     │           └── equation regions ──▶ vision model ─────┘    (python-docx)
-     └─ pages with no text layer ──▶ vision model ──▶ text behind an exact page image
+             ┌── text spans / images / vectors / rules ────────────┐
+PDF ─┬─ PyMuPDF ─┤                                                   ├─▶ .docx
+     │           └── digital equation crops ─▶ PDF-Extract-Kit ─┐  │
+     ├─ scanned page ─▶ local layout + OCR + formulas ──────────┤  │
+     │                 └─ low quality / unavailable ─▶ vision ──┴──┘
+     └─ marker mode ─▶ marker-pdf ─▶ its Markdown, kept as it comes ─▶ .docx
 ```
 
 Three output modes:
@@ -18,6 +20,7 @@ Three output modes:
 | **`structured`** (default) | The PDF's own content, rebuilt as ordinary Word structure: flowing paragraphs, headings, native equations, real tables and pictures. Editable; the page is not a facsimile. |
 | **`replica`** | Every element becomes a floating frame at its exact PDF coordinates. Looks like the original; blocks do not reflow when you edit them. |
 | **`flow`** | The model reads each page and rewrites it as ordinary flowing Word content. Fully editable; positions and fonts are not preserved. |
+| **`marker`** | The whole PDF is converted locally by [marker-pdf](https://github.com/datalab-to/marker) and what it returns is written as it comes. Fully local, costs nothing, and its own Markdown is kept beside the document so you can see marker's quality rather than this codebase's reading of it. |
 
 ## How faithful is "replica"?
 
@@ -83,6 +86,77 @@ cp .env.example .env
 # then put your key in .env — create one at https://openrouter.ai/keys
 ```
 
+
+### Optional local PDF-Extract-Kit sidecar
+
+Scans and digital equation crops can be handled by an isolated, persistent
+Python 3.10 PDF-Extract-Kit service. PyMuPDF remains the extractor for digital
+text, images, and layout; `flow` mode continues to use whole-page vision.
+
+Follow [the sidecar setup guide](sidecar/README.md) to install its pinned
+upstream revision, download the models, start it on port 8010, and verify
+`GET /health`. Then opt in:
+
+```bash
+PDF2DOCX_EXTRACTION_PROVIDER=hybrid
+PDF2DOCX_EXTRACT_KIT_URL=http://127.0.0.1:8010
+```
+
+Hybrid mode uses local layout/OCR/formula output first and falls back on service
+errors, low confidence, implausibly empty output, invalid formulas, or ambiguous
+reading order. `local` prohibits remote fallbacks. Set the provider to `vision`
+for immediate rollback. Vision remains the default until the documented
+[quality gate](docs/extract-kit-benchmark.md) shows no material regression and
+at least 80% fewer remote calls.
+
+### Optional marker-pdf sidecar
+
+The `marker` output mode converts the whole PDF locally with
+[marker-pdf](https://github.com/datalab-to/marker), which does layout, OCR,
+tables and mathematics in one pass. It runs in its own environment and its own
+process, because torch and the Surya VLM stack have no business in either the
+application's environment or the PDF-Extract-Kit sidecar's. Set it up once with
+[the marker sidecar guide](sidecar/README-marker.md), then:
+
+```bash
+sidecar/start-marker.sh          # port 8011; carries the working backend settings
+curl --fail http://127.0.0.1:8011/health
+```
+
+and pick **marker** in the output menu. No API key is involved and nothing is
+billed. Measured here on an RTX 5060: four digital pages in about a second, three
+scanned pages — OCR, mathematics and figure extraction — in about fourteen.
+
+The mode exists to show marker's own work, so almost nothing is done to what it
+returns:
+
+- marker's output is written to `marker/document.md` in the job directory **byte
+  for byte**, along with its images under their own filenames and a
+  `marker/metadata.json` recording the effective configuration.
+- The `document.md` the `.docx` is built from differs from that file in exactly
+  one respect: image references are given a directory prefix so the writers can
+  resolve them. `diff` the two and that is all you will find. The count is in
+  `metadata.json` under `applied`.
+- Pages are split on marker's own separator, so each source page still becomes
+  its own Word page.
+- None of the figure-locating, box-repairing, mark-up-stripping or
+  structure-recovering work the other modes do runs here. It exists to fix up
+  vision-model output, and it would hide what marker actually did.
+
+Everything marker can be told to do is reachable without touching the code:
+`PDF2DOCX_MARKER_OPTIONS` is passed straight to marker's own configuration
+parser, which is the same one its CLI builds its flags into.
+
+```bash
+PDF2DOCX_MARKER_OPTIONS='{"mode":"fast","force_ocr":true,"format_lines":true}'
+```
+
+marker-pdf's code is Apache-2.0, but its **model weights carry a modified AI Pubs
+Open Rail-M licence with a revenue-based restriction on commercial use** — a
+different obligation from the AGPL one attaching to PDF-Extract-Kit. Note also
+that marker's Surya server and the PDF-Extract-Kit models will not both fit
+comfortably on an 8 GB GPU; run one sidecar at a time.
+
 ## Run
 
 ```bash
@@ -92,6 +166,16 @@ cp .env.example .env
 Open <http://localhost:8000>, drop in a PDF, pick a model, press **Start OCR**, download
 the `.docx`. Uploading only stages the file — nothing is sent to the model until you
 press start, so you can swap models (or change your mind) first.
+
+## Tests
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/pytest
+```
+
+No network and no API key: the fixtures are PDFs built on the fly at a known
+resolution, so what a crop should measure is arithmetic rather than a judgement.
 
 ## History and cost
 
@@ -117,13 +201,25 @@ All settings live in `.env` (see `.env.example`).
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OPENROUTER_API_KEY` | — | **Required.** |
+| `OPENROUTER_API_KEY` | — | Required for `vision`, `flow`, and any hybrid fallback. |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Change only if proxying. |
 | `OPENROUTER_APP_URL` / `_APP_TITLE` | localhost / PDF to DOCX | Attribution headers OpenRouter uses for its leaderboards. |
-| `PDF2DOCX_LAYOUT` | `replica` | `replica` reproduces the page exactly; `flow` rewrites it as ordinary Word content. Also selectable per conversion in the UI. |
+| `PDF2DOCX_EXTRACTION_PROVIDER` | `vision` | `hybrid` tries PDF-Extract-Kit first and falls back to vision; `local` prohibits remote fallbacks. Vision stays default until the benchmark gate passes. |
+| `PDF2DOCX_EXTRACT_KIT_URL` | `http://127.0.0.1:8010` | Python 3.10 sidecar base URL. |
+| `PDF2DOCX_EXTRACT_KIT_CONNECT_TIMEOUT` / `_REQUEST_TIMEOUT` | `2` / `180` | Sidecar connection and inference timeouts in seconds. |
+| `PDF2DOCX_OCR_CONFIDENCE_THRESHOLD` | `0.65` | Character-weighted scan OCR confidence below which hybrid mode uses vision. |
+| `PDF2DOCX_MARKER_URL` | `http://127.0.0.1:8011` | marker sidecar base URL, used only by the `marker` mode. |
+| `PDF2DOCX_MARKER_CONNECT_TIMEOUT` / `_REQUEST_TIMEOUT` | `2` / `900` | Connection and inference timeouts in seconds. The request timeout covers a whole document, not one page. |
+| `PDF2DOCX_MARKER_OPTIONS` | `{}` | JSON object passed straight through to marker's own configuration — anything its CLI accepts, including options added upstream after this was written. Malformed JSON is ignored. |
+| `PDF2DOCX_MARKER_EXTRA_FORMATS` | *(blank)* | Extra renderers (`html`, `json`, `chunks`) to run purely so their output can be read. Each is a second conversion of the same PDF. |
+| `PDF2DOCX_LAYOUT` | `structured` | `structured` rebuilds the content as editable Word structure; `replica` reproduces the page exactly; `flow` rewrites it as ordinary Word content; `marker` converts it locally with marker-pdf. Also selectable per conversion in the UI. |
+| `PDF2DOCX_COLUMNS` | `auto` | `auto` (the UI's **multi-column**) sets each page of the output in as many columns as the source page was set in; `off` (the UI's **natural**) keeps one column throughout; a number forces that many. Applies to the flowing modes (`flow`, `marker`) — the replica modes reproduce the page's geometry already. Also selectable per conversion in the UI, which overrides this. |
 | `PDF2DOCX_MATH` | `auto` | `auto` reads equations back as native Word equations; `off` leaves them as pixel-exact images and makes no model calls. |
 | `PDF2DOCX_FONT_MAP` | `on` | Map PDF fonts to Times New Roman / Arial / Courier New. `off` keeps the document's own font names — only useful if the reader has them installed. |
 | `PDF2DOCX_DIAGRAM_DPI` / `PDF2DOCX_MATH_DPI` | `300` / `320` | Resolution for rasterised diagrams and equation crops. |
+| `PDF2DOCX_CROP_NATIVE` | `on` | Cap a figure cut out of a scan at the resolution the scan itself holds. A 90 DPI page has no 300 DPI detail to give, and rendering it at 300 enlarges only its grain. Vector artwork has no ceiling and is always cut at `DIAGRAM_DPI`; `off` cuts everything at `DIAGRAM_DPI`. |
+| `PDF2DOCX_LOCATE` | `on` | Ask a second time where a scanned page's figures are, reading their boxes off a coordinate grid ruled over the page. Costs one extra request per page that has figures. `off` trusts the boxes the transcription reported. |
+| `PDF2DOCX_FIGURE_MODEL` | *(blank)* | Model for that locating pass. Blank uses `PDF2DOCX_MODEL`. Reading a box off a ruled line is a different skill from transcribing, so a small transcription model can be paired with a capable one here. |
 | `PDF2DOCX_MODEL` | `anthropic/claude-sonnet-5` | Any vision-capable model id. The web UI also offers a per-conversion picker, populated live from OpenRouter, so you never have to guess an id. |
 | `PDF2DOCX_REASONING_EFFORT` | *(unset)* | `low`/`medium`/`high`, passed through to reasoning-capable models. Omitted entirely when blank. |
 | `PDF2DOCX_MAX_TOKENS` | `16000` | Output budget per page. |
@@ -154,6 +250,13 @@ colours, images, diagrams, rules, tables, equations and coordinates all survive 
 [How faithful is "replica"?](#how-faithful-is-replica) above. Each source page becomes
 its own Word page in both modes.
 
+In **`marker`** mode what survives is whatever marker chose to emit, rendered through the
+same Markdown writer `flow` uses: headings, emphasis, lists, tables, code, figures and
+`$$`-fenced equations, which become native Word equations. Fonts, colours and coordinates
+are not preserved — marker does not report them. Nothing here repairs or second-guesses
+marker's output, so a defect in the document is a defect in the conversion, which is the
+whole reason the mode exists.
+
 ## HTTP API
 
 The browser UI is a thin client over these endpoints:
@@ -162,18 +265,29 @@ The browser UI is a thin client over these endpoints:
 |---|---|---|
 | `GET` | `/api/config` | Effective settings. |
 | `GET` | `/api/models` | Vision-capable OpenRouter models, cheapest first. |
-| `POST` | `/api/convert` | Multipart `file` (+ optional `model`, `layout`, `start`). Stages the PDF and returns a job. |
-| `POST` | `/api/jobs/{id}/start` | Begin (or re-run) the conversion. Optional `model` / `layout` override. |
+| `POST` | `/api/convert` | Multipart `file` (+ optional `model`, `layout`, `columns`, `start`). Stages the PDF and returns a job. |
+| `POST` | `/api/jobs/{id}/start` | Begin (or re-run) the conversion. Optional `model` / `layout` / `columns` override. |
 | `GET` | `/api/jobs/{id}` | Status, progress, and cost so far. |
 | `GET` | `/api/history` | Every stored conversion, newest first, plus the total spent. |
-| `GET` | `/api/jobs/{id}/markdown` | Intermediate Markdown as JSON. |
-| `GET` | `/api/jobs/{id}/download?format=docx\|md` | The finished file. |
+| `GET` | `/api/jobs/{id}/markdown` | Intermediate Markdown as JSON. Figure references are relative to the job's working directory. |
+| `GET` | `/api/jobs/{id}/download?format=docx\|md\|marker-md\|marker-html\|marker-json\|marker-meta` | The finished file. The `marker-*` formats return marker's own unedited output and are present only for jobs converted in `marker` mode. |
 | `DELETE` | `/api/jobs/{id}` | Delete the job and its working directory. |
 | `DELETE` | `/api/history` | Delete every job that is not currently running. |
 
+`columns` is `natural` (one flowing column) or `multi` (each page set in as many
+columns as the source page was set in); anything else, including omitting it,
+leaves `PDF2DOCX_COLUMNS` in charge. It reaches the flowing modes (`flow`,
+`marker`) only — the replica modes reproduce the page's geometry already. The
+staged job reports `source_columns`, the most columns any of the PDF's first
+pages is set in, read from the PDF at upload: where that is `1` the source has no
+second column to give back, and `natural` is the only thing the output can be.
+
 Job status is `ready` (uploaded, awaiting start) → `queued` → `rendering` →
-`transcribing` → `building` → `done`, or `error`. Cost fields (`cost`, `cost_known`,
+`transcribing` → `building` → `done`, or `error`. Cost fields (`cost`, `cost_known`, `calls`,
 `prompt_tokens`, `completion_tokens`) update as pages complete.
+Completed jobs also expose per-page `diagnostics` with the selected `extractor`
+and any `fallback_reason`; only actual remote calls contribute to cost and token
+totals.
 
 ```bash
 # Two-step: stage, then start.
@@ -195,14 +309,22 @@ curl -OJ "http://localhost:8000/api/jobs/<id>/download?format=docx"
 app/
   main.py          FastAPI routes, job registry, background conversion
   history.py       JSON-backed record of past conversions
-  pipeline.py      both pipelines: replica (extract → equations → place) and flow
+  pipeline.py      all three pipelines: replica/structured, flow, and marker
+  marker_client.py validated boundary to the marker sidecar, and the two edits
+                   made to its output (image prefixes, page splitting)
   pdf_extract.py   PDF → positioned layout model: spans, images, artwork, equations
   docx_replica.py  layout model → .docx of absolutely positioned shapes
   pdf_render.py    PyMuPDF rasterisation with a long-edge cap
+  columns.py       how many columns each source page is set in, read from the
+                   PDF's own text blocks — or from the ink, when it is a scan
   vision.py        OpenRouter calls, transcription and equation prompts, per-call cost
   docx_builder.py  Markdown → python-docx (blocks, inline spans, tables)
   latex_omml.py    LaTeX → OMML compiler
   static/index.html  single-page UI
+
+sidecar/
+  service.py        PDF-Extract-Kit sidecar (port 8010)
+  marker_service.py marker-pdf sidecar (port 8011), config passed through to marker
 ```
 
 ## Notes and limits
@@ -225,13 +347,57 @@ app/
   frames. Use `flow` when you want to rework the prose rather than preserve the page.
 - A page border or full-page background box is dropped rather than rasterised, because
   covering the page with a picture would bury the text underneath it.
-- Scanned pages cannot be laid out line by line without OCR bounding boxes. Installing
-  Tesseract would let PyMuPDF supply them (`page.get_textpage_ocr()`); without it,
-  `replica` keeps the exact page image with the transcription behind, and `structured`
-  rebuilds the page from the transcription's own structure rather than the scan's
-  geometry — so a scanned page reflows like ordinary Word content, but the line breaks
-  and column positions of the original are not reproduced.
-- Where a figure sits on a scanned page is the model's estimate, not a measurement. A
+- In `vision` mode a scanned replica keeps the exact page image with a flat
+  searchable transcription behind it, while structured output rebuilds the
+  model's Markdown. With the sidecar, replica OCR lines retain detector boxes
+  scaled into PDF points and structured output retains headings, paragraphs,
+  formulas, and directly detected figure boxes. Ambiguous local reading order
+  deliberately returns to whole-page vision.
+- Where a figure sits on a scanned page is asked twice. The boxes that arrive with the
+  transcription are its least reliable output: on the page this was built against they
+  averaged 0.13 IoU against boxes measured by hand, which crops the paragraph beside the
+  diagram rather than the diagram. So the page is rendered again with a numbered grid
+  ruled over it and a model is asked to *read* each box off the rules, with nothing else
+  to do — which is what `PDF2DOCX_LOCATE` controls. Located boxes are matched back to the
+  transcription's figure lines by reading order, aligned as whole sequences so that one
+  badly placed box cannot shift the rest.
+- How well that second look works depends on the model, and not in the direction price
+  suggests: over repeated trials on the same page `google/gemini-3.6-flash` averaged 0.55
+  and `anthropic/claude-sonnet-5` 0.46. The hardest figures are the sparse ones — a
+  free-body sketch that is a few arrows and a label in a field of white, with no frame or
+  axis to bound it — and they are where the two differ most (0.61 against 0.17). If your
+  figures come out wrong, this is the setting to change first, via
+  `PDF2DOCX_FIGURE_MODEL`. Note also that a reasoning model spends its token budget
+  thinking before it answers: the request is budgeted for that, and a page's figures cost
+  roughly a cent to locate. The pass reads a ruled line, so it is also sensitive to
+  `PDF2DOCX_MAX_EDGE`, which bounds how large the page is sent.
+- Everything below still applies to whichever box wins. Where a figure sits on a scanned
+  page is the model's estimate, not a measurement. A
   box that is implausible — inside out, a sliver, or most of the page — is dropped and
   the caption is kept on its own. A box that is merely a little tight or loose is used
-  as given, so a crop can carry a stray line of text or clip a far-flung label.
+  as given, so a crop can carry a stray line of text or clip a far-flung label. Nothing
+  downstream can recover from a box that points at the wrong part of the page, so this
+  is the one place where model choice shows up as visibly wrong output rather than as
+  slightly worse output — a weak model will box the equation above the diagram.
+- The box is asked for on a 0–1000 grid, but models often answer in the pixels of the
+  page image they were shown instead — `anthropic/claude-sonnet-5`, the default here,
+  does. Both readings are accepted: a coordinate past 1000 gives the convention away, and
+  the unit is then settled for the whole page at once rather than box by box, since a
+  model does not switch units halfway down a page. Numbers that fit neither the grid nor
+  the render are dropped rather than forced to fit. One case cannot be resolved and is
+  not: a box reported in pixels that happens to lie entirely within the render's top-left
+  1000×1000 is indistinguishable from a grid box, and is read as one.
+- A figure crop is written under the job's working directory and referred to relative to
+  it — `figures/page-0001-figure-1.png` — never by the path it happens to have on the
+  machine that made it. The Markdown outlives that process: it is saved beside the
+  document and served over the API, so an absolute path would be useless to anything
+  that reads it elsewhere and would publish the host's directory layout to whoever
+  downloads the `.md`. The writers resolve references against the working directory and
+  refuse any that climb out of it, since the Markdown they are reading came back from a
+  model pointed at an untrusted page.
+- A figure is placed at the size the page drew it at, and cut at the resolution the page
+  can actually supply. Both were once assumed rather than established: a crop was
+  rendered at `DIAGRAM_DPI` and written to a PNG that PyMuPDF stamps `96` DPI whatever
+  the render zoom was, so Word — which sizes a picture as its pixel count over its
+  declared resolution — placed every figure `DIAGRAM_DPI / 96` times too large, with no
+  extra detail in it to justify the size.

@@ -13,7 +13,9 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadF
 from fastapi.responses import FileResponse, HTMLResponse
 
 from . import history
+from .columns import source_columns
 from .config import settings
+from .marker_client import RAW_DIR
 from .pdf_render import page_count
 from .pipeline import ConversionUsage, convert_pdf
 from .vision import list_vision_models
@@ -27,7 +29,15 @@ RUNNING = ("queued", "rendering", "transcribing", "building")
 app = FastAPI(title="PDF → DOCX", version="1.1.0")
 
 
-LAYOUTS = ("structured", "replica", "flow")
+LAYOUTS = ("structured", "replica", "flow", "marker")
+
+# The two answers the browser can give about columns. `natural` is one flowing
+# column — what a transcription is, being one linear stream of text — and `multi`
+# sets each page the way the source page was set. Only the flowing modes can act
+# on either; the replica modes put every block back where it came from, columns
+# and all. Anything else, including the empty string the form sends when the
+# control was never shown, leaves `PDF2DOCX_COLUMNS` in charge.
+COLUMN_CHOICES = ("natural", "multi")
 
 
 def _now() -> str:
@@ -39,6 +49,24 @@ def _layout_choice(value: str) -> str:
     return choice if choice in LAYOUTS else settings.layout
 
 
+def _columns_choice(value: str) -> str:
+    choice = (value or "").strip().lower()
+    return choice if choice in COLUMN_CHOICES else ""
+
+
+def _needs_api_key(layout: str) -> bool:
+    """Whether the chosen path will actually call OpenRouter.
+
+    `marker` never does: the sidecar converts the whole document locally. Asking
+    it for a key would refuse the one mode that works on a machine without one,
+    since the default extraction provider is `vision` and that clause would
+    otherwise catch every layout.
+    """
+    if layout == "marker":
+        return False
+    return layout == "flow" or settings.extraction_provider == "vision"
+
+
 @dataclass
 class Job:
     id: str
@@ -46,6 +74,12 @@ class Job:
     pages: int
     model: str = settings.model
     layout: str = settings.layout
+    # "natural" | "multi" | "" for whatever PDF2DOCX_COLUMNS says.
+    columns: str = ""
+    # The most columns any page of the uploaded PDF is set in, read from the PDF
+    # at upload. One means the browser has no choice to offer: a source with a
+    # single column has no second column for the output to have.
+    source_columns: int = 1
     # ready | queued | rendering | transcribing | building | done | error
     status: str = "ready"
     done: int = 0
@@ -57,6 +91,8 @@ class Job:
     completion_tokens: int = 0
     calls: int = 0
     priced_calls: int = 0
+    extraction_provider: str = settings.extraction_provider
+    diagnostics: list[dict] = field(default_factory=list)
     created_at: str = field(default_factory=_now)
     started_at: str | None = None
     finished_at: str | None = None
@@ -82,6 +118,10 @@ class Job:
             "pages": self.pages,
             "model": self.model,
             "layout": self.layout,
+            "columns": self.columns,
+            "source_columns": self.source_columns,
+            "extraction_provider": self.extraction_provider,
+            "diagnostics": self.diagnostics,
             "status": self.status,
             "done": self.done,
             "total": self.total,
@@ -91,12 +131,14 @@ class Job:
             "cost_known": self.cost_known,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
+            "calls": self.calls,
             "created_at": self.created_at,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "has_docx": self._file("document.docx").exists(),
             "has_md": self._file("document.md").exists(),
             "has_source": self._file("source.pdf").exists(),
+            "has_marker": self._file(f"{RAW_DIR}/document.md").exists(),
         }
 
     def to_record(self) -> dict:
@@ -120,6 +162,8 @@ class Job:
             pages=int(record.get("pages") or 0),
             model=record.get("model") or settings.model,
             layout=record.get("layout") or settings.layout,
+            columns=_columns_choice(record.get("columns") or ""),
+            source_columns=int(record.get("source_columns") or 1),
             status=status,
             done=int(record.get("done") or 0),
             total=int(record.get("total") or 0),
@@ -130,6 +174,8 @@ class Job:
             completion_tokens=int(record.get("completion_tokens") or 0),
             calls=int(record.get("calls") or 0),
             priced_calls=int(record.get("priced_calls") or 0),
+            extraction_provider=record.get("extraction_provider") or settings.extraction_provider,
+            diagnostics=record.get("diagnostics") if isinstance(record.get("diagnostics"), list) else [],
             created_at=record.get("created_at") or _now(),
             started_at=record.get("started_at"),
             finished_at=record.get("finished_at"),
@@ -201,7 +247,7 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
             job.priced_calls = usage.priced_calls
 
     try:
-        convert_pdf(
+        result = convert_pdf(
             pdf_path=pdf_path,
             work_dir=pdf_path.parent,
             title=Path(job.filename).stem,
@@ -209,8 +255,14 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
             on_progress=on_progress,
             on_usage=on_usage,
             layout=job.layout,
+            columns=job.columns or None,
         )
         with JOBS_LOCK:
+            job.diagnostics = [
+                {"page": item.page, "kind": item.kind, "extractor": item.extractor,
+                 "fallback_reason": item.fallback_reason}
+                for item in result.diagnostics
+            ]
             job.status = "done"
             job.finished_at = _now()
     except Exception as exc:  # surfaced to the browser rather than swallowed
@@ -231,6 +283,14 @@ def index() -> HTMLResponse:
 def config() -> dict:
     return {
         "provider": "OpenRouter",
+        "extraction_provider": settings.extraction_provider,
+        "extract_kit_url": settings.extract_kit_url,
+        "extract_kit_connect_timeout": settings.extract_kit_connect_timeout,
+        "extract_kit_request_timeout": settings.extract_kit_request_timeout,
+        "ocr_confidence_threshold": settings.ocr_confidence_threshold,
+        "marker_url": settings.marker_url,
+        "marker_options": settings.marker_options,
+        "marker_extra_formats": list(settings.marker_extra_formats),
         "model": settings.model,
         "reasoning_effort": settings.reasoning_effort or None,
         "dpi": settings.dpi,
@@ -238,6 +298,7 @@ def config() -> dict:
         "max_pages": settings.max_pages,
         "api_key_configured": bool(settings.api_key),
         "layout": settings.layout,
+        "columns": settings.columns,
         "math_mode": settings.math_mode,
         "data_dir": str(settings.data_dir),
         "history_limit": settings.history_limit,
@@ -267,15 +328,17 @@ async def convert(
     file: UploadFile = File(...),
     model: str = Form(default=""),
     layout: str = Form(default=""),
+    columns: str = Form(default=""),
     start: bool = Form(default=False),
 ) -> dict:
     """Stage an uploaded PDF. Conversion waits for /start unless `start` is set."""
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Please upload a .pdf file.")
-    if not settings.api_key:
+    selected_layout = _layout_choice(layout)
+    if not settings.api_key and _needs_api_key(selected_layout):
         raise HTTPException(
             status_code=503,
-            detail="OPENROUTER_API_KEY is not set. Add it to .env and restart the server.",
+            detail="OPENROUTER_API_KEY is required by the selected extraction path.",
         )
 
     job_id = uuid.uuid4().hex[:12]
@@ -305,7 +368,12 @@ async def convert(
         filename=file.filename,
         pages=pages,
         model=model.strip() or settings.model,
-        layout=_layout_choice(layout),
+        layout=selected_layout,
+        columns=_columns_choice(columns),
+        # Read here rather than in the browser, which cannot see inside a PDF,
+        # and before the conversion starts, because it decides which choices the
+        # page is allowed to offer for it.
+        source_columns=source_columns(pdf_path),
         total=pages,
         size_bytes=size,
         directory=directory,
@@ -315,7 +383,7 @@ async def convert(
     _persist()
 
     if start:
-        return start_job(job_id, background, model=model, layout=layout)
+        return start_job(job_id, background, model=model, layout=layout, columns=columns)
     return job.as_dict()
 
 
@@ -325,11 +393,16 @@ def start_job(
     background: BackgroundTasks,
     model: str = Form(default=""),
     layout: str = Form(default=""),
+    columns: str = Form(default=""),
 ) -> dict:
     """Begin (or re-run) the conversion for an already-uploaded PDF."""
     job = _get_job(job_id)
     if job.status in RUNNING:
         raise HTTPException(status_code=409, detail="This conversion is already running.")
+
+    selected_layout = _layout_choice(layout) if layout.strip() else job.layout
+    if not settings.api_key and _needs_api_key(selected_layout):
+        raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY is required by the selected extraction path.")
 
     pdf_path = (job.directory or Path()) / "source.pdf"
     if not pdf_path.exists():
@@ -339,7 +412,8 @@ def start_job(
 
     with JOBS_LOCK:
         job.model = model.strip() or job.model
-        job.layout = _layout_choice(layout) if layout.strip() else job.layout
+        job.layout = selected_layout
+        job.columns = _columns_choice(columns) or job.columns
         job.status = "queued"
         job.done = 0
         job.total = job.pages
@@ -349,6 +423,8 @@ def start_job(
         job.completion_tokens = 0
         job.calls = 0
         job.priced_calls = 0
+        job.extraction_provider = settings.extraction_provider
+        job.diagnostics = []
         job.started_at = _now()
         job.finished_at = None
     _persist()
@@ -371,23 +447,39 @@ def job_markdown(job_id: str) -> dict:
     return {"markdown": path.read_text(encoding="utf-8")}
 
 
+# What each `format` names, as a fixed path and media type. Marker's own output
+# is downloadable because reading it is how the mode gets judged — and because
+# it is the only copy that nothing in this application has edited.
+DOWNLOADS = {
+    "docx": (
+        "document.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "docx",
+    ),
+    "md": ("document.md", "text/markdown", "md"),
+    "marker-md": (f"{RAW_DIR}/document.md", "text/markdown", "marker.md"),
+    "marker-html": (f"{RAW_DIR}/document.html", "text/html", "marker.html"),
+    "marker-json": (f"{RAW_DIR}/document.json", "application/json", "marker.json"),
+    "marker-meta": (f"{RAW_DIR}/metadata.json", "application/json", "marker.meta.json"),
+}
+
+
 @app.get("/api/jobs/{job_id}/download")
 def job_download(job_id: str, format: str = "docx") -> FileResponse:
     job = _get_job(job_id)
-    if format not in ("docx", "md"):
-        raise HTTPException(status_code=400, detail="format must be 'docx' or 'md'")
+    choice = DOWNLOADS.get(format)
+    if choice is None:
+        raise HTTPException(
+            status_code=400, detail=f"format must be one of {', '.join(DOWNLOADS)}"
+        )
 
-    path = (job.directory or Path()) / ("document.docx" if format == "docx" else "document.md")
+    name, media_type, extension = choice
+    path = (job.directory or Path()) / name
     if not path.exists():
         raise HTTPException(status_code=409, detail="The file is not ready yet.")
 
-    media_type = (
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        if format == "docx"
-        else "text/markdown"
-    )
     stem = Path(job.filename).stem or "document"
-    return FileResponse(path, media_type=media_type, filename=f"{stem}.{format}")
+    return FileResponse(path, media_type=media_type, filename=f"{stem}.{extension}")
 
 
 @app.delete("/api/jobs/{job_id}")

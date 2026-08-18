@@ -28,6 +28,7 @@ from .docx_builder import (
     place_picture,
     render_inline,
     render_markdown,
+    resolve_picture,
     rule_border,
 )
 from .latex_omml import display_math_xml, inline_math_xml, looks_incomplete
@@ -53,10 +54,18 @@ def _base_size(lines: list[TextLine]) -> float:
 class StructuredWriter:
     """Builds a flowing .docx from analysed pages."""
 
-    def __init__(self, metrics: Metrics, body_font: str = "Times New Roman") -> None:
+    def __init__(
+        self,
+        metrics: Metrics,
+        body_font: str = "Times New Roman",
+        base_dir: Path | None = None,
+    ) -> None:
         self.document = Document()
         ensure_styles(self.document)
         self.metrics = metrics
+        # The working directory a transcribed page's figure references are
+        # relative to; a page with no figures never needs it.
+        self.base_dir = base_dir
         normal = self.document.styles["Normal"]
         normal.font.name = body_font
         normal.font.size = Pt(metrics.size)
@@ -362,9 +371,12 @@ class StructuredWriter:
                     render_inline(paragraph, value, bold=(index == 0))
 
     def add_picture(self, path: str, caption: str = "") -> None:
+        source = resolve_picture(self.base_dir, path)
+        if source is None:
+            return
         paragraph = self._paragraph()
         paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        if not place_picture(paragraph, path, self.column, self.metrics.page_height * 0.6):
+        if not place_picture(paragraph, str(source), self.column, self.metrics.page_height * 0.6):
             return
         if caption:
             self.add_quote(f"_{caption}_")

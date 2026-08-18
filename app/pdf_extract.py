@@ -385,6 +385,17 @@ _DIAGRAM_PAGE_RATIO = 0.70  # a cluster this large is a border/background, not a
 _GLYPH_MARK_PT = 24.0  # a drawn mark no bigger than this is a character, not a diagram
 
 
+def render_size(page_width: float, page_height: float, dpi: int) -> tuple[int, int]:
+    """The pixel size `_render` gives a whole page at `dpi`.
+
+    Kept beside `_render` so the zoom is written down once. Callers use it to
+    tell a model's pixel coordinates apart from grid ones, which only needs the
+    size to within a rounding step of the pixmap's own.
+    """
+    zoom = dpi / 72.0
+    return round(page_width * zoom), round(page_height * zoom)
+
+
 def _render(page: fitz.Page, clip: fitz.Rect | None, dpi: int, alpha: bool = False) -> bytes:
     """Rasterise a region of the page.
 
@@ -399,9 +410,16 @@ def _render(page: fitz.Page, clip: fitz.Rect | None, dpi: int, alpha: bool = Fal
     model has nothing to transcribe, and every equation in the document falls
     back to its picture. On a white page an opaque white backdrop is invisible
     anyway.
+
+    Every crop records the resolution it was rendered at. These ones are placed
+    at a width taken from their own bounding box rather than at their natural
+    size, so nothing here depends on it today — but PyMuPDF's default of 96 DPI
+    is simply untrue, and a crop that misreports its size is a trap for the next
+    caller that trusts it.
     """
     zoom = dpi / 72.0
     pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, alpha=alpha)
+    pixmap.set_dpi(dpi, dpi)
     return pixmap.tobytes("png")
 
 
