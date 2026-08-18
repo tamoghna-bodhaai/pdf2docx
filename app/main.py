@@ -9,14 +9,16 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+import fitz
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
-from . import history
+from . import detection, history
 from .columns import source_columns
 from .config import settings
-from .marker_client import RAW_DIR
-from .pdf_render import page_count
+from .marker_client import RAW_DIR, RAW_IMAGE_DIR
+from .pdf_render import page_count, page_zoom
 from .pipeline import ConversionUsage, convert_pdf
 from .vision import list_vision_models
 
@@ -135,6 +137,7 @@ class Job:
             "has_md": self._file("document.md").exists(),
             "has_source": self._file("source.pdf").exists(),
             "has_marker": self._file(f"{RAW_DIR}/document.md").exists(),
+            "has_detection": self._file("detection.json").exists(),
         }
 
     def to_record(self) -> dict:
@@ -267,6 +270,12 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
             job.finished_at = _now()
     finally:
         _persist()
+
+
+# The page's own stylesheet and script, and the vendored Markdown/maths
+# renderer. Everything the browser loads comes from here, so the viewer works
+# with no network at all — the same promise the conversion itself makes.
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -434,6 +443,67 @@ def job_markdown(job_id: str) -> dict:
     if not path.exists():
         raise HTTPException(status_code=409, detail="Markdown is not ready yet.")
     return {"markdown": path.read_text(encoding="utf-8")}
+
+
+@app.get("/api/jobs/{job_id}/detection")
+def job_detection(job_id: str) -> dict:
+    """What the converter saw, page by page: block boxes, kinds, reading order."""
+    job = _get_job(job_id)
+    path = (job.directory or Path()) / "detection.json"
+    if not path.exists():
+        raise HTTPException(status_code=409, detail="The page detection is not ready yet.")
+    return detection.read(path)
+
+
+@app.get("/api/jobs/{job_id}/page/{number}.png")
+def job_page(job_id: str, number: int) -> FileResponse:
+    """One page of the source PDF, rasterised for the viewer.
+
+    Rendered on demand and kept, rather than rendered for every job up front:
+    only the flow mode rasterises whole pages during a conversion, and rendering
+    every page of every job would fill the history directory for a view that may
+    never be opened.
+    """
+    job = _get_job(job_id)
+    directory = job.directory or Path()
+    pdf_path = directory / "source.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(status_code=409, detail="The uploaded PDF is no longer available.")
+
+    path = directory / "preview" / f"page-{number:04d}.png"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with fitz.open(pdf_path) as doc:
+            if not 1 <= number <= doc.page_count:
+                raise HTTPException(status_code=404, detail="No such page.")
+            page = doc.load_page(number - 1)
+            # The same zoom the rest of the application renders at, so a box
+            # read off one view of the page lands where it does on the other.
+            zoom = page_zoom(page.rect.width, page.rect.height)
+            page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False).save(path)
+    return FileResponse(path, media_type="image/png")
+
+
+# Where a job's Markdown may point. Figures this application cut, and images
+# marker extracted — nothing else in a job directory is meant to be fetched by
+# the browser, and the finished documents have their own download route.
+ASSET_DIRS = ("figures", f"{RAW_DIR}/{RAW_IMAGE_DIR}")
+
+
+@app.get("/api/jobs/{job_id}/asset/{asset:path}")
+def job_asset(job_id: str, asset: str) -> FileResponse:
+    """An image referenced by a job's Markdown, for the rendered preview."""
+    job = _get_job(job_id)
+    directory = (job.directory or Path()).resolve()
+    path = (directory / asset).resolve()
+    # Two separate questions: is this still inside the job (a `..` in the path
+    # would leave it), and is it one of the directories a document may refer to.
+    if not path.is_relative_to(directory) or not path.is_file():
+        raise HTTPException(status_code=404, detail="No such asset.")
+    relative = path.relative_to(directory).as_posix()
+    if not any(relative.startswith(f"{allowed}/") for allowed in ASSET_DIRS):
+        raise HTTPException(status_code=404, detail="No such asset.")
+    return FileResponse(path)
 
 
 # What each `format` names, as a fixed path and media type. Marker's own output

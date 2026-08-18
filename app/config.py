@@ -72,6 +72,14 @@ class Settings:
     marker_request_timeout: float = _float("PDF2DOCX_MARKER_REQUEST_TIMEOUT", 900.0)
     marker_options: dict = field(default_factory=_marker_options)
     marker_extra_formats: tuple[str, ...] = field(default_factory=_marker_extra_formats)
+    # Ask marker for its JSON renderer as well, so the page viewer can draw the
+    # blocks marker found over the page. That is a second conversion of the same
+    # PDF — marker renders the document it just built, and the sidecar builds it
+    # again per request — so it is a real cost, and turning this off leaves a
+    # marker job converting exactly as it did before, with a plain page image in
+    # place of the overlay. What marker returns is still written verbatim; this
+    # only changes what it is asked for.
+    marker_detection: bool = os.environ.get("PDF2DOCX_MARKER_DETECTION", "on").strip().lower() != "off"
 
     # OpenRouter (OpenAI-compatible) endpoint
     api_key: str = os.environ.get("OPENROUTER_API_KEY", "")

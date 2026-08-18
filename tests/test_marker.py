@@ -65,6 +65,10 @@ def settings(**overrides):
         "max_pages": 0,
         "marker_options": {},
         "marker_extra_formats": (),
+        # Off unless a test is about the page viewer: asking marker for its JSON
+        # is a second conversion, and every test here counts the conversions it
+        # expects marker to be put through.
+        "marker_detection": False,
         "columns": "auto",
     }
     values.update(overrides)
@@ -305,3 +309,75 @@ def test_an_extra_inspection_format_never_costs_the_job_its_document(tmp_path, m
     work = tmp_path / "job"
     pipeline.convert_pdf(pdf_path=source_pdf(tmp_path), work_dir=work, layout="marker")
     assert (work / "document.docx").exists()
+
+
+# -- the page viewer ----------------------------------------------------------- #
+
+MARKER_JSON = json.dumps({
+    "block_type": "Document",
+    "metadata": {},
+    "children": [{
+        "id": "/page/0", "block_type": "Page", "html": "",
+        "bbox": [0.0, 0.0, 1000.0, 1414.0], "polygon": [],
+        "children": [{
+            "id": "/page/0/SectionHeader/1", "block_type": "SectionHeader",
+            "html": "<h1>Heat equation</h1>",
+            "bbox": [100.0, 120.0, 900.0, 170.0], "polygon": [], "children": None,
+        }],
+    }],
+})
+
+
+class JsonClient(FakeClient):
+    """A sidecar that answers the JSON renderer with real block geometry."""
+
+    def convert_document(self, pdf_path, config=None):
+        if (config or {}).get("output_format") == "json":
+            FakeClient.calls.append((pdf_path, dict(config or {})))
+            return parse_document_response({
+                "format": "json", "content": MARKER_JSON, "images": {},
+                "metadata": {}, "config": dict(config or {}),
+            })
+        return super().convert_document(pdf_path, config)
+
+
+def test_marker_is_asked_for_its_json_so_the_page_viewer_has_boxes(tmp_path, monkeypatch):
+    prepare(monkeypatch, marker_detection=True)
+    monkeypatch.setattr(pipeline, "MarkerClient", JsonClient)
+    work = tmp_path / "job"
+    pipeline.convert_pdf(pdf_path=source_pdf(tmp_path), work_dir=work, layout="marker")
+
+    formats = [config.get("output_format") for _, config in FakeClient.calls]
+    assert "json" in formats
+    detected = json.loads((work / "detection.json").read_text())
+    assert detected["mode"] == "marker"
+    assert detected["pages"][0]["blocks"][0]["kind"] == "heading"
+    # marker's own copy is still the verbatim one it always was.
+    assert (work / "marker" / "document.json").read_text() == MARKER_JSON
+
+
+def test_a_marker_job_still_converts_when_the_boxes_are_turned_off(tmp_path, monkeypatch):
+    _, work = convert(tmp_path, monkeypatch, marker_detection=False)
+
+    assert [config.get("output_format") for _, config in FakeClient.calls] == [None]
+    assert (work / "document.docx").exists()
+    # No geometry, but the pages and their text are still there to read.
+    detected = json.loads((work / "detection.json").read_text())
+    assert detected["pages"][0]["blocks"] == []
+    assert detected["pages"][0]["markdown"]
+
+
+def test_a_failed_json_pass_never_costs_the_job_its_document(tmp_path, monkeypatch):
+    class NoJson(FakeClient):
+        def convert_document(self, pdf_path, config=None):
+            if (config or {}).get("output_format") == "json":
+                raise MarkerError("the JSON renderer fell over")
+            return super().convert_document(pdf_path, config)
+
+    prepare(monkeypatch, marker_detection=True)
+    monkeypatch.setattr(pipeline, "MarkerClient", NoJson)
+    work = tmp_path / "job"
+    pipeline.convert_pdf(pdf_path=source_pdf(tmp_path), work_dir=work, layout="marker")
+
+    assert (work / "document.docx").exists()
+    assert json.loads((work / "detection.json").read_text())["pages"][0]["blocks"] == []

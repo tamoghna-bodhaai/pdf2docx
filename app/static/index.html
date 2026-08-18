@@ -4,624 +4,154 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>PDF → DOCX</title>
-<style>
-  :root {
-    color-scheme: light dark;
-    --bg: #f6f7f9;
-    --card: #ffffff;
-    --ink: #171a1f;
-    --muted: #626a76;
-    --line: #dfe3e8;
-    --accent: #2f6df6;
-    --accent-soft: #e8effe;
-    --ok: #1a8a4b;
-    --err: #c0392b;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #101318; --card: #171b22; --ink: #e8eaee; --muted: #97a0ad;
-      --line: #262c36; --accent: #6c9bff; --accent-soft: #1b2436;
-      --ok: #4cc47f; --err: #ff7a6b;
-    }
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; padding: 40px 20px; background: var(--bg); color: var(--ink);
-    font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  }
-  main { max-width: 720px; margin: 0 auto; }
-  h1 { font-size: 24px; margin: 0 0 4px; letter-spacing: -0.01em; }
-  h2 { font-size: 15px; margin: 0; letter-spacing: -0.005em; }
-  .sub { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
-  .card {
-    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
-    padding: 22px; margin-bottom: 16px;
-  }
-  #drop {
-    border: 2px dashed var(--line); border-radius: 12px; padding: 42px 20px;
-    text-align: center; cursor: pointer; transition: .15s border-color, .15s background;
-  }
-  #drop:hover, #drop.hot { border-color: var(--accent); background: var(--accent-soft); }
-  #drop strong { display: block; font-size: 16px; margin-bottom: 4px; }
-  #drop span { color: var(--muted); font-size: 13px; }
-  input[type=file] { display: none; }
-  .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-  .file { font-weight: 600; word-break: break-all; }
-  .meta { color: var(--muted); font-size: 13px; }
-  .bar { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; margin: 14px 0 8px; }
-  .bar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s ease; }
-  .status { font-size: 13px; color: var(--muted); }
-  .status.err { color: var(--err); }
-  .status.ok { color: var(--ok); font-weight: 600; }
-  .actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 16px; }
-  button, a.btn {
-    appearance: none; border: 1px solid var(--line); background: var(--card); color: var(--ink);
-    border-radius: 9px; padding: 9px 16px; font: inherit; font-size: 14px; cursor: pointer;
-    text-decoration: none; display: inline-block;
-  }
-  button.primary, a.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-  button.link {
-    border: none; background: none; color: var(--accent); padding: 2px 4px; font-size: 13px;
-  }
-  button:disabled { opacity: .5; cursor: default; }
-  pre {
-    background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 14px;
-    max-height: 340px; overflow: auto; font-size: 12.5px; white-space: pre-wrap; margin: 14px 0 0;
-  }
-  .hidden { display: none; }
-  footer { color: var(--muted); font-size: 12.5px; text-align: center; margin-top: 22px; }
-  code { background: var(--accent-soft); padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
-  label.field { display: block; font-size: 12.5px; color: var(--muted); margin: 16px 0 6px; }
-  select, input[type=text] {
-    width: 100%; padding: 9px 10px; border-radius: 9px; border: 1px solid var(--line);
-    background: var(--bg); color: var(--ink); font: inherit; font-size: 13.5px;
-  }
-  .warn {
-    background: color-mix(in srgb, var(--err) 12%, transparent);
-    border: 1px solid color-mix(in srgb, var(--err) 40%, transparent);
-    color: var(--err); border-radius: 10px; padding: 10px 14px; font-size: 13.5px;
-    margin-bottom: 16px;
-  }
-  .cost {
-    display: inline-flex; align-items: baseline; gap: 6px; margin-top: 12px;
-    background: var(--accent-soft); border-radius: 9px; padding: 7px 12px;
-    font-size: 13px; color: var(--muted);
-  }
-  .cost b { font-size: 15px; color: var(--ink); font-variant-numeric: tabular-nums; }
-  .tablewrap { overflow-x: auto; margin: 0 -6px; }
-  table { border-collapse: collapse; width: 100%; font-size: 13px; }
-  th, td { text-align: left; padding: 9px 6px; border-bottom: 1px solid var(--line); white-space: nowrap; }
-  th { color: var(--muted); font-weight: 500; font-size: 12px; }
-  tbody tr:last-child td { border-bottom: none; }
-  td.name { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .pill { font-size: 11.5px; padding: 2px 8px; border-radius: 99px; background: var(--bg); border: 1px solid var(--line); }
-  .pill.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
-  .pill.err { color: var(--err); border-color: color-mix(in srgb, var(--err) 40%, transparent); }
-  .empty { color: var(--muted); font-size: 13px; padding: 6px 0 0; }
-  .hint { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
-  .head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-</style>
+<link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
+<link rel="stylesheet" href="/static/app.css" />
 </head>
 <body>
-<main>
-  <h1>PDF → editable Word</h1>
-  <p class="sub">Rebuilds a PDF as Word: the original fonts, colours, images, diagrams,
-    tables and positions are kept page for page, with equations you can click into and edit.</p>
+<div class="shell">
 
-  <div class="warn hidden" id="keywarn">
-    <strong>OPENROUTER_API_KEY is not set.</strong> Add it to <code>.env</code> and restart the server.
-  </div>
-
-  <div class="card" id="upload-card">
-    <div id="drop">
-      <strong>Drop a PDF here, or click to choose one</strong>
-      <span id="hint">Loading configuration…</span>
-    </div>
-    <input id="picker" type="file" accept="application/pdf,.pdf" />
-
-    <label class="field" for="layout">Output</label>
-    <select id="layout">
-      <option value="structured">Editable document — keep the layout, keep it editable</option>
-      <option value="replica">Visual replica — reproduce the page exactly</option>
-      <option value="flow">Editable flow — rewrite as ordinary Word content</option>
-      <option value="marker">marker — convert locally and keep its output as it comes</option>
-    </select>
-    <div class="hint" id="layout-hint"></div>
-
-    <div id="columns-field" class="hidden">
-      <label class="field" for="columns">Columns</label>
-      <select id="columns">
-        <option value="natural">Natural — one flowing column</option>
-        <option value="multi">Multi-column — as many columns as the source page</option>
-      </select>
-      <div class="hint" id="columns-hint"></div>
+  <!-- ------------------------------------------------------------- rail -- -->
+  <aside class="rail">
+    <div>
+      <h1>PDF → editable Word</h1>
+      <p class="sub">Convert a PDF, then read the page and the conversion side by side.</p>
     </div>
 
-    <label class="field" for="model">Vision model <span id="model-note"></span></label>
-    <select id="model"><option>Loading models…</option></select>
-  </div>
+    <div class="warn hidden" id="keywarn">
+      <strong>OPENROUTER_API_KEY is not set.</strong> Add it to <code>.env</code> and restart the server.
+    </div>
 
-  <div class="card hidden" id="job-card">
-    <div class="row">
-      <div>
-        <div class="file" id="job-file"></div>
-        <div class="meta" id="job-meta"></div>
+    <div class="card" id="upload-card">
+      <div id="drop">
+        <strong>Drop a PDF here, or click to choose one</strong>
+        <span id="hint">Loading configuration…</span>
       </div>
-      <button id="reset" class="hidden">Convert another</button>
+      <input id="picker" type="file" accept="application/pdf,.pdf" />
+
+      <label class="field" for="layout">Output</label>
+      <select id="layout">
+        <option value="structured">Editable document — keep the layout, keep it editable</option>
+        <option value="replica">Visual replica — reproduce the page exactly</option>
+        <option value="flow">Editable flow — rewrite as ordinary Word content</option>
+        <option value="marker">marker — convert locally and keep its output as it comes</option>
+      </select>
+      <div class="hint" id="layout-hint"></div>
+
+      <div id="columns-field" class="hidden">
+        <label class="field" for="columns">Columns</label>
+        <select id="columns">
+          <option value="natural">Natural — one flowing column</option>
+          <option value="multi">Multi-column — as many columns as the source page</option>
+        </select>
+        <div class="hint" id="columns-hint"></div>
+      </div>
+
+      <label class="field" for="model">Vision model <span id="model-note"></span></label>
+      <select id="model"><option>Loading models…</option></select>
     </div>
 
-    <div class="actions" id="start-actions">
-      <button class="primary" id="start">Start OCR</button>
-      <button id="discard">Discard</button>
+    <div class="card hidden" id="job-card">
+      <div class="file" id="job-file"></div>
+      <div class="meta" id="job-meta"></div>
+
+      <div class="actions" id="start-actions">
+        <button class="primary" id="start">Convert</button>
+        <button id="discard">Discard</button>
+      </div>
+
+      <div class="hidden" id="run-area">
+        <div class="bar"><i id="bar-fill"></i></div>
+        <div class="status" id="job-status">Queued…</div>
+        <div class="cost hidden" id="cost-box">Cost <b id="cost-value">—</b><span id="cost-note"></span></div>
+      </div>
+
+      <div class="actions hidden" id="actions">
+        <a class="btn primary" id="dl-docx">.docx</a>
+        <a class="btn" id="dl-md">.md</a>
+        <a class="btn hidden" id="dl-marker">marker's own .md</a>
+        <button id="reset">Convert another</button>
+      </div>
     </div>
 
-    <div class="hidden" id="run-area">
-      <div class="bar"><i id="bar-fill"></i></div>
-      <div class="status" id="job-status">Queued…</div>
-      <div class="cost hidden" id="cost-box">Cost <b id="cost-value">—</b><span id="cost-note"></span></div>
+    <details class="card history" id="history-panel">
+      <summary>History <span class="meta" id="history-summary"></span></summary>
+      <div class="tablewrap">
+        <table id="history-table" class="hidden">
+          <thead>
+            <tr>
+              <th>File</th><th>When</th><th class="num">Pages</th>
+              <th>Mode</th><th class="num">Cost</th><th>Status</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="history-body"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="history-empty">No conversions yet.</div>
+      <div class="actions" id="history-actions"></div>
+    </details>
+
+    <p class="sub">Runs locally · history kept on this machine</p>
+  </aside>
+
+  <!-- ---------------------------------------------------------- preview -- -->
+  <section class="pane" id="preview-pane">
+    <header>
+      <h2>Document preview</h2>
+      <div class="legend" id="legend"></div>
+      <div class="spacer"></div>
+      <div class="zoom">
+        <button class="tiny" id="zoom-out" title="Zoom out">−</button>
+        <button class="tiny" id="zoom-fit" title="Fit the pane">Fit</button>
+        <button class="tiny" id="zoom-in" title="Zoom in">+</button>
+      </div>
+    </header>
+    <div class="body" id="preview-body">
+      <div class="placeholder" id="preview-empty">
+        Convert a PDF, or pick one from the history, to see its pages and what the converter found on them.
+      </div>
+      <div class="stage-wrap hidden" id="stage-wrap">
+        <div class="stage" id="stage">
+          <img id="page-image" alt="" />
+          <svg id="overlay" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg"></svg>
+        </div>
+      </div>
     </div>
+    <footer class="hidden" id="pager">
+      <div class="pager">
+        <button class="tiny" id="prev-page" title="Previous page">←</button>
+        <input id="page-number" type="text" inputmode="numeric" value="1" />
+        <span class="meta">/ <span id="page-total">1</span></span>
+        <button class="tiny" id="next-page" title="Next page">→</button>
+      </div>
+      <span class="meta" id="page-note"></span>
+    </footer>
+  </section>
 
-    <div class="actions hidden" id="actions">
-      <a class="btn primary" id="dl-docx">Download .docx</a>
-      <a class="btn" id="dl-md">Download .md</a>
-      <a class="btn hidden" id="dl-marker">Download marker's own Markdown</a>
-      <button id="toggle-md">Show Markdown</button>
+  <!-- ----------------------------------------------------------- output -- -->
+  <section class="pane" id="output-pane">
+    <header>
+      <div class="tabs" id="tabs">
+        <button data-tab="rendered" aria-selected="true">Markdown rendering</button>
+        <button data-tab="text" aria-selected="false">Markdown text</button>
+        <button data-tab="blocks" aria-selected="false">JSON blocks</button>
+      </div>
+      <div class="spacer"></div>
+      <button class="tiny" id="scope">This page</button>
+      <button class="tiny" id="copy">Copy</button>
+    </header>
+    <div class="body" id="output-body">
+      <div class="placeholder" id="output-empty">The converted document appears here.</div>
+      <div class="rendered hidden" id="tab-rendered"></div>
+      <pre class="plain hidden" id="tab-text"></pre>
+      <div class="blocks hidden" id="tab-blocks"></div>
     </div>
-    <pre class="hidden" id="md-preview"></pre>
-  </div>
+  </section>
 
-  <div class="card">
-    <div class="head">
-      <h2>History</h2>
-      <div class="meta" id="history-summary"></div>
-    </div>
-    <div class="tablewrap">
-      <table id="history-table" class="hidden">
-        <thead>
-          <tr>
-            <th>File</th><th>When</th><th class="num">Pages</th>
-            <th>Mode</th><th>Model</th><th class="num">Cost</th><th>Status</th><th></th>
-          </tr>
-        </thead>
-        <tbody id="history-body"></tbody>
-      </table>
-    </div>
-    <div class="empty" id="history-empty">No conversions yet.</div>
-    <div class="actions" id="history-actions"></div>
-  </div>
+</div>
 
-  <footer>Runs locally · history kept on this machine</footer>
-</main>
-
-<script>
-const drop = document.getElementById('drop');
-const picker = document.getElementById('picker');
-const hint = document.getElementById('hint');
-const card = document.getElementById('job-card');
-const barFill = document.getElementById('bar-fill');
-const statusEl = document.getElementById('job-status');
-const fileEl = document.getElementById('job-file');
-const metaEl = document.getElementById('job-meta');
-const actions = document.getElementById('actions');
-const startActions = document.getElementById('start-actions');
-const runArea = document.getElementById('run-area');
-const startBtn = document.getElementById('start');
-const discardBtn = document.getElementById('discard');
-const resetBtn = document.getElementById('reset');
-const preview = document.getElementById('md-preview');
-const toggleMd = document.getElementById('toggle-md');
-const costBox = document.getElementById('cost-box');
-const costValue = document.getElementById('cost-value');
-const costNote = document.getElementById('cost-note');
-const historyBody = document.getElementById('history-body');
-const historyTable = document.getElementById('history-table');
-const historyEmpty = document.getElementById('history-empty');
-const historySummary = document.getElementById('history-summary');
-const historyActions = document.getElementById('history-actions');
-const layoutSelect = document.getElementById('layout');
-const layoutHint = document.getElementById('layout-hint');
-const columnsField = document.getElementById('columns-field');
-const columnsSelect = document.getElementById('columns');
-const columnsHint = document.getElementById('columns-hint');
-const modelSelect = document.getElementById('model');
-const modelNote = document.getElementById('model-note');
-
-let poll = null;
-let currentJob = null;
-// How many columns the uploaded PDF is set in — null until a PDF has been read.
-let sourceColumns = null;
-
-// The modes that build the document out of one linear stream of text, and so are
-// the ones with a column decision left to make. The replica modes put every
-// block back at the coordinate it came from, columns and all.
-const FLOWING = ['flow', 'marker'];
-// What PDF2DOCX_COLUMNS can say for "one column, whatever the source did". It
-// speaks a wider vocabulary than these two choices — it can also force a fixed
-// count — so anything else starts the page on the choice that reads the source.
-const SINGLE_COLUMN = ['natural', 'off', '0', '1', 'none', 'single'];
-
-fetch('/api/config').then(r => r.json()).then(cfg => {
-  hint.textContent = `via ${cfg.provider} · ${cfg.dpi} DPI · ${cfg.concurrency} pages in parallel`
-    + (cfg.reasoning_effort ? ` · reasoning ${cfg.reasoning_effort}` : '');
-  if (!cfg.api_key_configured) document.getElementById('keywarn').classList.remove('hidden');
-  if (cfg.layout) layoutSelect.value = cfg.layout;
-  if (cfg.columns) columnsSelect.value = SINGLE_COLUMN.includes(cfg.columns) ? 'natural' : 'multi';
-  describeLayout();
-}).catch(() => { hint.textContent = 'Ready'; describeLayout(); });
-
-const LAYOUT_NOTES = {
-  structured: 'The PDF\'s own text, fonts, images and tables are rebuilt as flowing Word '
-    + 'content: paragraphs you can type into, equations as native Word equations. The page '
-    + 'is not reproduced exactly.',
-  replica: 'Fonts, sizes, colours, images, diagrams, tables and equations are kept at their '
-    + 'original coordinates, page for page. Blocks do not reflow when you edit them.',
-  flow: 'The page is read by the model and rewritten as ordinary flowing Word content. '
-    + 'Fully editable, but layout and figures are not preserved.',
-  marker: 'The whole PDF is converted locally by marker-pdf, and what it returns is kept '
-    + 'as it comes — its Markdown is saved untouched beside the document, so what you see '
-    + 'is marker\'s own quality. Needs the marker sidecar running; costs nothing.',
-};
-function describeLayout() {
-  layoutHint.textContent = LAYOUT_NOTES[layoutSelect.value] || '';
-  columnsField.classList.toggle('hidden', !FLOWING.includes(layoutSelect.value));
-  describeColumns();
-}
-layoutSelect.addEventListener('change', describeLayout);
-
-function describeColumns() {
-  const multi = columnsSelect.querySelector('option[value="multi"]');
-  if (sourceColumns === null) {
-    multi.disabled = false;
-    columnsHint.textContent = 'Read from the PDF when you upload it.';
-    return;
-  }
-  if (sourceColumns < 2) {
-    // Not a choice: a source set in one column has no second column for the
-    // output to put anything in, so natural is the only thing it can be.
-    multi.disabled = true;
-    columnsSelect.value = 'natural';
-    columnsHint.textContent = 'This PDF is set in a single column, so the document can only be '
-      + 'single-column.';
-    return;
-  }
-  multi.disabled = false;
-  columnsHint.textContent = columnsSelect.value === 'multi'
-    ? `This PDF has ${sourceColumns}-column pages, and each page is set the same way. Where one `
-      + 'column breaks to the next is left to Word, which reflows it for the page size you print on.'
-    : `This PDF has ${sourceColumns}-column pages; its text is poured into one column instead.`;
-}
-columnsSelect.addEventListener('change', describeColumns);
-
-fetch('/api/models').then(r => r.json()).then(data => {
-  modelSelect.innerHTML = '';
-  if (!data.models.length) {
-    modelSelect.innerHTML = `<option value="${data.selected}">${data.selected}</option>`;
-    modelNote.textContent = data.error ? '(model list unavailable — using the configured default)' : '';
-    return;
-  }
-  for (const m of data.models) {
-    const option = document.createElement('option');
-    option.value = m.id;
-    const price = m.prompt_price_per_mtok != null ? ` — $${m.prompt_price_per_mtok}/M in` : '';
-    option.textContent = `${m.name}${price}`;
-    if (m.id === data.selected) option.selected = true;
-    modelSelect.appendChild(option);
-  }
-  if (!data.models.some(m => m.id === data.selected)) {
-    const option = document.createElement('option');
-    option.value = data.selected;
-    option.textContent = `${data.selected} (from .env)`;
-    option.selected = true;
-    modelSelect.prepend(option);
-  }
-  modelNote.textContent = `(${data.models.length} vision-capable models)`;
-}).catch(() => { modelSelect.innerHTML = '<option value="">default from .env</option>'; });
-
-drop.addEventListener('click', () => picker.click());
-['dragenter', 'dragover'].forEach(evt =>
-  drop.addEventListener(evt, e => { e.preventDefault(); drop.classList.add('hot'); }));
-['dragleave', 'drop'].forEach(evt =>
-  drop.addEventListener(evt, e => { e.preventDefault(); drop.classList.remove('hot'); }));
-drop.addEventListener('drop', e => {
-  if (e.dataTransfer.files.length) upload(e.dataTransfer.files[0]);
-});
-picker.addEventListener('change', () => {
-  if (picker.files.length) upload(picker.files[0]);
-});
-
-resetBtn.addEventListener('click', () => {
-  clearInterval(poll);
-  card.classList.add('hidden');
-  picker.value = '';
-  currentJob = null;
-});
-
-discardBtn.addEventListener('click', async () => {
-  if (currentJob) await fetch(`/api/jobs/${currentJob}`, { method: 'DELETE' }).catch(() => {});
-  card.classList.add('hidden');
-  picker.value = '';
-  currentJob = null;
-  loadHistory();
-});
-
-startBtn.addEventListener('click', () => startJob(currentJob));
-
-toggleMd.addEventListener('click', async () => {
-  if (!preview.classList.contains('hidden')) {
-    preview.classList.add('hidden');
-    toggleMd.textContent = 'Show Markdown';
-    return;
-  }
-  const res = await fetch(`/api/jobs/${currentJob}/markdown`);
-  const data = await res.json();
-  preview.textContent = data.markdown || '(empty)';
-  preview.classList.remove('hidden');
-  toggleMd.textContent = 'Hide Markdown';
-});
-
-function describe(job) {
-  const size = job.size_bytes ? `${(job.size_bytes / 1048576).toFixed(1)} MB · ` : '';
-  const mode = { flow: 'editable flow', structured: 'editable document', marker: 'marker' }[job.layout]
-    || 'visual replica';
-  const columns = FLOWING.includes(job.layout) && job.columns
-    ? ` · ${job.columns === 'multi' ? 'multi-column' : 'natural columns'}`
-    : '';
-  return `${size}${job.pages} page${job.pages === 1 ? '' : 's'} · ${mode}${columns} · ${job.model}`;
-}
-
-async function upload(file) {
-  clearInterval(poll);
-  actions.classList.add('hidden');
-  preview.classList.add('hidden');
-  runArea.classList.add('hidden');
-  costBox.classList.add('hidden');
-  resetBtn.classList.add('hidden');
-  startActions.classList.remove('hidden');
-  toggleMd.textContent = 'Show Markdown';
-  card.classList.remove('hidden');
-  fileEl.textContent = file.name;
-  metaEl.textContent = `${(file.size / 1048576).toFixed(1)} MB · uploading…`;
-  startBtn.disabled = true;
-  // Whatever the last PDF was set in says nothing about this one.
-  sourceColumns = null;
-  describeColumns();
-
-  const body = new FormData();
-  body.append('file', file);
-  body.append('model', modelSelect.value || '');
-  body.append('layout', layoutSelect.value || '');
-  body.append('columns', columnsChoice());
-
-  let res;
-  try {
-    res = await fetch('/api/convert', { method: 'POST', body });
-  } catch {
-    metaEl.textContent = 'Upload failed — is the server still running?';
-    return;
-  }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    startActions.classList.add('hidden');
-    runArea.classList.remove('hidden');
-    resetBtn.classList.remove('hidden');
-    setProgress(0, err.detail || 'Upload failed', 'err');
-    return;
-  }
-
-  const job = await res.json();
-  currentJob = job.id;
-  // The server read the PDF's own layout while it was storing it; the choice
-  // offered from here on is the one that PDF can actually be given.
-  sourceColumns = job.source_columns || 1;
-  describeColumns();
-  metaEl.textContent = `${describe(job)} · ready to convert`;
-  startBtn.disabled = false;
-  loadHistory();
-}
-
-// Empty unless the chosen mode can act on it, so a replica job is not recorded
-// as having made a decision that its own geometry had already made.
-function columnsChoice() {
-  return FLOWING.includes(layoutSelect.value) ? columnsSelect.value : '';
-}
-
-async function startJob(id) {
-  if (!id) return;
-  startBtn.disabled = true;
-  const body = new FormData();
-  body.append('model', modelSelect.value || '');
-  body.append('layout', layoutSelect.value || '');
-  body.append('columns', columnsChoice());
-
-  const res = await fetch(`/api/jobs/${id}/start`, { method: 'POST', body });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    startBtn.disabled = false;
-    metaEl.textContent = err.detail || 'Could not start the conversion.';
-    return;
-  }
-
-  const job = await res.json();
-  metaEl.textContent = describe(job);
-  startActions.classList.add('hidden');
-  runArea.classList.remove('hidden');
-  costBox.classList.remove('hidden');
-  resetBtn.classList.remove('hidden');
-  setProgress(3, 'Queued…', '');
-  showCost(job);
-  poll = setInterval(() => check(id), 900);
-  check(id);
-}
-function extractionSummary(job) {
-  if (job.layout === 'flow') return 'extractor: vision';
-  const diagnostics = job.diagnostics || [];
-  if (!diagnostics.length) return job.layout === 'marker' ? 'extractor: marker' : 'extractor: PyMuPDF';
-  const extractors = [...new Set(diagnostics.map(item => item.extractor))].join(' + ');
-  // Blank pages get their own phrasing and their page numbers. They are not a
-  // fallback — nothing was retried — and a job that finishes with pages that
-  // converted to nothing should not read as an unqualified success.
-  const blank = diagnostics.filter(item => item.fallback_reason === 'empty_output').map(item => item.page);
-  const fallbacks = [...new Set(diagnostics
-    .map(item => item.fallback_reason)
-    .filter(reason => reason && reason !== 'empty_output'))];
-  let note = '';
-  if (blank.length) note += ` · ${blank.length} blank page${blank.length === 1 ? '' : 's'} (${blank.join(', ')})`;
-  if (fallbacks.length) note += ` · fallback: ${fallbacks.join(', ').replaceAll('_', ' ')}`;
-  return `extractor: ${extractors}${note}`;
-}
-
-
-async function check(id) {
-  const res = await fetch(`/api/jobs/${id}`);
-  if (!res.ok) return;
-  const job = await res.json();
-  const total = job.total || job.pages || 1;
-  showCost(job);
-
-  if (job.status === 'error') {
-    clearInterval(poll);
-    setProgress(0, job.error, 'err');
-    loadHistory();
-    return;
-  }
-  if (job.status === 'done') {
-    clearInterval(poll);
-    setProgress(100, `Done — ${total} page${total === 1 ? '' : 's'} converted.`, 'ok');
-    metaEl.textContent = `${describe(job)} · ${extractionSummary(job)}`;
-    document.getElementById('dl-docx').href = `/api/jobs/${id}/download?format=docx`;
-    document.getElementById('dl-md').href = `/api/jobs/${id}/download?format=md`;
-    // The unedited copy, offered next to the .docx because comparing the two is
-    // the point of the marker mode.
-    const marker = document.getElementById('dl-marker');
-    marker.href = `/api/jobs/${id}/download?format=marker-md`;
-    marker.classList.toggle('hidden', !job.has_marker);
-    actions.classList.remove('hidden');
-    loadHistory();
-    return;
-  }
-
-  const labels = {
-    queued: 'Queued…',
-    rendering: 'Rendering pages to images…',
-    transcribing: `Reading page ${Math.min(job.done + 1, total)} of ${total}…`,
-    building: 'Building the Word document…',
-  };
-  const weights = { queued: 0, rendering: 5, transcribing: 10, building: 90 };
-  const span = { queued: 0, rendering: 5, transcribing: 80, building: 10 };
-  const fraction = total ? job.done / total : 0;
-  const pct = (weights[job.status] ?? 0) + span[job.status] * fraction;
-  setProgress(Math.max(3, Math.round(pct)), labels[job.status] || job.status, '');
-}
-
-function money(value, known) {
-  if (!known) return '—';
-  if (!value) return '$0.00';
-  return '$' + value.toFixed(value < 0.01 ? 5 : 4);
-}
-
-function showCost(job) {
-  costValue.textContent = money(job.cost, job.cost_known);
-  const tokens = job.prompt_tokens + job.completion_tokens;
-  const calls = job.calls || 0;
-  if (job.status === 'done' && calls === 0) {
-    costNote.textContent = '· no remote calls';
-  } else if (job.cost_known && calls) {
-    const tokenNote = tokens ? ` · ${tokens.toLocaleString()} tokens` : '';
-    costNote.textContent = `· ${calls} remote call${calls === 1 ? '' : 's'}${tokenNote}`
-      + (job.status === 'done' ? '' : ' so far');
-  } else if (job.status === 'done') {
-    costNote.textContent = `· ${calls} remote call${calls === 1 ? '' : 's'} · price unavailable`;
-  } else {
-    costNote.textContent = '';
-  }
-}
-
-function when(iso) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  const today = new Date().toDateString() === d.toDateString();
-  return today
-    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-}
-
-function statusPill(job) {
-  if (job.status === 'done') return '<span class="pill ok">done</span>';
-  if (job.status === 'error') return '<span class="pill err">failed</span>';
-  if (job.status === 'ready') return '<span class="pill">not started</span>';
-  return `<span class="pill">${job.status}</span>`;
-}
-
-async function loadHistory() {
-  let data;
-  try {
-    data = await (await fetch('/api/history')).json();
-  } catch {
-    return;
-  }
-
-  historyBody.innerHTML = '';
-  const has = data.jobs.length > 0;
-  historyTable.classList.toggle('hidden', !has);
-  historyEmpty.classList.toggle('hidden', has);
-  historyActions.innerHTML = '';
-
-  historySummary.textContent = has
-    ? `${data.count} conversion${data.count === 1 ? '' : 's'} · ${money(data.total_cost, true)} total`
-    : '';
-
-  for (const job of data.jobs) {
-    const tr = document.createElement('tr');
-    const links = [];
-    if (job.has_docx) links.push(`<a href="/api/jobs/${job.id}/download?format=docx">.docx</a>`);
-    if (job.has_md) links.push(`<a href="/api/jobs/${job.id}/download?format=md">.md</a>`);
-    if (job.has_marker) links.push(`<a href="/api/jobs/${job.id}/download?format=marker-md">raw</a>`);
-    tr.innerHTML = `
-      <td class="name" title="${job.filename.replace(/"/g, '&quot;')}">${job.filename}</td>
-      <td>${when(job.created_at)}</td>
-      <td class="num">${job.pages || '—'}</td>
-      <td>${{ flow: 'flow', structured: 'editable', marker: 'marker' }[job.layout] || 'replica'}</td>
-      <td class="name" title="${job.model}">${job.model.split('/').pop()}</td>
-      <td class="num">${money(job.cost, job.cost_known)}</td>
-      <td>${statusPill(job)}</td>
-      <td class="num">${links.join(' · ')}
-        <button class="link" data-del="${job.id}">delete</button></td>`;
-    if (job.status === 'error' && job.error) tr.title = job.error;
-    historyBody.appendChild(tr);
-  }
-
-  historyBody.querySelectorAll('button[data-del]').forEach(btn =>
-    btn.addEventListener('click', async () => {
-      btn.disabled = true;
-      const id = btn.dataset.del;
-      const res = await fetch(`/api/jobs/${id}`, { method: 'DELETE' });
-      if (!res.ok) { btn.disabled = false; return; }
-      if (id === currentJob) { card.classList.add('hidden'); currentJob = null; }
-      loadHistory();
-    }));
-
-  if (has) {
-    const clear = document.createElement('button');
-    clear.textContent = 'Clear history';
-    clear.addEventListener('click', async () => {
-      if (!confirm('Delete every stored conversion and its files?')) return;
-      await fetch('/api/history', { method: 'DELETE' });
-      card.classList.add('hidden');
-      currentJob = null;
-      loadHistory();
-    });
-    historyActions.appendChild(clear);
-  }
-}
-
-function setProgress(pct, text, cls) {
-  barFill.style.width = pct + '%';
-  statusEl.textContent = text;
-  statusEl.className = 'status' + (cls ? ' ' + cls : '');
-}
-
-loadHistory();
-</script>
+<script src="/static/vendor/marked.min.js"></script>
+<script src="/static/vendor/katex/katex.min.js"></script>
+<script src="/static/vendor/katex/contrib/auto-render.min.js"></script>
+<script src="/static/app.js"></script>
 </body>
 </html>

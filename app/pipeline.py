@@ -11,6 +11,7 @@ from typing import Callable
 
 import fitz
 
+from . import detection
 from .config import settings
 from .docx_builder import DocxWriter, render_markdown
 from .docx_replica import ReplicaWriter
@@ -19,6 +20,7 @@ from .columns import detect_columns
 from .figures import place_figures, strip_boxes
 from .locate import relocate_figures
 from .marker_client import (
+    RAW_DIR,
     Applied,
     MarkerClient,
     MarkerError,
@@ -149,6 +151,14 @@ def _page_limit(doc: fitz.Document) -> int:
     if settings.max_pages > 0:
         limit = min(limit, settings.max_pages)
     return limit
+
+
+def _page_sizes(pdf_path: Path, pages: int) -> list[tuple[float, float]]:
+    """Each page's size in PDF points — the frame the viewer draws boxes in."""
+    with fitz.open(pdf_path) as doc:
+        limit = min(pages, doc.page_count)
+        return [(doc.load_page(index).rect.width, doc.load_page(index).rect.height)
+                for index in range(limit)]
 
 
 def _plain(markdown: str) -> str:
@@ -322,6 +332,15 @@ def convert_pdf_replica(
             writer.add_page(page_layout)
             on_progress("building", index + 1, total)
         writer.save(docx_path)
+
+    # What the page viewer draws: for `structured`, the very blocks the document
+    # was written from; for `replica`, the items it positioned. Neither is
+    # recomputed, so the overlay can only ever show what the .docx was made of.
+    detection.write(
+        detection.from_blocks(pages, layouts) if structured else detection.from_layouts(layouts),
+        work_dir / "detection.json",
+        "structured" if structured else "replica",
+    )
     on_progress("done", total, total)
 
     return ConversionResult(
@@ -422,6 +441,14 @@ def convert_pdf_flow(
 
     docx_path = work_dir / "document.docx"
     writer.save(docx_path)
+
+    # This mode retypes each page from its image and reports no geometry, so the
+    # viewer gets the pages and their text and draws no boxes over them.
+    detection.write(
+        detection.from_markdown(_page_sizes(pdf_path, total), transcripts),
+        work_dir / "detection.json",
+        "flow",
+    )
     on_progress("done", total, total)
 
     return ConversionResult(
@@ -502,6 +529,40 @@ def _marker_config() -> dict:
     return config
 
 
+def _marker_formats() -> tuple[str, ...]:
+    """The extra renderers to run, and why there might be one nobody asked for.
+
+    `PDF2DOCX_MARKER_EXTRA_FORMATS` is the user's list. `json` joins it when
+    `PDF2DOCX_MARKER_DETECTION` is on, because marker states where its blocks
+    are in that renderer and nowhere else, and the page viewer has nothing to
+    draw without it. Each format is another full conversion of the PDF, so the
+    list is kept free of duplicates and the setting can be turned off.
+    """
+    formats = list(settings.marker_extra_formats)
+    if settings.marker_detection and "json" not in formats:
+        formats.append("json")
+    return tuple(formats)
+
+
+def _marker_detection(pdf_path: Path, work_dir: Path, pages: list[str]) -> list:
+    """Read marker's own JSON back as page boxes, if it wrote any.
+
+    Best effort throughout: a marker job exists to show marker's work, and it
+    must not fail — or lose its .docx — because a viewer wanted extra data.
+    """
+    path = work_dir / RAW_DIR / "document.json"
+    detected = []
+    if path.exists():
+        try:
+            detected = detection.from_marker_json(path.read_text(encoding="utf-8"))
+        except OSError:
+            detected = []
+    if not detected:
+        # No geometry, but the pages and their text are still worth showing.
+        return detection.from_markdown(_page_sizes(pdf_path, len(pages)), pages)
+    return detection.attach_markdown(detected, pages)
+
+
 def _marker_pages(pdf_path: Path) -> int:
     with fitz.open(pdf_path) as doc:
         total = _page_limit(doc)
@@ -540,7 +601,7 @@ def convert_pdf_marker(
 
     # Formats asked for purely so they can be read. Each is another full
     # conversion, so a failure here must not cost the job its .docx.
-    for fmt in settings.marker_extra_formats:
+    for fmt in _marker_formats():
         if fmt == document.format:
             continue
         try:
@@ -597,6 +658,10 @@ def convert_pdf_marker(
             default=str,
         ),
         encoding="utf-8",
+    )
+
+    detection.write(
+        _marker_detection(pdf_path, work_dir, pages), work_dir / "detection.json", "marker"
     )
 
     on_progress("building", 0, len(pages))
