@@ -57,14 +57,12 @@ def _columns_choice(value: str) -> str:
 def _needs_api_key(layout: str) -> bool:
     """Whether the chosen path will actually call OpenRouter.
 
-    `marker` never does: the sidecar converts the whole document locally. Asking
-    it for a key would refuse the one mode that works on a machine without one,
-    since the default extraction provider is `vision` and that clause would
-    otherwise catch every layout.
+    `marker` never does: the sidecar converts the whole document locally, which
+    makes it the one mode that works on a machine without a key. Every other
+    mode may reach for the model — `flow` for every page, the replica modes for
+    a scanned page or an equation crop — so all of them are asked for one.
     """
-    if layout == "marker":
-        return False
-    return layout == "flow" or settings.extraction_provider == "vision"
+    return layout != "marker"
 
 
 @dataclass
@@ -91,7 +89,6 @@ class Job:
     completion_tokens: int = 0
     calls: int = 0
     priced_calls: int = 0
-    extraction_provider: str = settings.extraction_provider
     diagnostics: list[dict] = field(default_factory=list)
     created_at: str = field(default_factory=_now)
     started_at: str | None = None
@@ -120,7 +117,6 @@ class Job:
             "layout": self.layout,
             "columns": self.columns,
             "source_columns": self.source_columns,
-            "extraction_provider": self.extraction_provider,
             "diagnostics": self.diagnostics,
             "status": self.status,
             "done": self.done,
@@ -174,7 +170,6 @@ class Job:
             completion_tokens=int(record.get("completion_tokens") or 0),
             calls=int(record.get("calls") or 0),
             priced_calls=int(record.get("priced_calls") or 0),
-            extraction_provider=record.get("extraction_provider") or settings.extraction_provider,
             diagnostics=record.get("diagnostics") if isinstance(record.get("diagnostics"), list) else [],
             created_at=record.get("created_at") or _now(),
             started_at=record.get("started_at"),
@@ -283,11 +278,6 @@ def index() -> HTMLResponse:
 def config() -> dict:
     return {
         "provider": "OpenRouter",
-        "extraction_provider": settings.extraction_provider,
-        "extract_kit_url": settings.extract_kit_url,
-        "extract_kit_connect_timeout": settings.extract_kit_connect_timeout,
-        "extract_kit_request_timeout": settings.extract_kit_request_timeout,
-        "ocr_confidence_threshold": settings.ocr_confidence_threshold,
         "marker_url": settings.marker_url,
         "marker_options": settings.marker_options,
         "marker_extra_formats": list(settings.marker_extra_formats),
@@ -423,7 +413,6 @@ def start_job(
         job.completion_tokens = 0
         job.calls = 0
         job.priced_calls = 0
-        job.extraction_provider = settings.extraction_provider
         job.diagnostics = []
         job.started_at = _now()
         job.finished_at = None

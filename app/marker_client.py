@@ -1,10 +1,10 @@
 """Validated client for the marker-pdf sidecar, and the little that is done to its output.
 
 This module is the boundary that validates the sidecar's untrusted HTTP
-responses. It is deliberately much thinner than `extract_kit.py`: that sidecar
-returns detector output in pixels which has to be interpreted, whereas this one
-returns a finished document, and the whole point of the `marker` mode is to see
-what marker produced rather than what this codebase made of it.
+responses, and it is deliberately thin. The sidecar returns a finished document
+rather than detector output needing interpretation, and the whole point of the
+`marker` mode is to see what marker produced rather than what this codebase made
+of it.
 
 So exactly two things happen to marker's text here, and both are recorded on the
 `Applied` record so a defect can be attributed to the right party:

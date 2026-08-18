@@ -1,5 +1,0 @@
-fastapi==0.115.14
-uvicorn[standard]==0.34.3
-python-multipart==0.0.20
-anyio==4.9.0
-Pillow==10.4.0

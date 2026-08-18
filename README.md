@@ -5,15 +5,13 @@ colours, images, diagrams, tables and positions, page for page — with **native
 equations** you can click into and edit.
 
 ```
-             ┌── text spans / images / vectors / rules ────────────┐
-PDF ─┬─ PyMuPDF ─┤                                                   ├─▶ .docx
-     │           └── digital equation crops ─▶ PDF-Extract-Kit ─┐  │
-     ├─ scanned page ─▶ local layout + OCR + formulas ──────────┤  │
-     │                 └─ low quality / unavailable ─▶ vision ──┴──┘
-     └─ marker mode ─▶ marker-pdf ─▶ its Markdown, kept as it comes ─▶ .docx
+     ┌─ digital page ─▶ PyMuPDF ─▶ text spans, images, vectors, rules ┐
+PDF ─┼─ equation crop ─▶ vision (OpenRouter) ─────────────────────────┼─▶ .docx
+     ├─ scanned page ──▶ vision (OpenRouter) ─────────────────────────┤
+     └─ marker mode ───▶ marker-pdf sidecar, kept as it comes ────────┘
 ```
 
-Three output modes:
+Four output modes:
 
 | Mode | What you get |
 |---|---|
@@ -87,35 +85,13 @@ cp .env.example .env
 ```
 
 
-### Optional local PDF-Extract-Kit sidecar
-
-Scans and digital equation crops can be handled by an isolated, persistent
-Python 3.10 PDF-Extract-Kit service. PyMuPDF remains the extractor for digital
-text, images, and layout; `flow` mode continues to use whole-page vision.
-
-Follow [the sidecar setup guide](sidecar/README.md) to install its pinned
-upstream revision, download the models, start it on port 8010, and verify
-`GET /health`. Then opt in:
-
-```bash
-PDF2DOCX_EXTRACTION_PROVIDER=hybrid
-PDF2DOCX_EXTRACT_KIT_URL=http://127.0.0.1:8010
-```
-
-Hybrid mode uses local layout/OCR/formula output first and falls back on service
-errors, low confidence, implausibly empty output, invalid formulas, or ambiguous
-reading order. `local` prohibits remote fallbacks. Set the provider to `vision`
-for immediate rollback. Vision remains the default until the documented
-[quality gate](docs/extract-kit-benchmark.md) shows no material regression and
-at least 80% fewer remote calls.
-
 ### Optional marker-pdf sidecar
 
 The `marker` output mode converts the whole PDF locally with
 [marker-pdf](https://github.com/datalab-to/marker), which does layout, OCR,
 tables and mathematics in one pass. It runs in its own environment and its own
-process, because torch and the Surya VLM stack have no business in either the
-application's environment or the PDF-Extract-Kit sidecar's. Set it up once with
+process, because torch and the Surya VLM stack have no business in the
+application's environment. Set it up once with
 [the marker sidecar guide](sidecar/README-marker.md), then:
 
 ```bash
@@ -152,10 +128,10 @@ PDF2DOCX_MARKER_OPTIONS='{"mode":"fast","force_ocr":true,"format_lines":true}'
 ```
 
 marker-pdf's code is Apache-2.0, but its **model weights carry a modified AI Pubs
-Open Rail-M licence with a revenue-based restriction on commercial use** — a
-different obligation from the AGPL one attaching to PDF-Extract-Kit. Note also
-that marker's Surya server and the PDF-Extract-Kit models will not both fit
-comfortably on an 8 GB GPU; run one sidecar at a time.
+Open Rail-M licence with a revenue-based restriction on commercial use** — get
+legal review before relying on this mode commercially. Note also that its Surya
+server wants most of an 8 GB GPU to itself; where it will not fit, `TORCH_DEVICE=cpu`
+works and is much slower.
 
 ## Run
 
@@ -201,13 +177,9 @@ All settings live in `.env` (see `.env.example`).
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OPENROUTER_API_KEY` | — | Required for `vision`, `flow`, and any hybrid fallback. |
+| `OPENROUTER_API_KEY` | — | Required by every mode except `marker`, which converts locally. |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Change only if proxying. |
 | `OPENROUTER_APP_URL` / `_APP_TITLE` | localhost / PDF to DOCX | Attribution headers OpenRouter uses for its leaderboards. |
-| `PDF2DOCX_EXTRACTION_PROVIDER` | `vision` | `hybrid` tries PDF-Extract-Kit first and falls back to vision; `local` prohibits remote fallbacks. Vision stays default until the benchmark gate passes. |
-| `PDF2DOCX_EXTRACT_KIT_URL` | `http://127.0.0.1:8010` | Python 3.10 sidecar base URL. |
-| `PDF2DOCX_EXTRACT_KIT_CONNECT_TIMEOUT` / `_REQUEST_TIMEOUT` | `2` / `180` | Sidecar connection and inference timeouts in seconds. |
-| `PDF2DOCX_OCR_CONFIDENCE_THRESHOLD` | `0.65` | Character-weighted scan OCR confidence below which hybrid mode uses vision. |
 | `PDF2DOCX_MARKER_URL` | `http://127.0.0.1:8011` | marker sidecar base URL, used only by the `marker` mode. |
 | `PDF2DOCX_MARKER_CONNECT_TIMEOUT` / `_REQUEST_TIMEOUT` | `2` / `900` | Connection and inference timeouts in seconds. The request timeout covers a whole document, not one page. |
 | `PDF2DOCX_MARKER_OPTIONS` | `{}` | JSON object passed straight through to marker's own configuration — anything its CLI accepts, including options added upstream after this was written. Malformed JSON is ignored. |
@@ -323,7 +295,6 @@ app/
   static/index.html  single-page UI
 
 sidecar/
-  service.py        PDF-Extract-Kit sidecar (port 8010)
   marker_service.py marker-pdf sidecar (port 8011), config passed through to marker
 ```
 
@@ -347,12 +318,10 @@ sidecar/
   frames. Use `flow` when you want to rework the prose rather than preserve the page.
 - A page border or full-page background box is dropped rather than rasterised, because
   covering the page with a picture would bury the text underneath it.
-- In `vision` mode a scanned replica keeps the exact page image with a flat
-  searchable transcription behind it, while structured output rebuilds the
-  model's Markdown. With the sidecar, replica OCR lines retain detector boxes
-  scaled into PDF points and structured output retains headings, paragraphs,
-  formulas, and directly detected figure boxes. Ambiguous local reading order
-  deliberately returns to whole-page vision.
+- A scanned page has no text to read, so it is transcribed by the vision model.
+  `replica` keeps the exact page image with a flat searchable transcription
+  behind it, so the page still looks like the scan and can still be searched;
+  `structured` rebuilds the transcription as ordinary Word structure instead.
 - Where a figure sits on a scanned page is asked twice. The boxes that arrive with the
   transcription are its least reliable output: on the page this was built against they
   averaged 0.13 IoU against boxes measured by hand, which crops the paragraph beside the

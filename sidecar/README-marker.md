@@ -1,11 +1,10 @@
 # marker-pdf sidecar
 
 This service keeps marker-pdf, torch, and the Surya VLM stack out of the
-application's Python 3.12 environment — and out of the PDF-Extract-Kit sidecar's
-environment, whose pinned Paddle and torch versions would not survive marker
-being installed beside them. Model artifacts are built once at startup and a
-semaphore allows one inference at a time, which is the safe setting for the
-8 GB GPU this was built against.
+application's Python 3.12 environment, which is meant to stay installable
+without a GPU stack. Model artifacts are built once at startup and a semaphore
+allows one inference at a time, which is the safe setting for the 8 GB GPU this
+was built against.
 
 It backs the `marker` output mode. The other modes do not use it.
 
@@ -114,10 +113,10 @@ curl --fail http://127.0.0.1:8011/health
 
 A `503` carries the import or model error instead.
 
-### One GPU, two sidecars
+### Fitting an 8 GB card
 
-The PDF-Extract-Kit sidecar and marker's Surya server will not both sit
-comfortably on an 8 GB card. Run one at a time, or give marker
+marker's Surya server wants most of an 8 GB card to itself, so do not expect it
+to share with anything else on the GPU. Where it will not fit, give marker
 `TORCH_DEVICE=cpu` and accept that it will be much slower.
 
 ## HTTP contract
@@ -168,7 +167,5 @@ credentials in this service's environment, and treat the reported cost of a
 
 marker-pdf's code is Apache-2.0. Its **model weights are not**: they carry a
 modified AI Pubs Open Rail-M licence with a revenue-based restriction on
-commercial use. That is a different obligation from the AGPL one attaching to
-the PDF-Extract-Kit sidecar, and it attaches to the weights this service
-downloads on first run. Obtain legal review before relying on this mode
-commercially.
+commercial use, and it attaches to the weights this service downloads on first
+run. Obtain legal review before relying on this mode commercially.

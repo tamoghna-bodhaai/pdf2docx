@@ -64,16 +64,9 @@ def _marker_extra_formats() -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Settings:
-    # Extraction routing for scans and equation crops; digital PDFs still use PyMuPDF.
-    extraction_provider: str = os.environ.get("PDF2DOCX_EXTRACTION_PROVIDER", "vision").strip().lower()
-    extract_kit_url: str = os.environ.get("PDF2DOCX_EXTRACT_KIT_URL", "http://127.0.0.1:8010").strip().rstrip("/")
-    extract_kit_connect_timeout: float = _float("PDF2DOCX_EXTRACT_KIT_CONNECT_TIMEOUT", 2.0)
-    extract_kit_request_timeout: float = _float("PDF2DOCX_EXTRACT_KIT_REQUEST_TIMEOUT", 180.0)
-    ocr_confidence_threshold: float = _float("PDF2DOCX_OCR_CONFIDENCE_THRESHOLD", 0.65)
-
-    # marker-pdf sidecar, used by the `marker` layout mode. Its timeout is a
-    # whole document rather than one page, so it is an order of magnitude
-    # longer than the per-page sidecar above.
+    # marker-pdf sidecar, used by the `marker` layout mode. Its timeout covers a
+    # whole document rather than one page, so it is generous by comparison with
+    # anything measured per request.
     marker_url: str = os.environ.get("PDF2DOCX_MARKER_URL", "http://127.0.0.1:8011").strip().rstrip("/")
     marker_connect_timeout: float = _float("PDF2DOCX_MARKER_CONNECT_TIMEOUT", 2.0)
     marker_request_timeout: float = _float("PDF2DOCX_MARKER_REQUEST_TIMEOUT", 900.0)

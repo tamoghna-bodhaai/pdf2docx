@@ -6,7 +6,6 @@ import json
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
-from threading import Lock
 from pathlib import Path
 from typing import Callable
 
@@ -16,15 +15,6 @@ from .config import settings
 from .docx_builder import DocxWriter, render_markdown
 from .docx_replica import ReplicaWriter
 from .docx_structured import StructuredWriter, dominant_font
-from .extract_kit import (
-    ExtractKitClient,
-    ExtractKitError,
-    blocks_to_lines,
-    blocks_to_markdown,
-    ocr_confidence,
-    order_blocks,
-    valid_formula_latex,
-)
 from .columns import detect_columns
 from .figures import place_figures, strip_boxes
 from .locate import relocate_figures
@@ -214,13 +204,15 @@ def convert_pdf_replica(
     on_usage: UsageHook = _noop_usage,
     structured: bool = False,
 ) -> ConversionResult:
-    """Read the PDF's own content, using local extraction only where needed."""
+    """Read the PDF's own content, reading a page with the model only where needed.
+
+    PyMuPDF supplies everything a digital page holds. The model is asked only
+    about what the PDF itself cannot answer: a scanned page, which has no text
+    to read, and an equation, which is drawn rather than written.
+    """
     work_dir.mkdir(parents=True, exist_ok=True)
     usage = ConversionUsage()
     diagnostics: list[ExtractionDiagnostic] = []
-    provider = (settings.extraction_provider or "hybrid").lower()
-    if provider not in {"hybrid", "vision", "local"}:
-        raise ValueError("PDF2DOCX_EXTRACTION_PROVIDER must be hybrid, vision, or local")
 
     on_progress("rendering", 0, 0)
     layouts: list[PageLayout] = []
@@ -244,23 +236,14 @@ def convert_pdf_replica(
 
     completed = len(layouts) - len(jobs)
     on_progress("transcribing", completed, total)
-    local_client = ExtractKitClient() if provider != "vision" else None
-    remote_client = build_client() if provider == "vision" and jobs else None
-    client_lock = Lock()
+    # Built once, before the pool starts, and only when there is something to
+    # ask about: a document of digital pages needs no key and makes no call.
+    client = build_client() if jobs else None
 
-    def vision_client():
-        nonlocal remote_client
-        if remote_client is None:
-            with client_lock:
-                if remote_client is None:
-                    remote_client = build_client()
-        return remote_client
-
-    def remote_scan(page_layout: PageLayout, reason: str | None):
+    def read_scan(page_layout: PageLayout):
         pages_dir.mkdir(parents=True, exist_ok=True)
         path = pages_dir / f"page-{page_layout.number:04d}.png"
         path.write_bytes(page_layout.page_image or b"")
-        client = vision_client()
         transcript = transcribe_page(path, page_layout.number, total, client, model)
         if structured:
             page_layout.markdown, located_cost = relocate_figures(
@@ -279,120 +262,28 @@ def convert_pdf_replica(
             page_layout.lines = _scanned_lines(
                 page_layout.markdown, page_layout.width, page_layout.height
             )
-        return [transcript], ExtractionDiagnostic(
-            page_layout.number,
-            "scan",
-            "vision",
-            reason,
-        )
-
-    def local_scan(page_layout: PageLayout):
-        assert local_client is not None
-        try:
-            extracted = local_client.extract_page(page_layout.page_image or b"")
-            ordered = order_blocks(extracted)
-            reason = None
-            if ordered.ambiguous:
-                reason = "ambiguous_reading_order"
-            elif not ordered.blocks:
-                reason = "implausibly_empty"
-            elif ocr_confidence(ordered.blocks) < settings.ocr_confidence_threshold:
-                reason = "low_ocr_confidence"
-            elif any(
-                block.latex and not valid_formula_latex(block.latex)
-                for block in ordered.blocks
-                if block.type in {"formula", "equation", "display_formula", "inline_formula"}
-            ):
-                reason = "invalid_formula"
-
-            if reason is not None:
-                if provider == "hybrid":
-                    return remote_scan(page_layout, reason)
-                raise ExtractKitError(f"local scan extraction rejected: {reason}")
-
-            page_layout.markdown = blocks_to_markdown(extracted, ordered.blocks)
-            if structured:
-                page_layout.markdown = place_figures(
-                    pdf_path,
-                    page_layout.number - 1,
-                    page_layout.markdown,
-                    work_dir,
-                    render=(extracted.width, extracted.height),
-                )
-            else:
-                page_layout.markdown = strip_boxes(page_layout.markdown)
-                page_layout.lines = blocks_to_lines(
-                    extracted,
-                    ordered.blocks,
-                    page_layout.width,
-                    page_layout.height,
-                )
-            return [], ExtractionDiagnostic(
-                page_layout.number, "scan", "pdf-extract-kit"
-            )
-        except ExtractKitError:
-            if provider == "hybrid":
-                return remote_scan(page_layout, "sidecar_error")
-            raise
+        return [transcript], ExtractionDiagnostic(page_layout.number, "scan", "vision")
 
     def read_math(page_layout: PageLayout):
+        """Read a page's equation crops back as LaTeX, a batch to a request."""
         remote_results: list[PageTranscript] = []
-        fallback_reason: str | None = None
-        fallback_indexes: list[int] = []
-        local_succeeded = False
+        for start in range(0, len(page_layout.maths), MATH_BATCH):
+            chunk = page_layout.maths[start : start + MATH_BATCH]
+            result = transcribe_math([item.image for item in chunk], client, model)
+            for offset, latex in enumerate(result.latex):
+                page_layout.maths[start + offset].latex = latex
+            remote_results.append(result)
 
-        if provider == "vision":
-            fallback_indexes = list(range(len(page_layout.maths)))
-        else:
-            assert local_client is not None
-            try:
-                for start in range(0, len(page_layout.maths), MATH_BATCH):
-                    chunk = page_layout.maths[start : start + MATH_BATCH]
-                    values = local_client.recognize_formulas([item.image for item in chunk])
-                    for offset, value in enumerate(values):
-                        index = start + offset
-                        if valid_formula_latex(value):
-                            page_layout.maths[index].latex = value
-                            local_succeeded = True
-                        else:
-                            fallback_indexes.append(index)
-                if fallback_indexes:
-                    fallback_reason = "invalid_formula"
-            except ExtractKitError:
-                if provider == "local":
-                    raise
-                fallback_indexes = list(range(len(page_layout.maths)))
-                fallback_reason = "sidecar_error"
-
-        if fallback_indexes and provider != "local":
-            client = vision_client()
-            for start in range(0, len(fallback_indexes), MATH_BATCH):
-                indexes = fallback_indexes[start : start + MATH_BATCH]
-                result = transcribe_math(
-                    [page_layout.maths[index].image for index in indexes], client, model
-                )
-                for index, latex in zip(indexes, result.latex):
-                    page_layout.maths[index].latex = latex
-                remote_results.append(result)
-
+        # An equation that did not come back as mathematics is left as the image
+        # it was cut from, which is at least exactly what the page showed.
         for math_id, item in enumerate(page_layout.maths):
             if item.latex and not is_math_latex(item.latex):
                 page_layout.release_math(math_id)
 
-        if remote_results:
-            extractor = "pdf-extract-kit+vision" if local_succeeded else "vision"
-        else:
-            extractor = "pdf-extract-kit"
-        return remote_results, ExtractionDiagnostic(
-            page_layout.number, "formula", extractor, fallback_reason
-        )
+        return remote_results, ExtractionDiagnostic(page_layout.number, "formula", "vision")
 
     def run(kind: str, page_layout: PageLayout):
-        if kind == "scan":
-            if provider == "vision":
-                return remote_scan(page_layout, None)
-            return local_scan(page_layout)
-        return read_math(page_layout)
+        return read_scan(page_layout) if kind == "scan" else read_math(page_layout)
 
     if jobs:
         workers = max(1, min(settings.concurrency, len(jobs)))

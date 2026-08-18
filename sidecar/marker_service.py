@@ -1,10 +1,10 @@
 """marker-pdf sidecar.
 
 marker pulls in torch and the Surya VLM stack, which has no business in the
-application's environment and would not co-exist quietly with the pinned Paddle
-and torch versions the PDF-Extract-Kit sidecar needs. So it lives here, in its
-own interpreter, behind the same small JSON boundary: the application posts a
-PDF and gets back whatever marker made of it.
+application's environment: the application is a FastAPI process that reads PDFs
+and writes .docx files, and it should stay installable without a GPU stack. So
+marker lives here, in its own interpreter, behind a small JSON boundary: the
+application posts a PDF and gets back whatever marker made of it.
 
 The one design decision worth stating: **the request's config is handed to
 marker's own `ConfigParser` unaltered**. That parser is the same object the
