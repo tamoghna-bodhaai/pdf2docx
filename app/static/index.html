@@ -17,7 +17,7 @@
   })();
 </script>
 <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
-<link rel="stylesheet" href="/static/app.css?v=20260821-dashboard" />
+<link rel="stylesheet" href="/static/app.css?v=20260822-mathpix" />
 </head>
 <body>
 <main class="app-frame">
@@ -36,8 +36,8 @@
     </div>
 
     <div class="header-status" aria-label="Processing status">
-      <span class="status-pill"><i aria-hidden="true"></i> Local processing</span>
-      <span class="privacy-note">Your files stay on this machine</span>
+      <span class="status-pill"><i aria-hidden="true"></i> Mathpix cloud</span>
+      <span class="privacy-note">PDFs leave this machine during conversion</span>
     </div>
 
     <button class="theme-toggle" id="theme-toggle" type="button"
@@ -60,12 +60,17 @@
       </header>
 
       <div class="rail-body">
-        <p class="panel-intro">Choose a document and tune how its Word output should be rebuilt.</p>
+        <p class="panel-intro">Upload a paper and receive Mathpix’s original Word file and available exports.</p>
 
         <div class="warn hidden" id="keywarn" role="status">
-          <strong>OpenRouter key missing</strong>
-          <span>Add <code>OPENROUTER_API_KEY</code> to <code>.env</code> and restart the server.</span>
+          <strong>Mathpix key missing</strong>
+          <span>Add <code>MATHPIX_APP_KEY</code> to <code>.env</code> and restart the server.</span>
         </div>
+
+        <p class="mathpix-note">Your PDF is uploaded to Mathpix for processing.
+          <span id="retention-note">Model-improvement retention is off by default.</span>
+          <span id="delete-note">The remote upload is deleted after exports and preview images are
+          stored locally by default.</span></p>
 
         <section class="card upload-card" id="upload-card" aria-labelledby="upload-title">
           <button id="drop" type="button" aria-describedby="hint">
@@ -86,33 +91,6 @@
             <span>PDF only</span>
           </div>
 
-          <label class="field" for="layout">Output format</label>
-          <div class="select-control">
-            <select id="layout">
-              <option value="structured">Editable document</option>
-              <option value="replica">Visual replica</option>
-              <option value="flow">Editable flow</option>
-              <option value="marker">Marker (local)</option>
-              <option value="mathpix">Mathpix (cloud)</option>
-            </select>
-          </div>
-          <div class="hint" id="layout-hint"></div>
-
-          <div id="columns-field" class="hidden">
-            <label class="field" for="columns">Columns</label>
-            <div class="select-control">
-              <select id="columns">
-                <option value="natural">Natural (one column)</option>
-                <option value="multi">Match the source PDF</option>
-              </select>
-            </div>
-            <div class="hint" id="columns-hint"></div>
-          </div>
-
-          <label class="field" for="model">Vision model <span id="model-note"></span></label>
-          <div class="select-control">
-            <select id="model"><option>Loading models…</option></select>
-          </div>
         </section>
 
         <section class="card job-card hidden" id="job-card" aria-label="Current conversion">
@@ -125,7 +103,7 @@
           </div>
 
           <div class="actions" id="start-actions">
-            <button class="primary" id="start">Convert to Word <span aria-hidden="true">→</span></button>
+            <button class="primary" id="start">Convert with Mathpix <span aria-hidden="true">→</span></button>
             <button id="discard">Discard</button>
           </div>
 
@@ -136,9 +114,9 @@
           </div>
 
           <div class="actions hidden" id="actions">
-            <a class="btn primary" id="dl-docx">.docx</a>
-            <a class="btn" id="dl-md">.md</a>
-            <a class="btn hidden" id="dl-marker">marker's own .md</a>
+            <a class="btn primary" id="dl-docx">Download Mathpix DOCX</a>
+            <a class="btn hidden" id="dl-md">Download Markdown</a>
+            <a class="btn hidden" id="dl-marker">Download Marker Markdown</a>
             <details class="exports-box hidden" id="mathpix-exports"></details>
             <button id="reset">Convert another</button>
           </div>
@@ -164,7 +142,7 @@
           <div class="actions" id="history-actions"></div>
         </details>
 
-        <p class="local-note"><span aria-hidden="true">✓</span> Runs locally · history is kept on this machine</p>
+        <p class="local-note"><span aria-hidden="true">✓</span> Finished exports and history are kept on this machine</p>
       </div>
     </aside>
 
@@ -191,7 +169,7 @@
             <svg viewBox="0 0 64 64"><path d="M18 10h21l9 9v35H18z" /><path d="M39 10v10h9M25 31h16M25 38h16M25 45h10" /></svg>
           </span>
           <strong>Your document preview</strong>
-          <span>Upload a PDF or open one from history to inspect its pages and detected content.</span>
+          <span>Upload a PDF or open one from history to inspect its source pages.</span>
         </div>
         <div class="stage-wrap hidden" id="stage-wrap">
           <div class="stage" id="stage">
@@ -223,7 +201,6 @@
         <div class="tabs" id="tabs">
           <button data-tab="rendered" aria-selected="true">Markdown rendering</button>
           <button data-tab="text" aria-selected="false">Markdown text</button>
-          <button data-tab="blocks" aria-selected="false">JSON blocks</button>
         </div>
         <div class="spacer"></div>
         <button class="tiny" id="scope">This page</button>
@@ -235,11 +212,10 @@
             <svg viewBox="0 0 64 64"><path d="M15 12h34v40H15z" /><path d="M23 25l5 5-5 5M32 36h9M32 27h9" /></svg>
           </span>
           <strong>Ready for conversion</strong>
-          <span>Your editable content, Markdown, and detected blocks will appear here.</span>
+          <span>Your rendered, page-aligned Mathpix Markdown will appear here.</span>
         </div>
         <div class="rendered hidden" id="tab-rendered"></div>
         <pre class="plain hidden" id="tab-text"></pre>
-        <div class="blocks hidden" id="tab-blocks"></div>
       </div>
     </section>
 
@@ -249,6 +225,6 @@
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/katex/katex.min.js"></script>
 <script src="/static/vendor/katex/contrib/auto-render.min.js"></script>
-<script src="/static/app.js?v=20260821-dashboard"></script>
+<script src="/static/app.js?v=20260822-mathpix"></script>
 </body>
 </html>

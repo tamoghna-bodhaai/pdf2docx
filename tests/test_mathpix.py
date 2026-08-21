@@ -21,7 +21,7 @@ import fitz
 import pytest
 
 from app import mathpix_client, pipeline
-from app.mathpix_client import Applied, MathpixError, MathpixNotReady, parse_status_response
+from app.mathpix_client import Applied, MathpixError, MathpixUnsupported, parse_status_response
 
 PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
@@ -104,7 +104,7 @@ class FakeClient:
     def fetch(self, file_id, ext):
         if ext in self.available:
             return self.available[ext]
-        raise MathpixError(f".{ext} was not produced")
+        raise MathpixUnsupported(f".{ext} was not produced")
 
     def fetch_all(self, file_id, wanted, on_ready, deadline=None):
         missing = {}
@@ -113,8 +113,9 @@ class FakeClient:
                 on_ready(ext, self.fetch(file_id, ext))
             except MathpixError as exc:
                 missing[ext] = str(exc)
-        if mathpix_client.REQUIRED in missing:
-            raise MathpixError("mathpix produced no .docx")
+        for required in mathpix_client.REQUIRED_RESULTS:
+            if required in missing:
+                raise MathpixError(f"mathpix produced no .{required}")
         return missing
 
     def download_images(self, markdown, work_dir):
@@ -219,6 +220,7 @@ def test_the_metadata_accounts_for_what_was_done(tmp_path, monkeypatch):
     assert meta["applied"]["images_downloaded"] == 1
     assert meta["applied"]["pages"] == 2
     assert meta["applied"]["paginated"] is True
+    assert "rebuilt_docx" not in meta
 
 
 # -- the options ---------------------------------------------------------------- #
@@ -294,9 +296,31 @@ def test_a_format_mathpix_did_not_produce_is_recorded_not_raised(tmp_path, monke
     assert "docx" in meta["formats"]
 
 
+def test_a_successful_rerun_removes_formats_left_by_the_previous_run(tmp_path, monkeypatch):
+    prepare(monkeypatch)
+    pdf = source_pdf(tmp_path)
+    work = tmp_path / "job"
+    raw = work / mathpix_client.RAW_DIR
+    raw.mkdir(parents=True)
+    (raw / "document.xlsx").write_bytes(b"old table export")
+
+    pipeline.convert_pdf(pdf_path=pdf, work_dir=work, layout="mathpix")
+
+    assert not (raw / "document.xlsx").exists()
+    assert (raw / "document.docx").read_bytes() == DOCX_BYTES
+
+
 def test_a_missing_docx_fails_the_job(tmp_path, monkeypatch):
     monkeypatch.setattr(FakeClient, "available", {"mmd": MMD.encode("utf-8")})
     with pytest.raises(MathpixError, match="no .docx"):
+        convert(tmp_path, monkeypatch)
+
+
+def test_missing_mathpix_markdown_fails_the_preview_job(tmp_path, monkeypatch):
+    available = dict(FakeClient.available)
+    available.pop("mmd")
+    monkeypatch.setattr(FakeClient, "available", available)
+    with pytest.raises(MathpixError, match="no .mmd"):
         convert(tmp_path, monkeypatch)
 
 
@@ -307,11 +331,24 @@ def test_the_pages_are_split_on_mathpix_own_break(tmp_path, monkeypatch):
     assert "Second page" in result.page_markdown[1]
 
 
-def test_the_rebuilt_docx_is_offered_beside_mathpix_own(tmp_path, monkeypatch):
+def test_missing_page_breaks_keep_preview_navigation_at_the_source_page_count(
+    tmp_path, monkeypatch
+):
+    available = dict(FakeClient.available)
+    available["mmd"] = b"# Mathpix returned one unsplit stream"
+    monkeypatch.setattr(FakeClient, "available", available)
+
+    result, work = convert(tmp_path, monkeypatch)
+    preview = json.loads((work / "detection.json").read_text())
+
+    assert len(result.page_markdown) == len(preview["pages"]) == 2
+    assert "unsplit stream" in preview["pages"][0]["markdown"]
+    assert preview["pages"][1]["markdown"] == ""
+
+
+def test_no_comparison_docx_is_rebuilt_for_a_new_job(tmp_path, monkeypatch):
     _, work = convert(tmp_path, monkeypatch)
-    assert (work / "rebuilt.docx").exists()
-    # ...and it is genuinely a different file from the one Mathpix sent.
-    assert (work / "rebuilt.docx").read_bytes() != DOCX_BYTES
+    assert not (work / "rebuilt.docx").exists()
 
 
 def test_the_uploaded_document_is_deleted_afterwards(tmp_path, monkeypatch):
@@ -321,18 +358,41 @@ def test_the_uploaded_document_is_deleted_afterwards(tmp_path, monkeypatch):
     assert FakeClient.deleted == []
 
 
+def test_the_uploaded_document_is_deleted_when_collection_fails(tmp_path, monkeypatch):
+    def fail_collection(self, file_id, wanted, on_ready, deadline=None):
+        raise MathpixError("network failed while downloading exports")
+
+    monkeypatch.setattr(FakeClient, "fetch_all", fail_collection)
+    with pytest.raises(MathpixError, match="network failed"):
+        convert(tmp_path, monkeypatch)
+    assert FakeClient.deleted == ["file-abc"]
+
+
 # -- the page viewer ------------------------------------------------------------- #
 
 
-def test_the_overlay_is_read_from_mathpix_line_geometry(tmp_path, monkeypatch):
+def test_lines_json_stays_raw_but_never_becomes_preview_boxes(tmp_path, monkeypatch):
     _, work = convert(tmp_path, monkeypatch)
+    assert (work / mathpix_client.RAW_DIR / "document.lines.json").read_bytes() == LINES_JSON.encode()
     written = json.loads((work / "detection.json").read_text())
     assert written["mode"] == "mathpix"
     first = written["pages"][0]
-    assert first["width"] == 1190 and first["height"] == 1684
-    kinds = [block["kind"] for block in first["blocks"]]
-    assert kinds == ["heading", "equation"]
-    assert first["blocks"][0]["bbox"] == [100, 90, 700, 140]
+    assert first["width"] == 595 and first["height"] == 842
+    assert all(not page["blocks"] for page in written["pages"])
+
+
+def test_preview_pages_keep_rich_markdown_and_local_images_aligned(tmp_path, monkeypatch):
+    result, work = convert(tmp_path, monkeypatch)
+    written = json.loads((work / "detection.json").read_text())
+
+    assert len(written["pages"]) == len(result.page_markdown) == 2
+    first, second = written["pages"]
+    assert first["number"] == 1 and second["number"] == 2
+    assert "# Heat equation" in first["markdown"]
+    assert "$$\\frac{\\partial u}{\\partial t}" in first["markdown"]
+    assert "| a | b |" in first["markdown"]
+    assert "mathpix/images/abc123.png" in first["markdown"]
+    assert "## Second page" in second["markdown"]
 
 
 def test_pages_without_geometry_still_appear(tmp_path, monkeypatch):
@@ -347,7 +407,7 @@ def test_pages_without_geometry_still_appear(tmp_path, monkeypatch):
     assert written["pages"][0]["markdown"]
 
 
-def test_detection_can_be_turned_off(tmp_path, monkeypatch):
+def test_legacy_detection_setting_cannot_turn_mathpix_boxes_back_on(tmp_path, monkeypatch):
     _, work = convert(tmp_path, monkeypatch, mathpix_detection=False)
     written = json.loads((work / "detection.json").read_text())
     assert all(not page["blocks"] for page in written["pages"])

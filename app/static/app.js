@@ -1,5 +1,5 @@
-/* The page: a rail of controls, the source page with what the converter found
-   drawn over it, and the conversion itself beside them. */
+/* The page: a Mathpix upload rail, the source paper, and page-aligned rendered
+   Markdown beside it. */
 
 const $ = (id) => document.getElementById(id);
 
@@ -36,130 +36,34 @@ const costBox = $('cost-box'), costValue = $('cost-value'), costNote = $('cost-n
 const historyBody = $('history-body'), historyTable = $('history-table');
 const historyEmpty = $('history-empty'), historySummary = $('history-summary');
 const historyActions = $('history-actions'), historyPanel = $('history-panel');
-const layoutSelect = $('layout'), layoutHint = $('layout-hint');
-const columnsField = $('columns-field'), columnsSelect = $('columns'), columnsHint = $('columns-hint');
-const modelSelect = $('model'), modelNote = $('model-note');
-
 const previewEmpty = $('preview-empty'), stageWrap = $('stage-wrap'), stage = $('stage');
 const pageImage = $('page-image'), overlay = $('overlay'), legend = $('legend');
 const pager = $('pager'), pageNumber = $('page-number'), pageTotal = $('page-total'), pageNote = $('page-note');
 const outputEmpty = $('output-empty'), tabRendered = $('tab-rendered');
-const tabText = $('tab-text'), tabBlocks = $('tab-blocks'), tabs = $('tabs');
+const tabText = $('tab-text'), tabs = $('tabs');
 const scopeBtn = $('scope'), copyBtn = $('copy');
 
 let poll = null;
 let currentJob = null;
-// How many columns the uploaded PDF is set in — null until a PDF has been read.
-let sourceColumns = null;
-
-// The modes that build the document out of one linear stream of text, and so are
-// the ones with a column decision left to make. The replica modes put every
-// block back at the coordinate it came from, columns and all.
-const FLOWING = ['flow', 'marker', 'mathpix'];
-// What PDF2DOCX_COLUMNS can say for "one column, whatever the source did". It
-// speaks a wider vocabulary than these two choices — it can also force a fixed
-// count — so anything else starts the page on the choice that reads the source.
-const SINGLE_COLUMN = ['natural', 'off', '0', '1', 'none', 'single'];
-
 // ---------------------------------------------------------------- config -- //
 
 fetch('/api/config').then(r => r.json()).then(cfg => {
-  hint.textContent = `via ${cfg.provider} · ${cfg.dpi} DPI · ${cfg.concurrency} pages in parallel`
-    + (cfg.reasoning_effort ? ` · reasoning ${cfg.reasoning_effort}` : '');
-  if (!cfg.api_key_configured) $('keywarn').classList.remove('hidden');
-  if (cfg.layout) layoutSelect.value = cfg.layout;
+  hint.textContent = `via ${cfg.provider} · ${cfg.dpi} DPI preview`
+    + (cfg.max_pages ? ` · ${cfg.max_pages} page limit` : '');
+  if (!cfg.mathpix_key_configured) $('keywarn').classList.remove('hidden');
   mathpixFormats = cfg.mathpix_formats || [];
-  mathpixKey = !!cfg.mathpix_key_configured;
-  if (cfg.columns) columnsSelect.value = SINGLE_COLUMN.includes(cfg.columns) ? 'natural' : 'multi';
-  describeLayout();
-}).catch(() => { hint.textContent = 'Ready'; describeLayout(); });
+  $('retention-note').textContent = cfg.improve_mathpix
+    ? 'Model-improvement retention is enabled in this server configuration.'
+    : 'Model-improvement retention is off.';
+  $('delete-note').textContent = cfg.remote_delete
+    ? 'The remote upload is deleted after exports and preview images are stored locally.'
+    : 'Remote deletion is disabled in this server configuration.';
+}).catch(() => { hint.textContent = 'Ready for a PDF'; });
 
 // Mathpix's export table, as /api/config reports it: the browser labels its
 // download buttons from the same list the client requests them from, so a
 // format added there needs no change here.
 let mathpixFormats = [];
-let mathpixKey = false;
-
-const LAYOUT_NOTES = {
-  structured: 'The PDF\'s own text, fonts, images and tables are rebuilt as flowing Word '
-    + 'content: paragraphs you can type into, equations as native Word equations. The page '
-    + 'is not reproduced exactly.',
-  replica: 'Fonts, sizes, colours, images, diagrams, tables and equations are kept at their '
-    + 'original coordinates, page for page. Blocks do not reflow when you edit them.',
-  flow: 'The page is read by the model and rewritten as ordinary flowing Word content. '
-    + 'Fully editable, but layout and figures are not preserved — and it reports no block '
-    + 'geometry, so its pages come back without boxes.',
-  marker: 'The whole PDF is converted locally by marker-pdf, and what it returns is kept '
-    + 'as it comes — its Markdown is saved untouched beside the document, so what you see '
-    + 'is marker\'s own quality. Needs the marker sidecar running; costs nothing.',
-  mathpix: 'The PDF is uploaded to Mathpix, which converts the whole document and returns '
-    + 'its own Word file with native equations — that file is what you download, byte for '
-    + 'byte, alongside every other format Mathpix renders. Needs a Mathpix key, is billed '
-    + 'per page, and the document leaves this machine.',
-};
-function describeLayout() {
-  const mode = layoutSelect.value;
-  // Say now that the key is missing, rather than letting the conversion fail
-  // with a 503 after the upload. The other modes have their own warning banner;
-  // Mathpix's credentials are separate from OpenRouter's, so this is the only
-  // place that can mention them.
-  const missingKey = mode === 'mathpix' && !mathpixKey
-    ? ' MATHPIX_APP_KEY is not set, so this mode cannot run yet.' : '';
-  layoutHint.textContent = (LAYOUT_NOTES[mode] || '') + missingKey;
-  columnsField.classList.toggle('hidden', !FLOWING.includes(mode));
-  describeColumns();
-}
-layoutSelect.addEventListener('change', describeLayout);
-
-function describeColumns() {
-  const multi = columnsSelect.querySelector('option[value="multi"]');
-  if (sourceColumns === null) {
-    multi.disabled = false;
-    columnsHint.textContent = 'Read from the PDF when you upload it.';
-    return;
-  }
-  if (sourceColumns < 2) {
-    // Not a choice: a source set in one column has no second column for the
-    // output to put anything in, so natural is the only thing it can be.
-    multi.disabled = true;
-    columnsSelect.value = 'natural';
-    columnsHint.textContent = 'This PDF is set in a single column, so the document can only be '
-      + 'single-column.';
-    return;
-  }
-  multi.disabled = false;
-  columnsHint.textContent = columnsSelect.value === 'multi'
-    ? `This PDF has ${sourceColumns}-column pages, and each page is set the same way. Where one `
-      + 'column breaks to the next is left to Word, which reflows it for the page size you print on.'
-    : `This PDF has ${sourceColumns}-column pages; its text is poured into one column instead.`;
-}
-columnsSelect.addEventListener('change', describeColumns);
-
-fetch('/api/models').then(r => r.json()).then(data => {
-  modelSelect.innerHTML = '';
-  if (!data.models.length) {
-    modelSelect.innerHTML = `<option value="${data.selected}">${data.selected}</option>`;
-    modelNote.textContent = data.error ? '(model list unavailable — using the configured default)' : '';
-    return;
-  }
-  for (const m of data.models) {
-    const option = document.createElement('option');
-    option.value = m.id;
-    const price = m.prompt_price_per_mtok != null ? ` — $${m.prompt_price_per_mtok}/M in` : '';
-    option.textContent = `${m.name}${price}`;
-    if (m.id === data.selected) option.selected = true;
-    modelSelect.appendChild(option);
-  }
-  if (!data.models.some(m => m.id === data.selected)) {
-    const option = document.createElement('option');
-    option.value = data.selected;
-    option.textContent = `${data.selected} (from .env)`;
-    option.selected = true;
-    modelSelect.prepend(option);
-  }
-  modelNote.textContent = `(${data.models.length} vision-capable models)`;
-}).catch(() => { modelSelect.innerHTML = '<option value="">default from .env</option>'; });
-
 // ---------------------------------------------------------------- upload -- //
 
 drop.addEventListener('click', () => picker.click());
@@ -198,7 +102,7 @@ function describe(job) {
   const size = job.size_bytes ? `${(job.size_bytes / 1048576).toFixed(1)} MB · ` : '';
   const mode = { flow: 'editable flow', structured: 'editable document', marker: 'marker', mathpix: 'Mathpix' }[job.layout]
     || 'visual replica';
-  const columns = FLOWING.includes(job.layout) && job.columns
+  const columns = ['flow', 'marker'].includes(job.layout) && job.columns
     ? ` · ${job.columns === 'multi' ? 'multi-column' : 'natural columns'}`
     : '';
   return `${size}${job.pages} page${job.pages === 1 ? '' : 's'} · ${mode}${columns}`;
@@ -215,15 +119,8 @@ async function upload(file) {
   fileEl.textContent = file.name;
   metaEl.textContent = `${(file.size / 1048576).toFixed(1)} MB · uploading…`;
   startBtn.disabled = true;
-  // Whatever the last PDF was set in says nothing about this one.
-  sourceColumns = null;
-  describeColumns();
-
   const body = new FormData();
   body.append('file', file);
-  body.append('model', modelSelect.value || '');
-  body.append('layout', layoutSelect.value || '');
-  body.append('columns', columnsChoice());
 
   let res;
   try {
@@ -242,10 +139,6 @@ async function upload(file) {
 
   const job = await res.json();
   currentJob = job.id;
-  // The server read the PDF's own layout while it was storing it; the choice
-  // offered from here on is the one that PDF can actually be given.
-  sourceColumns = job.source_columns || 1;
-  describeColumns();
   metaEl.textContent = `${describe(job)} · ready to convert`;
   startBtn.disabled = false;
   // The pages can be looked through before a single call is made — the source
@@ -254,21 +147,10 @@ async function upload(file) {
   loadHistory();
 }
 
-// Empty unless the chosen mode can act on it, so a replica job is not recorded
-// as having made a decision that its own geometry had already made.
-function columnsChoice() {
-  return FLOWING.includes(layoutSelect.value) ? columnsSelect.value : '';
-}
-
 async function startJob(id) {
   if (!id) return;
   startBtn.disabled = true;
-  const body = new FormData();
-  body.append('model', modelSelect.value || '');
-  body.append('layout', layoutSelect.value || '');
-  body.append('columns', columnsChoice());
-
-  const res = await fetch(`/api/jobs/${id}/start`, { method: 'POST', body });
+  const res = await fetch(`/api/jobs/${id}/start`, { method: 'POST' });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     startBtn.disabled = false;
@@ -290,7 +172,7 @@ async function startJob(id) {
 function extractionSummary(job) {
   if (job.layout === 'flow') return 'extractor: vision';
   const diagnostics = job.diagnostics || [];
-  if (!diagnostics.length) return { marker: 'extractor: marker', mathpix: 'extractor: mathpix' }[job.layout]
+  if (!diagnostics.length) return { marker: 'extractor: Marker', mathpix: 'extractor: Mathpix' }[job.layout]
     || 'extractor: PyMuPDF';
   const extractors = [...new Set(diagnostics.map(item => item.extractor))].join(' + ');
   // Blank pages get their own phrasing and their page numbers. They are not a
@@ -331,9 +213,9 @@ async function check(id) {
 
   const labels = {
     queued: 'Queued…',
-    rendering: 'Rendering pages to images…',
-    transcribing: `Reading page ${Math.min(job.done + 1, total)} of ${total}…`,
-    building: 'Building the Word document…',
+    rendering: 'Preparing the PDF for Mathpix…',
+    transcribing: `Mathpix is processing page ${Math.min(job.done + 1, total)} of ${total}…`,
+    building: 'Downloading Mathpix exports and preview images…',
   };
   const weights = { queued: 0, rendering: 5, transcribing: 10, building: 90 };
   const span = { queued: 0, rendering: 5, transcribing: 80, building: 10 };
@@ -344,12 +226,14 @@ async function check(id) {
 
 function showDownloads(job) {
   $('dl-docx').href = `/api/jobs/${job.id}/download?format=docx`;
-  $('dl-md').href = `/api/jobs/${job.id}/download?format=md`;
-  // The unedited copy, offered next to the .docx because comparing the two is
-  // the point of the marker mode.
+  $('dl-docx').textContent = job.layout === 'mathpix'
+    ? 'Download Mathpix DOCX' : 'Download DOCX';
+  const markdown = $('dl-md');
+  markdown.href = `/api/jobs/${job.id}/download?format=md`;
+  markdown.classList.toggle('hidden', job.layout === 'mathpix' || !job.has_md);
   const marker = $('dl-marker');
   marker.href = `/api/jobs/${job.id}/download?format=marker-md`;
-  marker.classList.toggle('hidden', !job.has_marker);
+  marker.classList.toggle('hidden', job.layout === 'mathpix' || !job.has_marker);
   showMathpixExports(job);
   actions.classList.remove('hidden');
 }
@@ -361,7 +245,7 @@ function showDownloads(job) {
 // failure worth reporting as one.
 function showMathpixExports(job) {
   const box = $('mathpix-exports');
-  const available = job.mathpix_formats || [];
+  const available = (job.mathpix_formats || []).filter(ext => ext !== 'docx');
   box.classList.toggle('hidden', !available.length);
   if (!available.length) { box.innerHTML = ''; return; }
 
@@ -370,12 +254,7 @@ function showMathpixExports(job) {
     const title = notes[ext] ? ` title="${notes[ext]}"` : '';
     return `<a class="btn" href="/api/jobs/${job.id}/download?format=mathpix-${ext}"${title}>.${ext}</a>`;
   });
-  if (job.has_rebuilt) {
-    links.push(`<a class="btn" href="/api/jobs/${job.id}/download?format=rebuilt-docx"`
-      + ` title="This application's own render of Mathpix's Markdown, for comparison">rebuilt .docx</a>`);
-  }
-  links.push(`<a class="btn" href="/api/jobs/${job.id}/download?format=mathpix-meta">metadata</a>`);
-  box.innerHTML = `<summary>All Mathpix exports (${available.length})</summary>`
+  box.innerHTML = `<summary>Additional Mathpix exports (${available.length})</summary>`
     + `<div class="exports">${links.join('')}</div>`;
 }
 
@@ -452,7 +331,7 @@ async function loadHistory() {
       <td class="name" title="${job.filename.replace(/"/g, '&quot;')}">${job.filename}</td>
       <td>${when(job.created_at)}</td>
       <td class="num">${job.pages || '—'}</td>
-      <td>${{ flow: 'flow', structured: 'editable', marker: 'marker', mathpix: 'mathpix' }[job.layout] || 'replica'}</td>
+      <td>${{ flow: 'Flow', structured: 'Editable', marker: 'Marker', mathpix: 'Mathpix' }[job.layout] || 'Replica'}</td>
       <td class="num">${money(job.cost, job.cost_known)}</td>
       <td>${statusPill(job)}</td>
       <td class="num"><button class="link" data-del="${job.id}">delete</button></td>`;
@@ -503,8 +382,6 @@ function reopen(job) {
   actions.classList.add('hidden');
   startActions.classList.toggle('hidden', job.status !== 'ready');
   startBtn.disabled = job.status !== 'ready';
-  sourceColumns = job.source_columns || null;
-  describeColumns();
   if (job.status === 'done') showDownloads(job);
   openJob(job);
   loadHistory();
@@ -523,7 +400,8 @@ let activeTab = 'rendered';
 let wholeDoc = false;
 let wholeMarkdown = null; // fetched lazily, the whole document in one string
 let zoom = 1;
-let selected = null;      // the block index highlighted in both panes
+let selected = null;      // highlighted legacy block, when old history has geometry
+let viewerMode = null;
 
 const SVG = 'http://www.w3.org/2000/svg';
 const KIND_ORDER = ['heading', 'paragraph', 'text', 'equation', 'figure', 'table', 'rule'];
@@ -534,13 +412,13 @@ function kindColour(kind) {
 }
 
 function clearViewer() {
-  doc = null; viewerJob = null; pageCount = 0; pageIndex = 0; selected = null;
+  doc = null; viewerJob = null; viewerMode = null; pageCount = 0; pageIndex = 0; selected = null;
   wholeMarkdown = null; hiddenKinds = new Set();
   stageWrap.classList.add('hidden');
   pager.classList.add('hidden');
   previewEmpty.classList.remove('hidden');
   outputEmpty.classList.remove('hidden');
-  for (const el of [tabRendered, tabText, tabBlocks]) { el.classList.add('hidden'); el.innerHTML = ''; }
+  for (const el of [tabRendered, tabText]) { el.classList.add('hidden'); el.innerHTML = ''; }
   legend.innerHTML = '';
   overlay.innerHTML = '';
   pageImage.removeAttribute('src');
@@ -549,6 +427,7 @@ function clearViewer() {
 /** A job whose pages can be rendered but whose conversion has nothing to show yet. */
 function openPages(job) {
   viewerJob = job.id;
+  viewerMode = job.layout;
   doc = null;
   pageCount = job.pages || 0;
   pageIndex = 0;
@@ -573,6 +452,7 @@ async function openJob(job) {
     return openPages(job);
   }
   viewerJob = job.id;
+  viewerMode = job.layout || data.mode;
   doc = data;
   pageCount = data.pages.length;
   pageIndex = 0;
@@ -608,7 +488,14 @@ function showPage(index) {
 
 function drawOverlay() {
   overlay.innerHTML = '';
+  const mathpix = viewerMode === 'mathpix' || (doc && doc.mode === 'mathpix');
+  overlay.classList.toggle('hidden', mathpix);
+  legend.classList.toggle('hidden', mathpix);
   const page = currentPage();
+  if (mathpix) {
+    pageNote.textContent = 'Source page aligned with the Mathpix Markdown beside it.';
+    return;
+  }
   if (!page) {
     pageNote.textContent = doc ? '' : 'Not converted yet — the page is shown as it is.';
     return;
@@ -743,7 +630,7 @@ async function renderOutput() {
   const markdown = await markdownForScope();
   const has = Boolean(markdown.trim()) || Boolean(doc);
   outputEmpty.classList.toggle('hidden', has);
-  for (const [name, el] of [['rendered', tabRendered], ['text', tabText], ['blocks', tabBlocks]]) {
+  for (const [name, el] of [['rendered', tabRendered], ['text', tabText]]) {
     el.classList.toggle('hidden', !has || name !== activeTab);
   }
   if (!has) return;
@@ -758,38 +645,6 @@ async function renderOutput() {
     }
   } else if (activeTab === 'text') {
     tabText.textContent = markdown || '(empty)';
-  } else {
-    renderBlocks();
-  }
-}
-
-function renderBlocks() {
-  tabBlocks.innerHTML = '';
-  const page = currentPage();
-  const blocks = (page && page.blocks) || [];
-  if (!blocks.length) {
-    tabBlocks.innerHTML = '<p class="meta">This mode reports no block geometry for the page.</p>';
-    return;
-  }
-  for (const block of blocks) {
-    const [x0, y0, x1, y1] = block.bbox;
-    const row = document.createElement('div');
-    row.className = 'block' + (block.index === selected ? ' on' : '');
-    row.style.borderLeftColor = kindColour(block.kind);
-    row.dataset.index = block.index;
-    const round = (value) => Math.round(value);
-    const extra = block.kind === 'heading' && block.level ? ` · h${block.level}` : '';
-    const label = block.label ? ` · ${block.label}` : '';
-    row.innerHTML = `<div class="top"><span class="kind">${block.index + 1}. ${block.kind}</span>`
-      + `<span>${round(x0)}, ${round(y0)} → ${round(x1)}, ${round(y1)}${extra}${label}</span></div>`;
-    if (block.text) {
-      const text = document.createElement('div');
-      text.className = 'text';
-      text.textContent = block.text;
-      row.appendChild(text);
-    }
-    row.addEventListener('click', () => select(block.index, 'list'));
-    tabBlocks.appendChild(row);
   }
 }
 
@@ -797,19 +652,6 @@ function renderBlocks() {
 function select(index, from) {
   selected = selected === index ? null : index;
   drawOverlay();
-  if (activeTab !== 'blocks' && from === 'overlay') {
-    activeTab = 'blocks';
-    for (const button of tabs.children) {
-      button.setAttribute('aria-selected', String(button.dataset.tab === activeTab));
-    }
-    renderOutput();
-    return;
-  }
-  if (activeTab === 'blocks') {
-    renderBlocks();
-    const row = tabBlocks.querySelector(`.block[data-index="${selected}"]`);
-    if (row && from === 'overlay') row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-  }
 }
 
 // ------------------------------------------------------------- the chrome -- //
@@ -831,9 +673,7 @@ scopeBtn.addEventListener('click', () => {
 });
 
 copyBtn.addEventListener('click', async () => {
-  const markdown = activeTab === 'blocks'
-    ? JSON.stringify((currentPage() || {}).blocks || [], null, 2)
-    : await markdownForScope();
+  const markdown = await markdownForScope();
   try {
     await navigator.clipboard.writeText(markdown);
     copyBtn.textContent = 'Copied';

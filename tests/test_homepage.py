@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 INDEX = Path(__file__).parents[1] / "app" / "static" / "index.html"
+SCRIPT = INDEX.with_name("app.js")
 
 
 class PageContract(HTMLParser):
@@ -41,8 +42,8 @@ def page_contract() -> PageContract:
 def test_homepage_keeps_the_major_interaction_hooks() -> None:
     page = page_contract()
     required = {
-        "theme-toggle", "drop", "picker", "layout", "layout-hint", "columns",
-        "columns-field", "model", "model-note", "keywarn", "job-card", "job-file",
+        "theme-toggle", "drop", "picker", "keywarn", "retention-note", "delete-note",
+        "job-card", "job-file",
         "job-meta", "start", "discard", "start-actions", "run-area", "bar-fill",
         "job-status", "cost-box", "actions", "dl-docx", "dl-md", "dl-marker",
         "mathpix-exports", "reset", "history-panel", "history-table",
@@ -50,7 +51,7 @@ def test_homepage_keeps_the_major_interaction_hooks() -> None:
         "stage-wrap", "stage", "page-image", "overlay", "legend", "pager",
         "prev-page", "page-number", "page-total", "next-page", "page-note",
         "zoom-out", "zoom-fit", "zoom-in", "output-pane", "output-empty", "tabs",
-        "scope", "copy", "tab-rendered", "tab-text", "tab-blocks",
+        "scope", "copy", "tab-rendered", "tab-text",
     }
 
     assert page.duplicates == set()
@@ -76,9 +77,29 @@ def test_upload_and_theme_controls_are_accessible() -> None:
     assert picker_tag == "input"
     assert picker["type"] == "file"
     assert ".pdf" in (picker["accept"] or "")
-    assert {"layout", "columns", "model"} <= page.labels
+    assert not page.labels
 
     for element_id in ("zoom-out", "zoom-in", "prev-page", "next-page"):
         tag, attrs = page.elements[element_id]
         assert tag == "button"
         assert attrs.get("aria-label")
+
+
+def test_homepage_exposes_only_the_mathpix_workflow() -> None:
+    page = page_contract()
+    prohibited = {
+        "layout", "layout-hint", "columns", "columns-field", "model", "model-note",
+        "tab-blocks",
+    }
+    assert prohibited.isdisjoint(page.elements)
+
+    html = INDEX.read_text(encoding="utf-8")
+    script = SCRIPT.read_text(encoding="utf-8")
+    assert "Convert with Mathpix" in html
+    assert "MATHPIX_APP_KEY" in html
+    assert "/api/models" not in script
+    assert "body.append('layout'" not in script
+    assert "body.append('model'" not in script
+    assert "body.append('columns'" not in script
+    assert "JSON blocks" not in html
+    assert not (INDEX.parent / "index.html.orig").exists()

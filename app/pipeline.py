@@ -141,9 +141,8 @@ def convert_pdf(
         return convert_pdf_mathpix(
             pdf_path=pdf_path,
             work_dir=work_dir,
-            title=title,
             on_progress=on_progress,
-            columns=columns,
+            on_usage=on_usage,
         )
     return convert_pdf_flow(
         pdf_path=pdf_path,
@@ -744,57 +743,55 @@ def _mathpix_config() -> dict:
     return options
 
 
-def _mathpix_detection(pdf_path: Path, work_dir: Path, pages: list[str]) -> list:
-    """Read Mathpix's own line geometry back as page boxes, if it wrote any.
+def _mathpix_detection(pdf_path: Path, pages: list[str]) -> list:
+    """Build page-aligned preview data without exposing Mathpix line boxes.
 
-    Best effort throughout: a Mathpix job exists to show Mathpix's work, and it
-    must not fail — or lose its .docx — because a viewer wanted extra data.
-    Unlike marker's JSON this costs nothing extra, since `lines.json` is produced
-    whether or not anyone asks for it.
+    ``lines.json`` remains an untouched raw download. The viewer needs only the
+    source page dimensions and that page's Markdown, so every page intentionally
+    carries an empty ``blocks`` list.
     """
-    sizes = _page_sizes(pdf_path, len(pages))
-    path = work_dir / mathpix.RAW_DIR / "document.lines.json"
-    detected = []
-    if settings.mathpix_detection and path.exists():
-        try:
-            detected = detection.from_mathpix_lines(path.read_bytes(), sizes)
-        except OSError:
-            detected = []
-    if not detected:
-        # No geometry, but the pages and their text are still worth showing.
-        return detection.from_markdown(sizes, pages)
-    return detection.attach_markdown(detected, pages)
+    return detection.from_markdown(_page_sizes(pdf_path, len(pages)), pages)
 
 
-def convert_pdf_mathpix(
+def _align_mathpix_pages(pages: list[str], total: int) -> list[str]:
+    """Keep preview navigation at exactly the source PDF's page count.
+
+    Mathpix is asked for page separators, but missing or surplus separators must
+    not shift the source-page viewer out of step. Missing pages are represented
+    explicitly as empty Markdown. Surplus segments are retained on the final
+    source page, because dropping Mathpix output would be worse than grouping an
+    ambiguous trailing segment with the last page.
+    """
+    if total <= 0:
+        return pages
+    aligned = list(pages[:total])
+    if len(pages) > total:
+        aligned[-1] = "\n\n".join(pages[total - 1:])
+    elif len(aligned) < total:
+        aligned.extend([""] * (total - len(aligned)))
+    return aligned
+
+
+def _remove_stale_mathpix_exports(work_dir: Path, produced: set[str]) -> None:
+    """After success, remove prior-run formats Mathpix did not produce this time."""
+    raw = work_dir / mathpix.RAW_DIR
+    for entry in mathpix.FORMATS:
+        if entry.ext not in produced:
+            (raw / f"document.{entry.ext}").unlink(missing_ok=True)
+
+
+def _collect_mathpix_result(
+    *,
+    client: mathpix.MathpixClient,
+    file_id: str,
     pdf_path: Path,
     work_dir: Path,
-    title: str | None = None,
-    on_progress: ProgressHook = _noop,
-    columns: str | None = None,
+    total: int,
+    options: dict,
+    on_progress: ProgressHook,
+    on_usage: UsageHook,
 ) -> ConversionResult:
-    """Hand the whole PDF to the Mathpix Files API and write back what it returns.
-
-    This mode exists to show Mathpix's own work. Everything the other modes do to
-    a page — locating figures, repairing boxes, recovering structure from
-    coordinates — is deliberately absent, and every format Mathpix returns is
-    written to `mathpix/` verbatim before anything reads it. `document.docx` is
-    Mathpix's own file, copied byte for byte and not built here; `rebuilt.docx`
-    beside it is this application's render of the same Markdown, so the two can
-    be compared.
-
-    Unlike every other backend here this one is a paid remote service, and the
-    document leaves the machine. It is also the only backend that can report
-    honest progress while it works.
-    """
-    work_dir.mkdir(parents=True, exist_ok=True)
-    total = _marker_pages(pdf_path)
-    options = _mathpix_config()
-    client = mathpix.MathpixClient()
-
-    on_progress("rendering", total, total)
-    on_progress("transcribing", 0, total)
-    file_id = client.submit(pdf_path, options)
+    """Collect and store one submitted Mathpix job while its cleanup is guarded."""
     deadline = time.monotonic() + settings.mathpix_poll_timeout
 
     def report(state: mathpix.MathpixStatus) -> None:
@@ -818,20 +815,16 @@ def convert_pdf_mathpix(
     on_progress("building", 0, len(wanted))
     missing = client.fetch_all(file_id, wanted, keep, deadline)
 
-    mmd = fetched.get("mmd", b"").decode("utf-8", "replace")
+    mmd = fetched[mathpix.PREVIEW_REQUIRED].decode("utf-8", "replace")
     markdown, applied = client.download_images(mmd, work_dir)
-    pages = mathpix.split_pages(markdown)
-    applied = replace(applied, pages=len(pages), paginated=len(pages) > 1)
+    segments = mathpix.split_pages(markdown)
+    pages = _align_mathpix_pages(segments, total)
+    applied = replace(applied, pages=len(pages), paginated=len(segments) > 1)
 
     # A page Mathpix read as nothing still converts, and the job would otherwise
     # report success over a blank document. Recorded per page, because a backend
     # that has degraded usually empties some pages rather than all of them.
     empty = {number for number, page in enumerate(pages, start=1) if mathpix.is_empty(page)}
-
-    # Read from the source PDF, never from Mathpix's text, for the reason
-    # `convert_pdf_marker` gives: a page that came out in the wrong number of
-    # columns should be attributable without having to guess who did it.
-    layout = _column_layout(pdf_path, len(pages), columns)
 
     markdown_path = work_dir / "document.md"
     markdown_path.write_text(markdown, encoding="utf-8")
@@ -839,18 +832,6 @@ def convert_pdf_mathpix(
     # Mathpix's own .docx, byte for byte. Not built here, and not edited here.
     docx_path = work_dir / "document.docx"
     docx_path.write_bytes(fetched[mathpix.REQUIRED])
-
-    # This application's render of the same Markdown, offered beside it. A
-    # failure here costs the comparison, never Mathpix's own document.
-    rebuilt_error: str | None = None
-    try:
-        writer = DocxWriter(title=title, base_dir=work_dir)
-        for index, page_markdown in enumerate(pages):
-            writer.start_page(layout[index])
-            render_markdown(writer, page_markdown)
-        writer.save(work_dir / "rebuilt.docx")
-    except Exception as exc:  # noqa: BLE001 - recorded, never fatal
-        rebuilt_error = f"{type(exc).__name__}: {exc}"
 
     (work_dir / mathpix.RAW_DIR / "metadata.json").write_text(
         json.dumps(
@@ -860,13 +841,11 @@ def convert_pdf_mathpix(
                 "options": options,
                 "applied": applied.as_dict(),
                 "document_docx": "mathpix, unedited",
-                "rebuilt_docx": rebuilt_error or "built from mathpix's markdown",
                 "formats": sorted(fetched),
                 # An absent format is usually a fact about the document rather
                 # than a failure — a document with no tables has no .xlsx.
                 "formats_missing": missing,
-                "columns_setting": (columns or settings.columns or "auto"),
-                "columns": layout,
+                "page_segments": len(segments),
                 "empty_pages": sorted(empty),
             },
             indent=2,
@@ -876,11 +855,13 @@ def convert_pdf_mathpix(
     )
 
     detection.write(
-        _mathpix_detection(pdf_path, work_dir, pages), work_dir / "detection.json", "mathpix"
+        _mathpix_detection(pdf_path, pages), work_dir / "detection.json", "mathpix"
     )
 
-    if settings.mathpix_delete:
-        client.delete(file_id)
+    # Do this only after every required local result is safely written. A failed
+    # rerun leaves the previous successful downloads intact; a successful rerun
+    # cannot advertise a document-specific format left behind by its predecessor.
+    _remove_stale_mathpix_exports(work_dir, set(fetched))
 
     on_progress("done", len(pages), len(pages))
 
@@ -889,11 +870,13 @@ def convert_pdf_mathpix(
     # "a real charge, but not one the provider reported" — the UI reads it as
     # unpriced and the history total leaves it out.
     billed = status.num_pages or total
+    usage = ConversionUsage(cost=billed * settings.mathpix_page_rate, calls=1)
+    on_usage(usage)
     return ConversionResult(
         markdown_path=markdown_path,
         docx_path=docx_path,
         page_markdown=pages,
-        usage=ConversionUsage(cost=billed * settings.mathpix_page_rate, calls=1),
+        usage=usage,
         diagnostics=[
             ExtractionDiagnostic(
                 number,
@@ -904,3 +887,46 @@ def convert_pdf_mathpix(
             for number in range(1, len(pages) + 1)
         ],
     )
+
+
+def convert_pdf_mathpix(
+    pdf_path: Path,
+    work_dir: Path,
+    on_progress: ProgressHook = _noop,
+    on_usage: UsageHook = _noop_usage,
+) -> ConversionResult:
+    """Hand the whole PDF to the Mathpix Files API and write back what it returns.
+
+    This mode exists to show Mathpix's own work. Everything the other modes do to
+    a page — locating figures, repairing boxes, recovering structure from
+    coordinates — is deliberately absent, and every format Mathpix returns is
+    written to `mathpix/` verbatim before anything reads it. `document.docx` is
+    Mathpix's own file, copied byte for byte and not built here. The locally
+    rewritten Markdown exists only for the page-aligned browser preview.
+
+    Unlike every other backend here this one is a paid remote service, and the
+    document leaves the machine. The upload is deleted in ``finally`` once it
+    has a remote id, including when polling, downloads, or local writes fail.
+    """
+    work_dir.mkdir(parents=True, exist_ok=True)
+    total = _marker_pages(pdf_path)
+    options = _mathpix_config()
+    client = mathpix.MathpixClient()
+
+    on_progress("rendering", total, total)
+    on_progress("transcribing", 0, total)
+    file_id = client.submit(pdf_path, options)
+    try:
+        return _collect_mathpix_result(
+            client=client,
+            file_id=file_id,
+            pdf_path=pdf_path,
+            work_dir=work_dir,
+            total=total,
+            options=options,
+            on_progress=on_progress,
+            on_usage=on_usage,
+        )
+    finally:
+        if settings.mathpix_delete:
+            client.delete(file_id)

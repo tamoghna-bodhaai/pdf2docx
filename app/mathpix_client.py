@@ -6,14 +6,15 @@ finished document rather than detector output needing interpretation, and the wh
 point of the `mathpix` mode is to see what Mathpix produced rather than what this
 codebase made of it.
 
-So exactly two things happen to Mathpix's text here, and both are recorded on the
-`Applied` record so a defect can be attributed to the right party:
+So exactly two things happen to the local preview copy of Mathpix's text here,
+and both are recorded on the `Applied` record so a defect can be attributed to
+the right party:
 
   * image references are downloaded and repointed at local files, because Mathpix
-    hosts its crops on its own CDN and the writers resolve references relative to
-    the job's working directory;
+    hosts its crops on its own CDN and the browser serves preview assets from the
+    job's working directory;
   * the document is split on Mathpix's own page separator, because every other mode
-    gives each source page its own Word page.
+    keeps the source page and rendered Markdown navigation aligned.
 
 Nothing is reordered, rewritten, stripped or repaired. In particular the maths is
 not touched: `math_inline_delimiters` is set at request time so Mathpix emits the
@@ -83,19 +84,19 @@ _OFFICE = "application/vnd.openxmlformats-officedocument"
 # row are all generated from. A format Mathpix ships later should mean a row here
 # and nothing else.
 FORMATS: tuple[Format, ...] = (
-    Format("docx", "docx", f"{_OFFICE}.wordprocessingml.document", note="the deliverable"),
+    Format("docx", "docx", f"{_OFFICE}.wordprocessingml.document", note="primary; self-contained"),
     Format("md", "md", "text/markdown"),
     Format("mmd", "", "text/markdown", note="always produced"),
-    Format("tex.zip", "tex.zip", "application/zip", status_key="latex"),
+    Format("tex.zip", "tex.zip", "application/zip", status_key="latex", note="self-contained"),
     Format("html", "html", "text/html"),
-    Format("html.zip", "html.zip", "application/zip"),
-    Format("md.zip", "md.zip", "application/zip"),
-    Format("mmd.zip", "mmd.zip", "application/zip"),
+    Format("html.zip", "html.zip", "application/zip", note="self-contained"),
+    Format("md.zip", "md.zip", "application/zip", note="self-contained"),
+    Format("mmd.zip", "mmd.zip", "application/zip", note="self-contained"),
     Format("pdf", "pdf", "application/pdf", note="re-rendered, HTML pipeline"),
     Format("latex.pdf", "latex.pdf", "application/pdf", note="re-rendered, LaTeX pipeline"),
-    Format("pptx", "pptx", f"{_OFFICE}.presentationml.presentation"),
+    Format("pptx", "pptx", f"{_OFFICE}.presentationml.presentation", note="self-contained"),
     Format("xlsx", "xlsx", f"{_OFFICE}.spreadsheetml.sheet", note="tables only"),
-    Format("lines.json", "", "application/json", note="always produced; drives the overlay"),
+    Format("lines.json", "", "application/json", note="always produced; raw geometry export"),
     Format("lines.mmd.json", "", "application/json", note="always produced"),
 )
 
@@ -106,6 +107,9 @@ ALWAYS = tuple(entry.ext for entry in FORMATS if not entry.requested)
 
 # The one format a `mathpix` job cannot be said to have produced without.
 REQUIRED = "docx"
+# The page-aligned viewer cannot fulfil its contract without Mathpix Markdown.
+PREVIEW_REQUIRED = "mmd"
+REQUIRED_RESULTS = (REQUIRED, PREVIEW_REQUIRED)
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 MAX_IMAGES = 2000
@@ -163,7 +167,7 @@ class MathpixStatus:
 
 @dataclass(frozen=True)
 class Applied:
-    """What was done to Mathpix's text on the way to the .docx, and nothing else."""
+    """What was done to Mathpix's text for the local preview, and nothing else."""
 
     images_downloaded: int = 0
     images_failed: int = 0
@@ -477,11 +481,11 @@ class MathpixClient:
     ) -> dict[str, str]:
         """Download every requested result, returning the reason each missing one is missing.
 
-        Formats complete independently of the document and of each other, so this
-        retries a not-ready format rather than giving up on it. One format failing
-        must never cost the job the rest: a document with no tables has no `.xlsx`,
-        and that is a fact about the document rather than a failed conversion. The
-        one exception is `docx` — the mode has not produced anything without it.
+        Formats complete independently, so this retries a not-ready format rather
+        than giving up on it. An explicitly unsupported optional format is simply
+        absent — a document with no tables has no `.xlsx`. Operational HTTP errors
+        still fail collection instead of masquerading as unsupported output.
+        DOCX and MMD are required for the deliverable and page-aligned preview.
         """
         limit = deadline if deadline is not None else time.monotonic() + self.poll_timeout
         pending = list(dict.fromkeys(wanted))
@@ -494,7 +498,7 @@ class MathpixClient:
                     on_ready(ext, self.fetch(file_id, ext))
                 except MathpixNotReady:
                     waiting.append(ext)
-                except MathpixError as exc:
+                except MathpixUnsupported as exc:
                     missing[ext] = str(exc)
             pending = waiting
             if not pending:
@@ -505,20 +509,21 @@ class MathpixClient:
                 break
             time.sleep(self.poll_interval)
 
-        if REQUIRED in missing:
-            raise MathpixError(f"mathpix produced no .{REQUIRED}: {missing[REQUIRED]}")
+        absent_required = [ext for ext in REQUIRED_RESULTS if ext in missing]
+        if absent_required:
+            ext = absent_required[0]
+            raise MathpixError(f"mathpix produced no .{ext}: {missing[ext]}")
         return missing
 
     def download_images(self, markdown: str, work_dir: Path) -> tuple[str, Applied]:
         """Fetch Mathpix's hosted crops into the job and repoint the references at them.
 
         Mathpix keeps its crops on its own CDN, so a reference that is left alone
-        is a reference the preview cannot show offline and the writers cannot
-        embed. Only references that download cleanly are rewritten; anything else
-        is left exactly as it stands, because it is Mathpix's output and silently
-        deleting or redirecting it would misrepresent what Mathpix did. The
-        writers refuse to embed a reference they cannot resolve, so such a figure
-        degrades to its caption rather than to a broken document.
+        is a reference the preview cannot show offline. Only references that
+        download cleanly are rewritten; anything else is left exactly as it
+        stands, because silently deleting or redirecting it would misrepresent
+        what Mathpix did. Raw Mathpix exports are never passed through this
+        function.
         """
         image_dir = work_dir / RAW_DIR / RAW_IMAGE_DIR
         downloaded: dict[str, str] = {}

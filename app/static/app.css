@@ -368,6 +368,17 @@ button.theme-toggle:hover:not(:disabled) {
   line-height: 1.55;
 }
 
+.mathpix-note {
+  margin: 0 2px 12px;
+  padding: 10px 11px;
+  border: 1px solid var(--brand-line);
+  border-radius: 9px;
+  background: var(--brand-soft);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  line-height: 1.5;
+}
+
 .card {
   padding: 13px;
   border: 1px solid var(--border);

@@ -276,6 +276,28 @@ def test_one_missing_format_does_not_cost_the_others(monkeypatch):
     assert "xlsx" in missing
 
 
+def test_an_operational_failure_for_an_optional_export_fails_collection(monkeypatch):
+    def get(url, **kwargs):
+        if url.endswith(".xlsx"):
+            return response(500, {"error_id": "temporary_backend_failure"})
+        return response(200, content=b"fine")
+
+    monkeypatch.setattr(httpx, "get", get)
+    with pytest.raises(MathpixError, match="temporary_backend_failure"):
+        client().fetch_all("f1", ["docx", "mmd", "xlsx"], lambda ext, data: None)
+
+
+def test_missing_preview_markdown_fails_collection(monkeypatch):
+    def get(url, **kwargs):
+        if url.endswith(".mmd"):
+            return response(415, {"error_id": "unsupported_format"})
+        return response(200, content=b"fine")
+
+    monkeypatch.setattr(httpx, "get", get)
+    with pytest.raises(MathpixError, match="no .mmd"):
+        client().fetch_all("f1", ["docx", "mmd"], lambda ext, data: None)
+
+
 def test_a_missing_deliverable_is_the_one_failure_that_stops_the_job(monkeypatch):
     monkeypatch.setattr(httpx, "get", lambda *a, **k: response(
         415, {"error_id": "unsupported_format"}))

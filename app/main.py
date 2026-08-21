@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 import threading
 import uuid
 from dataclasses import dataclass, field
@@ -15,17 +16,14 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import detection, history
-from .columns import source_columns
 from .config import settings
 from .marker_client import RAW_DIR, RAW_IMAGE_DIR
 from .mathpix_client import FORMATS as MATHPIX_FORMATS
 from .mathpix_client import RAW_DIR as MATHPIX_RAW_DIR
 from .mathpix_client import RAW_IMAGE_DIR as MATHPIX_RAW_IMAGE_DIR
 from .mathpix_client import requested_formats
-from .model_policy import ModelPolicyError, require_model_allowed
 from .pdf_render import page_count, page_zoom
 from .pipeline import ConversionUsage, convert_pdf
-from .vision import list_vision_models
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -33,10 +31,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 # was interrupted by a restart.
 RUNNING = ("queued", "rendering", "transcribing", "building")
 
-app = FastAPI(title="PDF → DOCX", version="1.1.0")
+app = FastAPI(title="PDF → DOCX", version="2.0.0")
 
-
-LAYOUTS = ("structured", "replica", "flow", "marker", "mathpix")
 
 # The two answers the browser can give about columns. `natural` is one flowing
 # column — what a transcription is, being one linear stream of text — and `multi`
@@ -51,9 +47,21 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _layout_choice(value: str) -> str:
+def _mathpix_layout(value: str) -> str:
+    """Pin a web conversion to Mathpix while accepting the legacy form field.
+
+    Old clients can keep sending ``layout=mathpix`` and clients that omit the
+    field get the same result. An explicit legacy value is refused instead of
+    being silently reinterpreted, which makes the API contract unambiguous.
+    ``PDF2DOCX_LAYOUT`` remains available to direct pipeline callers only.
+    """
     choice = (value or "").strip().lower()
-    return choice if choice in LAYOUTS else settings.layout
+    if choice and choice != "mathpix":
+        raise HTTPException(
+            status_code=400,
+            detail="Only the mathpix layout is available for new conversions.",
+        )
+    return "mathpix"
 
 
 def _columns_choice(value: str) -> str:
@@ -61,52 +69,13 @@ def _columns_choice(value: str) -> str:
     return choice if choice in COLUMN_CHOICES else ""
 
 
-def _required_credential(layout: str) -> str | None:
-    """Which credential the chosen path needs, or None if it needs none.
-
-    Three answers rather than two, because the modes now disagree about more
-    than whether they are remote. `flow` and the replica modes may reach for the
-    vision model — `flow` for every page, the replica modes for a scanned page
-    or an equation crop — so all of them want an OpenRouter key. `mathpix` is
-    remote but never touches OpenRouter: it wants Mathpix's own credentials and
-    nothing else.
-
-    Note what this means for `app.model_policy`, which is about OpenRouter model
-    ids. A mode that returns anything other than "openrouter" here never reaches
-    a model this application chose, so the policy has nothing to say about it —
-    that is already true of `marker` and is now also true of `mathpix`.
-    """
-    if layout == "marker":
-        return None
-    if layout == "mathpix":
-        return "mathpix"
-    return "openrouter"
-
-
-def _require_credential(layout: str) -> None:
-    """Refuse a job whose backend has no way to authenticate."""
-    needed = _required_credential(layout)
-    if needed == "mathpix" and not settings.mathpix_app_key:
+def _require_mathpix_credential() -> None:
+    """Refuse a web job when Mathpix cannot authenticate it."""
+    if not settings.mathpix_app_key:
         raise HTTPException(
             status_code=503,
-            detail="MATHPIX_APP_KEY is required by the mathpix output mode.",
+            detail="MATHPIX_APP_KEY is required to convert PDFs.",
         )
-    if needed == "openrouter" and not settings.api_key:
-        raise HTTPException(
-            status_code=503,
-            detail="OPENROUTER_API_KEY is required by the selected extraction path.",
-        )
-
-
-def _model_choice(value: str, fallback: str, *, remote: bool) -> str:
-    """Validate model selections before a job can reach a remote call."""
-    try:
-        selected = require_model_allowed(value.strip() or fallback)
-        if remote and settings.locate_figures and settings.figure_model:
-            require_model_allowed(settings.figure_model)
-        return selected
-    except ModelPolicyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @dataclass
@@ -115,7 +84,7 @@ class Job:
     filename: str
     pages: int
     model: str = settings.model
-    layout: str = settings.layout
+    layout: str = "mathpix"
     # "natural" | "multi" | "" for whatever PDF2DOCX_COLUMNS says.
     columns: str = ""
     # The most columns any page of the uploaded PDF is set in, read from the PDF
@@ -271,6 +240,36 @@ def _restore() -> None:
         JOBS[job.id] = job
 
 
+def _recover_interrupted_promotions(jobs_dir: Path | None = None) -> None:
+    """Restore or clean the narrowly named directories left by a process crash."""
+    root = jobs_dir or settings.jobs_dir
+    if not root.is_dir():
+        return
+
+    backups = sorted(
+        (path for path in root.glob(".*-previous-*") if path.is_dir()),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for backup in backups:
+        job_id, separator, _token = backup.name[1:].partition("-previous-")
+        if not separator or not job_id:
+            continue
+        canonical = root / job_id
+        if canonical.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+        else:
+            backup.rename(canonical)
+
+    # A running conversion never promotes its `-run-` directory until every
+    # result is complete. After a restart, any such sibling is necessarily an
+    # abandoned partial run and cannot be a source of valid downloads.
+    for staged in root.glob(".*-run-*"):
+        if staged.is_dir():
+            shutil.rmtree(staged, ignore_errors=True)
+
+
+_recover_interrupted_promotions()
 _restore()
 
 
@@ -282,8 +281,34 @@ def _get_job(job_id: str) -> Job:
     return job
 
 
+def _preserve_compatibility_files(previous: Path, staged: Path) -> None:
+    """Carry historical-only downloads and the source preview into a rerun."""
+    for name in ("preview", RAW_DIR):
+        source = previous / name
+        target = staged / name
+        if source.is_dir() and not target.exists():
+            shutil.copytree(source, target)
+    rebuilt = previous / "rebuilt.docx"
+    if rebuilt.is_file():
+        shutil.copy2(rebuilt, staged / rebuilt.name)
+
+
+def _promote_staged_job(directory: Path, staged: Path) -> None:
+    """Replace one completed job directory, restoring the old one if promotion fails."""
+    backup = directory.parent / f".{directory.name}-previous-{uuid.uuid4().hex}"
+    directory.rename(backup)
+    try:
+        staged.rename(directory)
+    except OSError:
+        backup.rename(directory)
+        raise
+    shutil.rmtree(backup, ignore_errors=True)
+
+
 def _run_job(job_id: str, pdf_path: Path) -> None:
     job = JOBS[job_id]
+    directory = pdf_path.parent
+    staged: Path | None = None
 
     def on_progress(stage: str, done: int, total: int) -> None:
         with JOBS_LOCK:
@@ -300,17 +325,29 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
             job.priced_calls = usage.priced_calls
 
     try:
+        staged = Path(tempfile.mkdtemp(prefix=f".{job.id}-run-", dir=directory.parent))
+        staged_pdf = staged / "source.pdf"
+        shutil.copy2(pdf_path, staged_pdf)
         result = convert_pdf(
-            pdf_path=pdf_path,
-            work_dir=pdf_path.parent,
+            pdf_path=staged_pdf,
+            work_dir=staged,
             title=Path(job.filename).stem,
-            model=job.model,
+            # Web-created jobs never select or initialise an OpenRouter model.
+            model=None,
             on_progress=on_progress,
             on_usage=on_usage,
-            layout=job.layout,
-            columns=job.columns or None,
+            layout="mathpix",
+            columns=None,
         )
+        _preserve_compatibility_files(directory, staged)
+        _promote_staged_job(directory, staged)
         with JOBS_LOCK:
+            usage = getattr(result, "usage", ConversionUsage())
+            job.cost = usage.cost
+            job.prompt_tokens = usage.prompt_tokens
+            job.completion_tokens = usage.completion_tokens
+            job.calls = usage.calls
+            job.priced_calls = usage.priced_calls
             job.diagnostics = [
                 {"page": item.page, "kind": item.kind, "extractor": item.extractor,
                  "fallback_reason": item.fallback_reason}
@@ -324,12 +361,14 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
             job.error = f"{type(exc).__name__}: {exc}"
             job.finished_at = _now()
     finally:
+        if staged is not None and staged.exists():
+            shutil.rmtree(staged, ignore_errors=True)
         _persist()
 
 
 # The page's own stylesheet and script, and the vendored Markdown/maths
-# renderer. Everything the browser loads comes from here, so the viewer works
-# with no network at all — the same promise the conversion itself makes.
+# renderer. Everything the viewer loads comes from here; only the conversion
+# request and Mathpix-hosted images cross the network.
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
@@ -341,10 +380,7 @@ def index() -> HTMLResponse:
 @app.get("/api/config")
 def config() -> dict:
     return {
-        "provider": "OpenRouter",
-        "marker_url": settings.marker_url,
-        "marker_options": settings.marker_options,
-        "marker_extra_formats": list(settings.marker_extra_formats),
+        "provider": "Mathpix",
         "mathpix_url": settings.mathpix_url,
         "mathpix_options": settings.mathpix_options,
         "mathpix_requested": list(requested_formats(settings.mathpix_formats)),
@@ -355,28 +391,13 @@ def config() -> dict:
             for entry in MATHPIX_FORMATS
         ],
         "mathpix_key_configured": bool(settings.mathpix_app_key),
-        "model": settings.model,
-        "reasoning_effort": settings.reasoning_effort or None,
         "dpi": settings.dpi,
-        "concurrency": settings.concurrency,
         "max_pages": settings.max_pages,
-        "api_key_configured": bool(settings.api_key),
-        "layout": settings.layout,
-        "columns": settings.columns,
-        "math_mode": settings.math_mode,
+        "remote_delete": settings.mathpix_delete,
+        "improve_mathpix": settings.mathpix_improve,
         "data_dir": str(settings.data_dir),
         "history_limit": settings.history_limit,
     }
-
-
-@app.get("/api/models")
-def models() -> dict:
-    """Allowed vision models currently available on OpenRouter."""
-    try:
-        return {"models": list_vision_models(), "selected": settings.model}
-    except Exception as exc:
-        # The picker is a convenience — a failure here must not block conversion.
-        return {"models": [], "selected": settings.model, "error": str(exc)}
 
 
 @app.get("/api/history")
@@ -398,11 +419,8 @@ async def convert(
     """Stage an uploaded PDF. Conversion waits for /start unless `start` is set."""
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Please upload a .pdf file.")
-    selected_layout = _layout_choice(layout)
-    selected_model = _model_choice(
-        model, settings.model, remote=_required_credential(selected_layout) == "openrouter"
-    )
-    _require_credential(selected_layout)
+    selected_layout = _mathpix_layout(layout)
+    _require_mathpix_credential()
 
     job_id = uuid.uuid4().hex[:12]
     directory = settings.jobs_dir / job_id
@@ -430,13 +448,12 @@ async def convert(
         id=job_id,
         filename=file.filename,
         pages=pages,
-        model=selected_model,
+        # Retained in the record schema for historical compatibility. The
+        # legacy form field is deliberately ignored for new Mathpix jobs.
+        model=settings.model,
         layout=selected_layout,
-        columns=_columns_choice(columns),
-        # Read here rather than in the browser, which cannot see inside a PDF,
-        # and before the conversion starts, because it decides which choices the
-        # page is allowed to offer for it.
-        source_columns=source_columns(pdf_path),
+        columns="",
+        source_columns=1,
         total=pages,
         size_bytes=size,
         directory=directory,
@@ -463,11 +480,8 @@ def start_job(
     if job.status in RUNNING:
         raise HTTPException(status_code=409, detail="This conversion is already running.")
 
-    selected_layout = _layout_choice(layout) if layout.strip() else job.layout
-    selected_model = _model_choice(
-        model, job.model, remote=_required_credential(selected_layout) == "openrouter"
-    )
-    _require_credential(selected_layout)
+    selected_layout = _mathpix_layout(layout)
+    _require_mathpix_credential()
 
     pdf_path = (job.directory or Path()) / "source.pdf"
     if not pdf_path.exists():
@@ -476,9 +490,10 @@ def start_job(
         )
 
     with JOBS_LOCK:
-        job.model = selected_model
         job.layout = selected_layout
-        job.columns = _columns_choice(columns) or job.columns
+        # Model and column fields remain accepted so older clients do not break,
+        # but neither has meaning for Mathpix's own exports.
+        job.columns = ""
         job.status = "queued"
         job.done = 0
         job.total = job.pages
