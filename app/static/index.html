@@ -4,154 +4,251 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>PDF → DOCX</title>
+<script>
+  (() => {
+    let theme = 'light';
+    try {
+      const saved = localStorage.getItem('pdf2docx-theme');
+      theme = saved === 'light' || saved === 'dark'
+        ? saved
+        : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    } catch (_) {}
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
 <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
-<link rel="stylesheet" href="/static/app.css" />
+<link rel="stylesheet" href="/static/app.css?v=20260821-dashboard" />
 </head>
 <body>
-<div class="shell">
-
-  <!-- ------------------------------------------------------------- rail -- -->
-  <aside class="rail">
-    <div>
-      <h1>PDF → editable Word</h1>
-      <p class="sub">Convert a PDF, then read the page and the conversion side by side.</p>
-    </div>
-
-    <div class="warn hidden" id="keywarn">
-      <strong>OPENROUTER_API_KEY is not set.</strong> Add it to <code>.env</code> and restart the server.
-    </div>
-
-    <div class="card" id="upload-card">
-      <div id="drop">
-        <strong>Drop a PDF here, or click to choose one</strong>
-        <span id="hint">Loading configuration…</span>
-      </div>
-      <input id="picker" type="file" accept="application/pdf,.pdf" />
-
-      <label class="field" for="layout">Output</label>
-      <select id="layout">
-        <option value="structured">Editable document — keep the layout, keep it editable</option>
-        <option value="replica">Visual replica — reproduce the page exactly</option>
-        <option value="flow">Editable flow — rewrite as ordinary Word content</option>
-        <option value="marker">marker — convert locally and keep its output as it comes</option>
-      </select>
-      <div class="hint" id="layout-hint"></div>
-
-      <div id="columns-field" class="hidden">
-        <label class="field" for="columns">Columns</label>
-        <select id="columns">
-          <option value="natural">Natural — one flowing column</option>
-          <option value="multi">Multi-column — as many columns as the source page</option>
-        </select>
-        <div class="hint" id="columns-hint"></div>
-      </div>
-
-      <label class="field" for="model">Vision model <span id="model-note"></span></label>
-      <select id="model"><option>Loading models…</option></select>
-    </div>
-
-    <div class="card hidden" id="job-card">
-      <div class="file" id="job-file"></div>
-      <div class="meta" id="job-meta"></div>
-
-      <div class="actions" id="start-actions">
-        <button class="primary" id="start">Convert</button>
-        <button id="discard">Discard</button>
-      </div>
-
-      <div class="hidden" id="run-area">
-        <div class="bar"><i id="bar-fill"></i></div>
-        <div class="status" id="job-status">Queued…</div>
-        <div class="cost hidden" id="cost-box">Cost <b id="cost-value">—</b><span id="cost-note"></span></div>
-      </div>
-
-      <div class="actions hidden" id="actions">
-        <a class="btn primary" id="dl-docx">.docx</a>
-        <a class="btn" id="dl-md">.md</a>
-        <a class="btn hidden" id="dl-marker">marker's own .md</a>
-        <button id="reset">Convert another</button>
+<main class="app-frame">
+  <header class="app-header">
+    <div class="brand-lockup">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M7 3.75h7l4 4V20.25H7z" />
+          <path d="M14 3.75v4h4M9.5 12h6M9.5 15h4.25" />
+        </svg>
+      </span>
+      <div>
+        <div class="wordmark">PDF<span>2</span>DOCX</div>
+        <div class="workspace-title">Document converter</div>
       </div>
     </div>
 
-    <details class="card history" id="history-panel">
-      <summary>History <span class="meta" id="history-summary"></span></summary>
-      <div class="tablewrap">
-        <table id="history-table" class="hidden">
-          <thead>
-            <tr>
-              <th>File</th><th>When</th><th class="num">Pages</th>
-              <th>Mode</th><th class="num">Cost</th><th>Status</th><th></th>
-            </tr>
-          </thead>
-          <tbody id="history-body"></tbody>
-        </table>
-      </div>
-      <div class="empty" id="history-empty">No conversions yet.</div>
-      <div class="actions" id="history-actions"></div>
-    </details>
+    <div class="header-status" aria-label="Processing status">
+      <span class="status-pill"><i aria-hidden="true"></i> Local processing</span>
+      <span class="privacy-note">Your files stay on this machine</span>
+    </div>
 
-    <p class="sub">Runs locally · history kept on this machine</p>
-  </aside>
+    <button class="theme-toggle" id="theme-toggle" type="button"
+            aria-label="Switch to dark theme" aria-pressed="false">
+      <span id="theme-icon" aria-hidden="true">☾</span>
+      <span id="theme-label">Dark</span>
+    </button>
+  </header>
 
-  <!-- ---------------------------------------------------------- preview -- -->
-  <section class="pane" id="preview-pane">
-    <header>
-      <h2>Document preview</h2>
-      <div class="legend" id="legend"></div>
-      <div class="spacer"></div>
-      <div class="zoom">
-        <button class="tiny" id="zoom-out" title="Zoom out">−</button>
-        <button class="tiny" id="zoom-fit" title="Fit the pane">Fit</button>
-        <button class="tiny" id="zoom-in" title="Zoom in">+</button>
+  <div class="shell">
+
+    <!-- ----------------------------------------------------------- rail -- -->
+    <aside class="rail workspace-card" id="controls-pane" aria-labelledby="controls-title">
+      <header class="panel-header">
+        <div>
+          <span class="eyebrow">New conversion</span>
+          <h1 id="controls-title">Convert your PDF</h1>
+        </div>
+        <span class="step-badge">01</span>
+      </header>
+
+      <div class="rail-body">
+        <p class="panel-intro">Choose a document and tune how its Word output should be rebuilt.</p>
+
+        <div class="warn hidden" id="keywarn" role="status">
+          <strong>OpenRouter key missing</strong>
+          <span>Add <code>OPENROUTER_API_KEY</code> to <code>.env</code> and restart the server.</span>
+        </div>
+
+        <section class="card upload-card" id="upload-card" aria-labelledby="upload-title">
+          <button id="drop" type="button" aria-describedby="hint">
+            <span class="upload-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24">
+                <path d="M12 15V4m0 0L8.25 7.75M12 4l3.75 3.75M5 13.75v4.5c0 .97.78 1.75 1.75 1.75h10.5c.97 0 1.75-.78 1.75-1.75v-4.5" />
+              </svg>
+            </span>
+            <span class="drop-copy">
+              <strong id="upload-title">Choose a PDF file</strong>
+              <span>or drag and drop it here</span>
+            </span>
+            <span class="choose-pill">Browse</span>
+          </button>
+          <input id="picker" type="file" accept="application/pdf,.pdf" />
+          <div class="upload-meta">
+            <span id="hint">Loading configuration…</span>
+            <span>PDF only</span>
+          </div>
+
+          <label class="field" for="layout">Output format</label>
+          <div class="select-control">
+            <select id="layout">
+              <option value="structured">Editable document</option>
+              <option value="replica">Visual replica</option>
+              <option value="flow">Editable flow</option>
+              <option value="marker">Marker (local)</option>
+              <option value="mathpix">Mathpix (cloud)</option>
+            </select>
+          </div>
+          <div class="hint" id="layout-hint"></div>
+
+          <div id="columns-field" class="hidden">
+            <label class="field" for="columns">Columns</label>
+            <div class="select-control">
+              <select id="columns">
+                <option value="natural">Natural (one column)</option>
+                <option value="multi">Match the source PDF</option>
+              </select>
+            </div>
+            <div class="hint" id="columns-hint"></div>
+          </div>
+
+          <label class="field" for="model">Vision model <span id="model-note"></span></label>
+          <div class="select-control">
+            <select id="model"><option>Loading models…</option></select>
+          </div>
+        </section>
+
+        <section class="card job-card hidden" id="job-card" aria-label="Current conversion">
+          <div class="job-heading">
+            <span class="file-icon" aria-hidden="true">PDF</span>
+            <div class="job-copy">
+              <div class="file" id="job-file"></div>
+              <div class="meta" id="job-meta"></div>
+            </div>
+          </div>
+
+          <div class="actions" id="start-actions">
+            <button class="primary" id="start">Convert to Word <span aria-hidden="true">→</span></button>
+            <button id="discard">Discard</button>
+          </div>
+
+          <div class="hidden" id="run-area">
+            <div class="bar"><i id="bar-fill"></i></div>
+            <div class="status" id="job-status">Queued…</div>
+            <div class="cost hidden" id="cost-box">Cost <b id="cost-value">—</b><span id="cost-note"></span></div>
+          </div>
+
+          <div class="actions hidden" id="actions">
+            <a class="btn primary" id="dl-docx">.docx</a>
+            <a class="btn" id="dl-md">.md</a>
+            <a class="btn hidden" id="dl-marker">marker's own .md</a>
+            <details class="exports-box hidden" id="mathpix-exports"></details>
+            <button id="reset">Convert another</button>
+          </div>
+        </section>
+
+        <details class="card history" id="history-panel">
+          <summary>
+            <span><span class="history-icon" aria-hidden="true">↺</span> Recent conversions</span>
+            <span class="meta" id="history-summary"></span>
+          </summary>
+          <div class="tablewrap">
+            <table id="history-table" class="hidden">
+              <thead>
+                <tr>
+                  <th>File</th><th>When</th><th class="num">Pages</th>
+                  <th>Mode</th><th class="num">Cost</th><th>Status</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="history-body"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="history-empty">No conversions yet.</div>
+          <div class="actions" id="history-actions"></div>
+        </details>
+
+        <p class="local-note"><span aria-hidden="true">✓</span> Runs locally · history is kept on this machine</p>
       </div>
-    </header>
-    <div class="body" id="preview-body">
-      <div class="placeholder" id="preview-empty">
-        Convert a PDF, or pick one from the history, to see its pages and what the converter found on them.
-      </div>
-      <div class="stage-wrap hidden" id="stage-wrap">
-        <div class="stage" id="stage">
-          <img id="page-image" alt="" />
-          <svg id="overlay" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg"></svg>
+    </aside>
+
+    <!-- -------------------------------------------------------- preview -- -->
+    <section class="pane workspace-card" id="preview-pane" aria-labelledby="preview-title">
+      <header class="panel-header">
+        <div class="panel-title-row">
+          <span class="panel-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M6 3.75h8l4 4v12.5H6zM14 3.75v4h4M9 12h6M9 15h6" /></svg>
+          </span>
+          <div><span class="eyebrow">Source</span><h2 id="preview-title">Document preview</h2></div>
+        </div>
+        <div class="legend" id="legend"></div>
+        <div class="spacer"></div>
+        <div class="zoom" aria-label="Preview zoom controls">
+          <button class="tiny icon-button" id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button>
+          <button class="tiny" id="zoom-fit" title="Fit the pane">Fit</button>
+          <button class="tiny icon-button" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button>
+        </div>
+      </header>
+      <div class="body" id="preview-body">
+        <div class="placeholder" id="preview-empty">
+          <span class="placeholder-art" aria-hidden="true">
+            <svg viewBox="0 0 64 64"><path d="M18 10h21l9 9v35H18z" /><path d="M39 10v10h9M25 31h16M25 38h16M25 45h10" /></svg>
+          </span>
+          <strong>Your document preview</strong>
+          <span>Upload a PDF or open one from history to inspect its pages and detected content.</span>
+        </div>
+        <div class="stage-wrap hidden" id="stage-wrap">
+          <div class="stage" id="stage">
+            <img id="page-image" alt="" />
+            <svg id="overlay" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg"></svg>
+          </div>
         </div>
       </div>
-    </div>
-    <footer class="hidden" id="pager">
-      <div class="pager">
-        <button class="tiny" id="prev-page" title="Previous page">←</button>
-        <input id="page-number" type="text" inputmode="numeric" value="1" />
-        <span class="meta">/ <span id="page-total">1</span></span>
-        <button class="tiny" id="next-page" title="Next page">→</button>
-      </div>
-      <span class="meta" id="page-note"></span>
-    </footer>
-  </section>
+      <footer class="hidden" id="pager">
+        <div class="pager">
+          <button class="tiny icon-button" id="prev-page" title="Previous page" aria-label="Previous page">←</button>
+          <input id="page-number" type="text" inputmode="numeric" value="1" />
+          <span class="meta">/ <span id="page-total">1</span></span>
+          <button class="tiny icon-button" id="next-page" title="Next page" aria-label="Next page">→</button>
+        </div>
+        <span class="meta" id="page-note"></span>
+      </footer>
+    </section>
 
-  <!-- ----------------------------------------------------------- output -- -->
-  <section class="pane" id="output-pane">
-    <header>
-      <div class="tabs" id="tabs">
-        <button data-tab="rendered" aria-selected="true">Markdown rendering</button>
-        <button data-tab="text" aria-selected="false">Markdown text</button>
-        <button data-tab="blocks" aria-selected="false">JSON blocks</button>
+    <!-- --------------------------------------------------------- output -- -->
+    <section class="pane workspace-card" id="output-pane" aria-label="Converted output">
+      <header class="panel-header output-header">
+        <div class="panel-title-row output-title">
+          <span class="panel-icon output-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24"><path d="M6 3.75h8l4 4v12.5H6zM14 3.75v4h4M9 12h6M9 15h6M9 18h4" /></svg>
+          </span>
+          <div><span class="eyebrow">Result</span><h2>Converted output</h2></div>
+        </div>
+        <div class="tabs" id="tabs">
+          <button data-tab="rendered" aria-selected="true">Markdown rendering</button>
+          <button data-tab="text" aria-selected="false">Markdown text</button>
+          <button data-tab="blocks" aria-selected="false">JSON blocks</button>
+        </div>
+        <div class="spacer"></div>
+        <button class="tiny" id="scope">This page</button>
+        <button class="tiny" id="copy">Copy</button>
+      </header>
+      <div class="body" id="output-body">
+        <div class="placeholder" id="output-empty">
+          <span class="placeholder-art output-art" aria-hidden="true">
+            <svg viewBox="0 0 64 64"><path d="M15 12h34v40H15z" /><path d="M23 25l5 5-5 5M32 36h9M32 27h9" /></svg>
+          </span>
+          <strong>Ready for conversion</strong>
+          <span>Your editable content, Markdown, and detected blocks will appear here.</span>
+        </div>
+        <div class="rendered hidden" id="tab-rendered"></div>
+        <pre class="plain hidden" id="tab-text"></pre>
+        <div class="blocks hidden" id="tab-blocks"></div>
       </div>
-      <div class="spacer"></div>
-      <button class="tiny" id="scope">This page</button>
-      <button class="tiny" id="copy">Copy</button>
-    </header>
-    <div class="body" id="output-body">
-      <div class="placeholder" id="output-empty">The converted document appears here.</div>
-      <div class="rendered hidden" id="tab-rendered"></div>
-      <pre class="plain hidden" id="tab-text"></pre>
-      <div class="blocks hidden" id="tab-blocks"></div>
-    </div>
-  </section>
+    </section>
 
-</div>
+  </div>
+</main>
 
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/katex/katex.min.js"></script>
 <script src="/static/vendor/katex/contrib/auto-render.min.js"></script>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=20260821-dashboard"></script>
 </body>
 </html>

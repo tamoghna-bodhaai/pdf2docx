@@ -338,8 +338,8 @@ def test_a_reference_out_of_the_working_directory_is_not_embedded(tmp_path):
 # -- which units the model answered in --------------------------------------- #
 #
 # The box is asked for on a 0-1000 grid, and models do not reliably give one:
-# `anthropic/claude-sonnet-5` — this project's own default — answers in the
-# pixels of the image it was shown. Clamping those into the grid used to turn a
+# some answer in the pixels of the image they were shown. Clamping those into
+# the grid used to turn a
 # good box into a confidently wrong one, because every coordinate past 1000
 # collapsed onto the page's right and bottom edges.
 

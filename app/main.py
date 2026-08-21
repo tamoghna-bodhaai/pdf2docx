@@ -18,6 +18,11 @@ from . import detection, history
 from .columns import source_columns
 from .config import settings
 from .marker_client import RAW_DIR, RAW_IMAGE_DIR
+from .mathpix_client import FORMATS as MATHPIX_FORMATS
+from .mathpix_client import RAW_DIR as MATHPIX_RAW_DIR
+from .mathpix_client import RAW_IMAGE_DIR as MATHPIX_RAW_IMAGE_DIR
+from .mathpix_client import requested_formats
+from .model_policy import ModelPolicyError, require_model_allowed
 from .pdf_render import page_count, page_zoom
 from .pipeline import ConversionUsage, convert_pdf
 from .vision import list_vision_models
@@ -31,7 +36,7 @@ RUNNING = ("queued", "rendering", "transcribing", "building")
 app = FastAPI(title="PDF → DOCX", version="1.1.0")
 
 
-LAYOUTS = ("structured", "replica", "flow", "marker")
+LAYOUTS = ("structured", "replica", "flow", "marker", "mathpix")
 
 # The two answers the browser can give about columns. `natural` is one flowing
 # column — what a transcription is, being one linear stream of text — and `multi`
@@ -56,15 +61,52 @@ def _columns_choice(value: str) -> str:
     return choice if choice in COLUMN_CHOICES else ""
 
 
-def _needs_api_key(layout: str) -> bool:
-    """Whether the chosen path will actually call OpenRouter.
+def _required_credential(layout: str) -> str | None:
+    """Which credential the chosen path needs, or None if it needs none.
 
-    `marker` never does: the sidecar converts the whole document locally, which
-    makes it the one mode that works on a machine without a key. Every other
-    mode may reach for the model — `flow` for every page, the replica modes for
-    a scanned page or an equation crop — so all of them are asked for one.
+    Three answers rather than two, because the modes now disagree about more
+    than whether they are remote. `flow` and the replica modes may reach for the
+    vision model — `flow` for every page, the replica modes for a scanned page
+    or an equation crop — so all of them want an OpenRouter key. `mathpix` is
+    remote but never touches OpenRouter: it wants Mathpix's own credentials and
+    nothing else.
+
+    Note what this means for `app.model_policy`, which is about OpenRouter model
+    ids. A mode that returns anything other than "openrouter" here never reaches
+    a model this application chose, so the policy has nothing to say about it —
+    that is already true of `marker` and is now also true of `mathpix`.
     """
-    return layout != "marker"
+    if layout == "marker":
+        return None
+    if layout == "mathpix":
+        return "mathpix"
+    return "openrouter"
+
+
+def _require_credential(layout: str) -> None:
+    """Refuse a job whose backend has no way to authenticate."""
+    needed = _required_credential(layout)
+    if needed == "mathpix" and not settings.mathpix_app_key:
+        raise HTTPException(
+            status_code=503,
+            detail="MATHPIX_APP_KEY is required by the mathpix output mode.",
+        )
+    if needed == "openrouter" and not settings.api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="OPENROUTER_API_KEY is required by the selected extraction path.",
+        )
+
+
+def _model_choice(value: str, fallback: str, *, remote: bool) -> str:
+    """Validate model selections before a job can reach a remote call."""
+    try:
+        selected = require_model_allowed(value.strip() or fallback)
+        if remote and settings.locate_figures and settings.figure_model:
+            require_model_allowed(settings.figure_model)
+        return selected
+    except ModelPolicyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @dataclass
@@ -137,8 +179,21 @@ class Job:
             "has_md": self._file("document.md").exists(),
             "has_source": self._file("source.pdf").exists(),
             "has_marker": self._file(f"{RAW_DIR}/document.md").exists(),
+            "has_rebuilt": self._file("rebuilt.docx").exists(),
+            # Which of Mathpix's exports this job actually has, read from disk
+            # rather than remembered. A format Mathpix does not produce for a
+            # given document — no .xlsx without tables — is simply absent, and
+            # the browser draws a button per entry here rather than guessing.
+            "mathpix_formats": self.mathpix_formats(),
             "has_detection": self._file("detection.json").exists(),
         }
+
+    def mathpix_formats(self) -> list[str]:
+        return [
+            entry.ext
+            for entry in MATHPIX_FORMATS
+            if self._file(f"{MATHPIX_RAW_DIR}/document.{entry.ext}").exists()
+        ]
 
     def to_record(self) -> dict:
         record = self.as_dict()
@@ -290,6 +345,16 @@ def config() -> dict:
         "marker_url": settings.marker_url,
         "marker_options": settings.marker_options,
         "marker_extra_formats": list(settings.marker_extra_formats),
+        "mathpix_url": settings.mathpix_url,
+        "mathpix_options": settings.mathpix_options,
+        "mathpix_requested": list(requested_formats(settings.mathpix_formats)),
+        # The browser labels its download buttons from this, so the list of
+        # formats lives in one place rather than being spelled out again in JS.
+        "mathpix_formats": [
+            {"ext": entry.ext, "media_type": entry.media_type, "note": entry.note}
+            for entry in MATHPIX_FORMATS
+        ],
+        "mathpix_key_configured": bool(settings.mathpix_app_key),
         "model": settings.model,
         "reasoning_effort": settings.reasoning_effort or None,
         "dpi": settings.dpi,
@@ -306,7 +371,7 @@ def config() -> dict:
 
 @app.get("/api/models")
 def models() -> dict:
-    """Vision-capable models currently available on OpenRouter."""
+    """Allowed vision models currently available on OpenRouter."""
     try:
         return {"models": list_vision_models(), "selected": settings.model}
     except Exception as exc:
@@ -334,11 +399,10 @@ async def convert(
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Please upload a .pdf file.")
     selected_layout = _layout_choice(layout)
-    if not settings.api_key and _needs_api_key(selected_layout):
-        raise HTTPException(
-            status_code=503,
-            detail="OPENROUTER_API_KEY is required by the selected extraction path.",
-        )
+    selected_model = _model_choice(
+        model, settings.model, remote=_required_credential(selected_layout) == "openrouter"
+    )
+    _require_credential(selected_layout)
 
     job_id = uuid.uuid4().hex[:12]
     directory = settings.jobs_dir / job_id
@@ -366,7 +430,7 @@ async def convert(
         id=job_id,
         filename=file.filename,
         pages=pages,
-        model=model.strip() or settings.model,
+        model=selected_model,
         layout=selected_layout,
         columns=_columns_choice(columns),
         # Read here rather than in the browser, which cannot see inside a PDF,
@@ -400,8 +464,10 @@ def start_job(
         raise HTTPException(status_code=409, detail="This conversion is already running.")
 
     selected_layout = _layout_choice(layout) if layout.strip() else job.layout
-    if not settings.api_key and _needs_api_key(selected_layout):
-        raise HTTPException(status_code=503, detail="OPENROUTER_API_KEY is required by the selected extraction path.")
+    selected_model = _model_choice(
+        model, job.model, remote=_required_credential(selected_layout) == "openrouter"
+    )
+    _require_credential(selected_layout)
 
     pdf_path = (job.directory or Path()) / "source.pdf"
     if not pdf_path.exists():
@@ -410,7 +476,7 @@ def start_job(
         )
 
     with JOBS_LOCK:
-        job.model = model.strip() or job.model
+        job.model = selected_model
         job.layout = selected_layout
         job.columns = _columns_choice(columns) or job.columns
         job.status = "queued"
@@ -487,7 +553,11 @@ def job_page(job_id: str, number: int) -> FileResponse:
 # Where a job's Markdown may point. Figures this application cut, and images
 # marker extracted — nothing else in a job directory is meant to be fetched by
 # the browser, and the finished documents have their own download route.
-ASSET_DIRS = ("figures", f"{RAW_DIR}/{RAW_IMAGE_DIR}")
+ASSET_DIRS = (
+    "figures",
+    f"{RAW_DIR}/{RAW_IMAGE_DIR}",
+    f"{MATHPIX_RAW_DIR}/{MATHPIX_RAW_IMAGE_DIR}",
+)
 
 
 @app.get("/api/jobs/{job_id}/asset/{asset:path}")
@@ -520,7 +590,31 @@ DOWNLOADS = {
     "marker-html": (f"{RAW_DIR}/document.html", "text/html", "marker.html"),
     "marker-json": (f"{RAW_DIR}/document.json", "application/json", "marker.json"),
     "marker-meta": (f"{RAW_DIR}/metadata.json", "application/json", "marker.meta.json"),
+    "rebuilt-docx": (
+        "rebuilt.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "rebuilt.docx",
+    ),
+    "mathpix-meta": (
+        f"{MATHPIX_RAW_DIR}/metadata.json", "application/json", "mathpix.meta.json"
+    ),
 }
+
+# Every export Mathpix offers, generated from the client's own table rather than
+# written out here. A format Mathpix ships later is a row in that table and
+# nothing else — this loop, the config endpoint and the browser's button row all
+# follow it. The route below needs no special case: it already refuses a format
+# it does not know and reports one this job has not got as not ready.
+DOWNLOADS.update(
+    {
+        f"mathpix-{entry.ext}": (
+            f"{MATHPIX_RAW_DIR}/document.{entry.ext}",
+            entry.media_type,
+            f"mathpix.{entry.ext}",
+        )
+        for entry in MATHPIX_FORMATS
+    }
+)
 
 
 @app.get("/api/jobs/{job_id}/download")

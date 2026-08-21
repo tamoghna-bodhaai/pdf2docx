@@ -3,6 +3,30 @@
 
 const $ = (id) => document.getElementById(id);
 
+const themeToggle = $('theme-toggle');
+const themeIcon = $('theme-icon'), themeLabel = $('theme-label');
+
+function syncThemeToggle() {
+  const dark = document.documentElement.dataset.theme === 'dark';
+  const next = dark ? 'light' : 'dark';
+  themeIcon.textContent = dark ? '☀' : '☾';
+  themeLabel.textContent = dark ? 'Light' : 'Dark';
+  themeToggle.setAttribute('aria-label', `Switch to ${next} theme`);
+  themeToggle.setAttribute('aria-pressed', String(dark));
+  themeToggle.title = `Switch to ${next} theme`;
+}
+
+function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem('pdf2docx-theme', theme); } catch (_) {}
+  syncThemeToggle();
+}
+
+syncThemeToggle();
+themeToggle.addEventListener('click', () => {
+  setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
+});
+
 const drop = $('drop'), picker = $('picker'), hint = $('hint');
 const card = $('job-card'), fileEl = $('job-file'), metaEl = $('job-meta');
 const barFill = $('bar-fill'), statusEl = $('job-status');
@@ -31,7 +55,7 @@ let sourceColumns = null;
 // The modes that build the document out of one linear stream of text, and so are
 // the ones with a column decision left to make. The replica modes put every
 // block back at the coordinate it came from, columns and all.
-const FLOWING = ['flow', 'marker'];
+const FLOWING = ['flow', 'marker', 'mathpix'];
 // What PDF2DOCX_COLUMNS can say for "one column, whatever the source did". It
 // speaks a wider vocabulary than these two choices — it can also force a fixed
 // count — so anything else starts the page on the choice that reads the source.
@@ -44,9 +68,17 @@ fetch('/api/config').then(r => r.json()).then(cfg => {
     + (cfg.reasoning_effort ? ` · reasoning ${cfg.reasoning_effort}` : '');
   if (!cfg.api_key_configured) $('keywarn').classList.remove('hidden');
   if (cfg.layout) layoutSelect.value = cfg.layout;
+  mathpixFormats = cfg.mathpix_formats || [];
+  mathpixKey = !!cfg.mathpix_key_configured;
   if (cfg.columns) columnsSelect.value = SINGLE_COLUMN.includes(cfg.columns) ? 'natural' : 'multi';
   describeLayout();
 }).catch(() => { hint.textContent = 'Ready'; describeLayout(); });
+
+// Mathpix's export table, as /api/config reports it: the browser labels its
+// download buttons from the same list the client requests them from, so a
+// format added there needs no change here.
+let mathpixFormats = [];
+let mathpixKey = false;
 
 const LAYOUT_NOTES = {
   structured: 'The PDF\'s own text, fonts, images and tables are rebuilt as flowing Word '
@@ -60,10 +92,21 @@ const LAYOUT_NOTES = {
   marker: 'The whole PDF is converted locally by marker-pdf, and what it returns is kept '
     + 'as it comes — its Markdown is saved untouched beside the document, so what you see '
     + 'is marker\'s own quality. Needs the marker sidecar running; costs nothing.',
+  mathpix: 'The PDF is uploaded to Mathpix, which converts the whole document and returns '
+    + 'its own Word file with native equations — that file is what you download, byte for '
+    + 'byte, alongside every other format Mathpix renders. Needs a Mathpix key, is billed '
+    + 'per page, and the document leaves this machine.',
 };
 function describeLayout() {
-  layoutHint.textContent = LAYOUT_NOTES[layoutSelect.value] || '';
-  columnsField.classList.toggle('hidden', !FLOWING.includes(layoutSelect.value));
+  const mode = layoutSelect.value;
+  // Say now that the key is missing, rather than letting the conversion fail
+  // with a 503 after the upload. The other modes have their own warning banner;
+  // Mathpix's credentials are separate from OpenRouter's, so this is the only
+  // place that can mention them.
+  const missingKey = mode === 'mathpix' && !mathpixKey
+    ? ' MATHPIX_APP_KEY is not set, so this mode cannot run yet.' : '';
+  layoutHint.textContent = (LAYOUT_NOTES[mode] || '') + missingKey;
+  columnsField.classList.toggle('hidden', !FLOWING.includes(mode));
   describeColumns();
 }
 layoutSelect.addEventListener('change', describeLayout);
@@ -153,7 +196,7 @@ startBtn.addEventListener('click', () => startJob(currentJob));
 
 function describe(job) {
   const size = job.size_bytes ? `${(job.size_bytes / 1048576).toFixed(1)} MB · ` : '';
-  const mode = { flow: 'editable flow', structured: 'editable document', marker: 'marker' }[job.layout]
+  const mode = { flow: 'editable flow', structured: 'editable document', marker: 'marker', mathpix: 'Mathpix' }[job.layout]
     || 'visual replica';
   const columns = FLOWING.includes(job.layout) && job.columns
     ? ` · ${job.columns === 'multi' ? 'multi-column' : 'natural columns'}`
@@ -247,7 +290,8 @@ async function startJob(id) {
 function extractionSummary(job) {
   if (job.layout === 'flow') return 'extractor: vision';
   const diagnostics = job.diagnostics || [];
-  if (!diagnostics.length) return job.layout === 'marker' ? 'extractor: marker' : 'extractor: PyMuPDF';
+  if (!diagnostics.length) return { marker: 'extractor: marker', mathpix: 'extractor: mathpix' }[job.layout]
+    || 'extractor: PyMuPDF';
   const extractors = [...new Set(diagnostics.map(item => item.extractor))].join(' + ');
   // Blank pages get their own phrasing and their page numbers. They are not a
   // fallback — nothing was retried — and a job that finishes with pages that
@@ -306,7 +350,33 @@ function showDownloads(job) {
   const marker = $('dl-marker');
   marker.href = `/api/jobs/${job.id}/download?format=marker-md`;
   marker.classList.toggle('hidden', !job.has_marker);
+  showMathpixExports(job);
   actions.classList.remove('hidden');
+}
+
+// Mathpix renders a dozen formats from the one conversion, so the buttons are
+// built from what the job actually has rather than written out in the markup.
+// A format Mathpix does not produce for a given document — no .xlsx without
+// tables — is simply not there, which is a fact about the document and not a
+// failure worth reporting as one.
+function showMathpixExports(job) {
+  const box = $('mathpix-exports');
+  const available = job.mathpix_formats || [];
+  box.classList.toggle('hidden', !available.length);
+  if (!available.length) { box.innerHTML = ''; return; }
+
+  const notes = Object.fromEntries(mathpixFormats.map(entry => [entry.ext, entry.note || '']));
+  const links = available.map(ext => {
+    const title = notes[ext] ? ` title="${notes[ext]}"` : '';
+    return `<a class="btn" href="/api/jobs/${job.id}/download?format=mathpix-${ext}"${title}>.${ext}</a>`;
+  });
+  if (job.has_rebuilt) {
+    links.push(`<a class="btn" href="/api/jobs/${job.id}/download?format=rebuilt-docx"`
+      + ` title="This application's own render of Mathpix's Markdown, for comparison">rebuilt .docx</a>`);
+  }
+  links.push(`<a class="btn" href="/api/jobs/${job.id}/download?format=mathpix-meta">metadata</a>`);
+  box.innerHTML = `<summary>All Mathpix exports (${available.length})</summary>`
+    + `<div class="exports">${links.join('')}</div>`;
 }
 
 function money(value, known) {
@@ -382,7 +452,7 @@ async function loadHistory() {
       <td class="name" title="${job.filename.replace(/"/g, '&quot;')}">${job.filename}</td>
       <td>${when(job.created_at)}</td>
       <td class="num">${job.pages || '—'}</td>
-      <td>${{ flow: 'flow', structured: 'editable', marker: 'marker' }[job.layout] || 'replica'}</td>
+      <td>${{ flow: 'flow', structured: 'editable', marker: 'marker', mathpix: 'mathpix' }[job.layout] || 'replica'}</td>
       <td class="num">${money(job.cost, job.cost_known)}</td>
       <td>${statusPill(job)}</td>
       <td class="num"><button class="link" data-del="${job.id}">delete</button></td>`;

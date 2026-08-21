@@ -13,6 +13,7 @@ import httpx
 from openai import APIConnectionError, APIStatusError, OpenAI, RateLimitError
 
 from .config import settings
+from .model_policy import is_model_allowed, require_model_allowed
 from .xml_text import xml_safe
 
 SYSTEM_PROMPT = """\
@@ -122,7 +123,7 @@ def build_client() -> OpenAI:
 
 
 def list_vision_models() -> list[dict]:
-    """Vision-capable models currently offered by OpenRouter, cheapest first."""
+    """Allowed vision models currently offered by OpenRouter, cheapest first."""
     response = httpx.get(
         settings.base_url.rstrip("/") + MODELS_URL,
         headers=settings.headers,
@@ -132,6 +133,9 @@ def list_vision_models() -> list[dict]:
 
     models: list[dict] = []
     for entry in response.json().get("data", []):
+        model_id = str(entry.get("id") or "").strip()
+        if not is_model_allowed(model_id):
+            continue
         architecture = entry.get("architecture") or {}
         modalities = architecture.get("input_modalities") or []
         if "image" not in modalities:
@@ -145,8 +149,8 @@ def list_vision_models() -> list[dict]:
         per_mtok = round(prompt_price * 1_000_000, 3) if prompt_price and prompt_price >= 0 else None
         models.append(
             {
-                "id": entry.get("id"),
-                "name": entry.get("name") or entry.get("id"),
+                "id": model_id,
+                "name": entry.get("name") or model_id,
                 "context_length": entry.get("context_length"),
                 "prompt_price_per_mtok": per_mtok,
             }
@@ -238,7 +242,7 @@ def transcribe_math(
     if not images:
         return MathResult(latex=[])
 
-    model = model or settings.model
+    model = require_model_allowed(model or settings.model)
     content: list[dict] = []
     for index, data in enumerate(images, start=1):
         content.append({"type": "text", "text": f"Equation {index}:"})
@@ -308,7 +312,7 @@ def transcribe_page(
     attempts: int = 3,
 ) -> PageTranscript:
     """Return the Markdown transcription of a single rendered page, with its cost."""
-    model = model or settings.model
+    model = require_model_allowed(model or settings.model)
     image_b64 = base64.standard_b64encode(image_path.read_bytes()).decode("ascii")
     body = _request_body(image_b64, page_number, total_pages, model)
 

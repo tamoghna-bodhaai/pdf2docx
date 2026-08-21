@@ -9,6 +9,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .model_policy import DEFAULT_MODEL, is_model_allowed
+
 load_dotenv()
 
 
@@ -24,6 +26,12 @@ def _float(name: str, default: float) -> float:
         return float(os.environ.get(name, default))
     except ValueError:
         return default
+
+
+def _model_setting(name: str, default: str) -> str:
+    """Read a model id, replacing legacy disallowed values with a safe default."""
+    raw = os.environ.get(name, "").strip()
+    return raw if raw and is_model_allowed(raw) else default
 
 
 def _data_dir() -> Path:
@@ -62,6 +70,45 @@ def _marker_extra_formats() -> tuple[str, ...]:
     return tuple(value for value in wanted if value in {"markdown", "html", "json", "chunks"})
 
 
+def _mathpix_options() -> dict:
+    """Whatever the user wants passed straight through to Mathpix's own options.
+
+    Deliberately not an allowlist, for the same reason `_marker_options` is not.
+    The Files API accepts every OCR and conversion option `POST /v3/pdf` does, so
+    `rm_spaces`, `idiomatic_eqn_arrays`, `include_equation_tags`,
+    `enable_tables_fallback`, `alphabets_allowed`, `conversion_options` or
+    whatever Mathpix adds next has to reach it intact for the mode to be worth
+    having. A malformed value is dropped rather than raised.
+    """
+    raw = os.environ.get("PDF2DOCX_MATHPIX_OPTIONS", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _mathpix_formats() -> tuple[str, ...]:
+    """Which of Mathpix's exports to ask for. Empty means all of them.
+
+    This inverts `_marker_extra_formats` above, and the difference between the
+    two backends is the reason. Every extra marker renderer is another full
+    conversion of the PDF, so marker's list is off by default; Mathpix converts
+    the document once and renders each format from that same job, so there is no
+    reason to withhold any.
+
+    Only the parsing happens here. Which names are real, what an empty selection
+    resolves to, and the fact that `docx` is always included are
+    `mathpix_client.requested_formats`'s to decide, because that is where the
+    table of formats lives — and importing it here would be circular.
+    """
+    raw = os.environ.get("PDF2DOCX_MATHPIX_FORMATS", "").strip()
+    wanted = (value.strip().lower() for value in raw.split(","))
+    return tuple(value for value in wanted if value)
+
+
 @dataclass(frozen=True)
 class Settings:
     # marker-pdf sidecar, used by the `marker` layout mode. Its timeout covers a
@@ -81,6 +128,34 @@ class Settings:
     # only changes what it is asked for.
     marker_detection: bool = os.environ.get("PDF2DOCX_MARKER_DETECTION", "on").strip().lower() != "off"
 
+    # Mathpix Files API, used by the `mathpix` layout mode. Unlike every other
+    # backend here this one is a paid remote service and the document leaves the
+    # machine, so retention is off by default and the job deletes what it
+    # uploaded once it has the results.
+    mathpix_url: str = os.environ.get("MATHPIX_URL", "https://api.mathpix.com").strip().rstrip("/")
+    mathpix_app_id: str = os.environ.get("MATHPIX_APP_ID", "").strip()
+    mathpix_app_key: str = os.environ.get("MATHPIX_APP_KEY", "").strip()
+    # Per HTTP call, not per document — a Mathpix conversion is many short
+    # requests and one long wait, and the wait is `mathpix_poll_timeout`.
+    mathpix_connect_timeout: float = _float("PDF2DOCX_MATHPIX_CONNECT_TIMEOUT", 10.0)
+    mathpix_request_timeout: float = _float("PDF2DOCX_MATHPIX_REQUEST_TIMEOUT", 120.0)
+    mathpix_poll_interval: float = _float("PDF2DOCX_MATHPIX_POLL_INTERVAL", 2.0)
+    mathpix_poll_timeout: float = _float("PDF2DOCX_MATHPIX_POLL_TIMEOUT", 1800.0)
+    mathpix_options: dict = field(default_factory=_mathpix_options)
+    mathpix_formats: tuple[str, ...] = field(default_factory=_mathpix_formats)
+    # Read Mathpix's own line geometry back for the page viewer. Costs nothing
+    # extra: `lines.json` is produced whether or not anyone asks for it.
+    mathpix_detection: bool = os.environ.get("PDF2DOCX_MATHPIX_DETECTION", "on").strip().lower() != "off"
+    # Let Mathpix retain the document to improve their models. Off unless asked
+    # for: this is someone else's PDF, and the default should not give it away.
+    mathpix_improve: bool = os.environ.get("PDF2DOCX_MATHPIX_IMPROVE", "off").strip().lower() == "on"
+    # Delete the uploaded document from Mathpix once the results are downloaded.
+    mathpix_delete: bool = os.environ.get("PDF2DOCX_MATHPIX_DELETE", "on").strip().lower() != "off"
+    # What Mathpix charges per page, used only to estimate a job's cost. Mathpix
+    # bills per page rather than per token, so the figure this reports is an
+    # estimate from the page count and is flagged as one.
+    mathpix_page_rate: float = _float("PDF2DOCX_MATHPIX_PAGE_RATE", 0.0015)
+
     # OpenRouter (OpenAI-compatible) endpoint
     api_key: str = os.environ.get("OPENROUTER_API_KEY", "")
     base_url: str = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
@@ -88,7 +163,9 @@ class Settings:
     app_title: str = os.environ.get("OPENROUTER_APP_TITLE", "PDF to DOCX")
 
     # Model
-    model: str = os.environ.get("PDF2DOCX_MODEL", "anthropic/claude-sonnet-5")
+    model: str = field(
+        default_factory=lambda: _model_setting("PDF2DOCX_MODEL", DEFAULT_MODEL)
+    )
     # Ask a second time where a scanned page's figures are, reading their boxes
     # off a coordinate grid ruled over the page. The boxes a transcription
     # reports alongside the text are its least reliable output, and a crop taken
@@ -100,7 +177,9 @@ class Settings:
     # different skill from transcribing, and a cheap model can be poor at it
     # while transcribing perfectly well — so it can be pointed somewhere else.
     # Empty means use the transcription model.
-    figure_model: str = os.environ.get("PDF2DOCX_FIGURE_MODEL", "").strip()
+    figure_model: str = field(
+        default_factory=lambda: _model_setting("PDF2DOCX_FIGURE_MODEL", "")
+    )
     reasoning_effort: str = os.environ.get("PDF2DOCX_REASONING_EFFORT", "").strip()
     max_tokens: int = _int("PDF2DOCX_MAX_TOKENS", 16000)
 

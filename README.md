@@ -8,10 +8,11 @@ equations** you can click into and edit.
      ┌─ digital page ─▶ PyMuPDF ─▶ text spans, images, vectors, rules ┐
 PDF ─┼─ equation crop ─▶ vision (OpenRouter) ─────────────────────────┼─▶ .docx
      ├─ scanned page ──▶ vision (OpenRouter) ─────────────────────────┤
-     └─ marker mode ───▶ marker-pdf sidecar, kept as it comes ────────┘
+     ├─ marker mode ───▶ marker-pdf sidecar, kept as it comes ────────┤
+     └─ mathpix mode ──▶ Mathpix Files API ──▶ its own .docx ──────────┘
 ```
 
-Four output modes:
+Five output modes:
 
 | Mode | What you get |
 |---|---|
@@ -19,6 +20,7 @@ Four output modes:
 | **`replica`** | Every element becomes a floating frame at its exact PDF coordinates. Looks like the original; blocks do not reflow when you edit them. |
 | **`flow`** | The model reads each page and rewrites it as ordinary flowing Word content. Fully editable; positions and fonts are not preserved. |
 | **`marker`** | The whole PDF is converted locally by [marker-pdf](https://github.com/datalab-to/marker) and what it returns is written as it comes. Fully local, costs nothing, and its own Markdown is kept beside the document so you can see marker's quality rather than this codebase's reading of it. |
+| **`mathpix`** | The whole PDF is converted by the [Mathpix Files API](https://docs.mathpix.com/guides/files-api-overview), which returns its own Word file with native equations already in it. **That file is the download** — this codebase does not build it — along with every other format Mathpix renders. Paid, remote, and the document leaves your machine. |
 
 ## How faithful is "replica"?
 
@@ -133,6 +135,72 @@ legal review before relying on this mode commercially. Note also that its Surya
 server wants most of an 8 GB GPU to itself; where it will not fit, `TORCH_DEVICE=cpu`
 works and is much slower.
 
+### Mathpix
+
+The `mathpix` output mode hands the whole PDF to the [Mathpix Files
+API](https://docs.mathpix.com/guides/files-api-overview). Get credentials from
+the [Mathpix console](https://console.mathpix.com/) and set them under the same
+names Mathpix's own client reads, so an existing setup already works:
+
+```bash
+MATHPIX_APP_ID=...
+MATHPIX_APP_KEY=...
+```
+
+Then pick **Mathpix** in the output menu. No OpenRouter key is involved.
+
+This is the only backend here that is a paid remote service — Mathpix list
+around **$1.50 per 1,000 pages**, and **the document is uploaded to them**. Two
+defaults follow from that: retention is off (`improve_mathpix` is sent as
+`false` unless `PDF2DOCX_MATHPIX_IMPROVE=on`), and the job deletes what it
+uploaded once the results are downloaded (`PDF2DOCX_MATHPIX_DELETE=off` to keep
+it). The cost the UI reports is an **estimate** derived from the page count,
+shown as unpriced, because Mathpix bills per page rather than per token and the
+API does not report a charge.
+
+Like `marker`, the mode exists to show Mathpix's own work:
+
+- **`document.docx` is Mathpix's file, copied byte for byte.** Nothing here
+  builds it. `rebuilt.docx` beside it *is* this codebase's render of the same
+  Markdown, so the two can be compared — that comparison is the point.
+- Every format Mathpix returned is written to `mathpix/` before anything reads
+  it, with a `mathpix/metadata.json` recording the options sent, which formats
+  arrived, and why any are missing.
+- Exactly two edits are made to Mathpix's Markdown, both counted in that file:
+  its CDN-hosted crops are downloaded into the job so the preview and the
+  writers can resolve them, and the document is split on Mathpix's own
+  `\pagebreak` so each source page gets its own Word page.
+- **The maths is not translated.** `math_inline_delimiters` is set at request
+  time, so Mathpix emits the `$…$` this codebase already reads instead of its
+  default `\(…\)`. Nothing rewrites it afterwards.
+- The page viewer draws Mathpix's own line geometry, read from `lines.json` —
+  which costs nothing extra, since Mathpix produces it whether or not it is
+  asked for.
+
+**Every format Mathpix offers is requested and downloadable**, because Mathpix
+converts the document once and renders each format from that same job:
+
+| | |
+|---|---|
+| Documents | `docx`, `pptx`, `xlsx` (tables only) |
+| Markup | `md`, `mmd`, `html`, `tex.zip`, `md.zip`, `mmd.zip`, `html.zip` |
+| Rendered | `pdf` (HTML pipeline), `latex.pdf` (LaTeX pipeline) |
+| Data | `lines.json`, `lines.mmd.json` |
+
+`mmd`, `lines.json` and `lines.mmd.json` arrive whether asked for or not. A
+format Mathpix does not produce for a given document — there is no `.xlsx`
+without tables — is simply absent, recorded with its reason, and its button is
+not drawn. Narrow the list with `PDF2DOCX_MATHPIX_FORMATS` if you would rather
+not ask for all of them; `docx` is always included.
+
+Everything Mathpix can be told to do is reachable without touching the code:
+`PDF2DOCX_MATHPIX_OPTIONS` is passed straight through, and wins over the
+defaults above.
+
+```bash
+PDF2DOCX_MATHPIX_OPTIONS='{"idiomatic_eqn_arrays":true,"enable_tables_fallback":true}'
+```
+
 ## Run
 
 ```bash
@@ -177,22 +245,27 @@ All settings live in `.env` (see `.env.example`).
 
 | Variable | Default | Notes |
 |---|---|---|
-| `OPENROUTER_API_KEY` | — | Required by every mode except `marker`, which converts locally. |
+| `OPENROUTER_API_KEY` | — | Required by `structured`, `replica` and `flow`. Not used by `marker` (local) or `mathpix` (its own credentials). |
+| `MATHPIX_APP_ID` / `MATHPIX_APP_KEY` | — | Required by the `mathpix` mode, and used by nothing else. |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | Change only if proxying. |
 | `OPENROUTER_APP_URL` / `_APP_TITLE` | localhost / PDF to DOCX | Attribution headers OpenRouter uses for its leaderboards. |
 | `PDF2DOCX_MARKER_URL` | `http://127.0.0.1:8011` | marker sidecar base URL, used only by the `marker` mode. |
 | `PDF2DOCX_MARKER_CONNECT_TIMEOUT` / `_REQUEST_TIMEOUT` | `2` / `900` | Connection and inference timeouts in seconds. The request timeout covers a whole document, not one page. |
 | `PDF2DOCX_MARKER_OPTIONS` | `{}` | JSON object passed straight through to marker's own configuration — anything its CLI accepts, including options added upstream after this was written. Malformed JSON is ignored. |
+| `PDF2DOCX_MATHPIX_OPTIONS` | `{}` | JSON object passed straight through to Mathpix's own options — anything `POST /v3/pdf` documents, including options added upstream after this was written. Malformed JSON is ignored. |
+| `PDF2DOCX_MATHPIX_FORMATS` | — | Which exports to request, comma separated. Blank means all of them; `docx` is always included. |
+| `PDF2DOCX_MATHPIX_IMPROVE` | `off` | Let Mathpix retain the document to improve their models. |
+| `PDF2DOCX_MATHPIX_DELETE` | `on` | Delete the upload from Mathpix's storage once its results are downloaded. |
 | `PDF2DOCX_MARKER_EXTRA_FORMATS` | *(blank)* | Extra renderers (`html`, `json`, `chunks`) to run purely so their output can be read. Each is a second conversion of the same PDF. |
-| `PDF2DOCX_LAYOUT` | `structured` | `structured` rebuilds the content as editable Word structure; `replica` reproduces the page exactly; `flow` rewrites it as ordinary Word content; `marker` converts it locally with marker-pdf. Also selectable per conversion in the UI. |
-| `PDF2DOCX_COLUMNS` | `auto` | `auto` (the UI's **multi-column**) sets each page of the output in as many columns as the source page was set in; `off` (the UI's **natural**) keeps one column throughout; a number forces that many. Applies to the flowing modes (`flow`, `marker`) — the replica modes reproduce the page's geometry already. Also selectable per conversion in the UI, which overrides this. |
+| `PDF2DOCX_LAYOUT` | `structured` | `structured` rebuilds the content as editable Word structure; `replica` reproduces the page exactly; `flow` rewrites it as ordinary Word content; `marker` converts it locally with marker-pdf; `mathpix` converts it with the Mathpix Files API and returns Mathpix's own file. Also selectable per conversion in the UI. |
+| `PDF2DOCX_COLUMNS` | `auto` | `auto` (the UI's **multi-column**) sets each page of the output in as many columns as the source page was set in; `off` (the UI's **natural**) keeps one column throughout; a number forces that many. Applies to the flowing modes (`flow`, `marker`, `mathpix`) — the replica modes reproduce the page's geometry already. Also selectable per conversion in the UI, which overrides this. |
 | `PDF2DOCX_MATH` | `auto` | `auto` reads equations back as native Word equations; `off` leaves them as pixel-exact images and makes no model calls. |
 | `PDF2DOCX_FONT_MAP` | `on` | Map PDF fonts to Times New Roman / Arial / Courier New. `off` keeps the document's own font names — only useful if the reader has them installed. |
 | `PDF2DOCX_DIAGRAM_DPI` / `PDF2DOCX_MATH_DPI` | `300` / `320` | Resolution for rasterised diagrams and equation crops. |
 | `PDF2DOCX_CROP_NATIVE` | `on` | Cap a figure cut out of a scan at the resolution the scan itself holds. A 90 DPI page has no 300 DPI detail to give, and rendering it at 300 enlarges only its grain. Vector artwork has no ceiling and is always cut at `DIAGRAM_DPI`; `off` cuts everything at `DIAGRAM_DPI`. |
 | `PDF2DOCX_LOCATE` | `on` | Ask a second time where a scanned page's figures are, reading their boxes off a coordinate grid ruled over the page. Costs one extra request per page that has figures. `off` trusts the boxes the transcription reported. |
 | `PDF2DOCX_FIGURE_MODEL` | *(blank)* | Model for that locating pass. Blank uses `PDF2DOCX_MODEL`. Reading a box off a ruled line is a different skill from transcribing, so a small transcription model can be paired with a capable one here. |
-| `PDF2DOCX_MODEL` | `anthropic/claude-sonnet-5` | Any vision-capable model id. The web UI also offers a per-conversion picker, populated live from OpenRouter, so you never have to guess an id. |
+| `PDF2DOCX_MODEL` | `google/gemini-3.6-flash` | Any explicit vision-capable non-Anthropic model id. The picker excludes Claude and dynamic router aliases. Disallowed environment values fall back to this default; per-conversion API overrides are rejected, so no conversion path can call Claude. |
 | `PDF2DOCX_REASONING_EFFORT` | *(unset)* | `low`/`medium`/`high`, passed through to reasoning-capable models. Omitted entirely when blank. |
 | `PDF2DOCX_MAX_TOKENS` | `16000` | Output budget per page. |
 | `PDF2DOCX_DPI` / `PDF2DOCX_MAX_EDGE` | `180` / `2000` | Higher DPI reads small equations better and costs more image tokens; `MAX_EDGE` caps the long edge in pixels. |
@@ -229,6 +302,11 @@ are not preserved — marker does not report them. Nothing here repairs or secon
 marker's output, so a defect in the document is a defect in the conversion, which is the
 whole reason the mode exists.
 
+In **`mathpix`** mode the question does not arise for the deliverable, because the
+`.docx` you download is Mathpix's own file and this codebase never opens it. What the
+table above describes applies instead to `rebuilt.docx` — the same Markdown writer, run
+over Mathpix's Markdown, so the two renders of one document can be compared side by side.
+
 ## HTTP API
 
 The browser UI is a thin client over these endpoints:
@@ -242,14 +320,14 @@ The browser UI is a thin client over these endpoints:
 | `GET` | `/api/jobs/{id}` | Status, progress, and cost so far. |
 | `GET` | `/api/history` | Every stored conversion, newest first, plus the total spent. |
 | `GET` | `/api/jobs/{id}/markdown` | Intermediate Markdown as JSON. Figure references are relative to the job's working directory. |
-| `GET` | `/api/jobs/{id}/download?format=docx\|md\|marker-md\|marker-html\|marker-json\|marker-meta` | The finished file. The `marker-*` formats return marker's own unedited output and are present only for jobs converted in `marker` mode. |
+| `GET` | `/api/jobs/{id}/download?format=docx\|md\|marker-*\|mathpix-*\|rebuilt-docx` | The finished file. The `marker-*` and `mathpix-*` formats return that backend's own unedited output and are present only for jobs converted in that mode; `mathpix-{ext}` covers every export in the table above. A format this document has not got returns 409. |
 | `DELETE` | `/api/jobs/{id}` | Delete the job and its working directory. |
 | `DELETE` | `/api/history` | Delete every job that is not currently running. |
 
 `columns` is `natural` (one flowing column) or `multi` (each page set in as many
 columns as the source page was set in); anything else, including omitting it,
 leaves `PDF2DOCX_COLUMNS` in charge. It reaches the flowing modes (`flow`,
-`marker`) only — the replica modes reproduce the page's geometry already. The
+`marker`, `mathpix`) only — the replica modes reproduce the page's geometry already. The
 staged job reports `source_columns`, the most columns any of the PDF's first
 pages is set in, read from the PDF at upload: where that is `1` the source has no
 second column to give back, and `natural` is the only thing the output can be.
@@ -264,11 +342,11 @@ totals.
 ```bash
 # Two-step: stage, then start.
 curl -F file=@paper.pdf http://localhost:8000/api/convert
-curl -X POST -F model=anthropic/claude-sonnet-5 \
+curl -X POST -F model=google/gemini-3.6-flash \
      http://localhost:8000/api/jobs/<id>/start
 
 # Or one-shot, for scripting.
-curl -F file=@paper.pdf -F model=anthropic/claude-sonnet-5 -F start=true \
+curl -F file=@paper.pdf -F model=google/gemini-3.6-flash -F start=true \
      http://localhost:8000/api/convert
 
 curl http://localhost:8000/api/jobs/<id>
@@ -281,9 +359,12 @@ curl -OJ "http://localhost:8000/api/jobs/<id>/download?format=docx"
 app/
   main.py          FastAPI routes, job registry, background conversion
   history.py       JSON-backed record of past conversions
-  pipeline.py      all three pipelines: replica/structured, flow, and marker
+  pipeline.py      all four pipelines: replica/structured, flow, marker, mathpix
   marker_client.py validated boundary to the marker sidecar, and the two edits
                    made to its output (image prefixes, page splitting)
+  mathpix_client.py validated boundary to the Mathpix Files API, the table of
+                   every format it offers, and the two edits made to its output
+                   (image downloads, page splitting)
   pdf_extract.py   PDF → positioned layout model: spans, images, artwork, equations
   docx_replica.py  layout model → .docx of absolutely positioned shapes
   pdf_render.py    PyMuPDF rasterisation with a long-edge cap
@@ -332,9 +413,9 @@ sidecar/
   badly placed box cannot shift the rest.
 - How well that second look works depends on the model, and not in the direction price
   suggests: over repeated trials on the same page `google/gemini-3.6-flash` averaged 0.55
-  and `anthropic/claude-sonnet-5` 0.46. The hardest figures are the sparse ones — a
+  in one benchmark. The hardest figures are the sparse ones — a
   free-body sketch that is a few arrows and a label in a field of white, with no frame or
-  axis to bound it — and they are where the two differ most (0.61 against 0.17). If your
+  axis to bound it. If your
   figures come out wrong, this is the setting to change first, via
   `PDF2DOCX_FIGURE_MODEL`. Note also that a reasoning model spends its token budget
   thinking before it answers: the request is budgeted for that, and a page's figures cost
@@ -349,8 +430,8 @@ sidecar/
   is the one place where model choice shows up as visibly wrong output rather than as
   slightly worse output — a weak model will box the equation above the diagram.
 - The box is asked for on a 0–1000 grid, but models often answer in the pixels of the
-  page image they were shown instead — `anthropic/claude-sonnet-5`, the default here,
-  does. Both readings are accepted: a coordinate past 1000 gives the convention away, and
+  page image they were shown instead. Both readings are accepted: a coordinate past 1000
+  gives the convention away, and
   the unit is then settled for the whole page at once rather than box by box, since a
   model does not switch units halfway down a page. Numbers that fit neither the grid nor
   the render are dropped rather than forced to fit. One case cannot be resolved and is

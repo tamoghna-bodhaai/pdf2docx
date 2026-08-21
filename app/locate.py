@@ -36,6 +36,7 @@ from openai import OpenAI
 
 from .config import settings
 from .figures import BOX_COMMENT_RE, FIGURE_RE, page_scale
+from .model_policy import require_model_allowed
 from .pdf_render import page_zoom
 from .vision import _usage_fields
 
@@ -258,6 +259,10 @@ def relocate_figures(
     if not targets:
         return markdown, LocateCost(0.0)
 
+    selected_model = require_model_allowed(
+        settings.figure_model or model or settings.model
+    )
+
     try:
         image, render = gridded_page(pdf_path, page_index)
         encoded = base64.standard_b64encode(image).decode("ascii")
@@ -265,7 +270,7 @@ def relocate_figures(
         response = client.chat.completions.create(
             # A model configured for this pass specifically wins; otherwise the
             # one the conversion is already running on.
-            model=settings.figure_model or model or settings.model,
+            model=selected_model,
             max_tokens=MAX_TOKENS,
             extra_headers=settings.headers,
             messages=[
