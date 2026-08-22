@@ -317,11 +317,6 @@ input[type="file"] { display: none; }
 .upload-progress.error p { color: var(--error); }
 .progress-track { height: 7px; overflow: hidden; border-radius: 999px; background: var(--surface-soft); box-shadow: inset 0 0 0 1px var(--border); }
 .progress-track i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--gradient-accent); }
-.privacy-card { display: flex; align-items: flex-start; gap: 11px; margin: 12px 2px 0; padding: 12px 14px; color: var(--text-muted); }
-.privacy-card > svg { width: 19px; height: 19px; flex: 0 0 19px; margin-top: 1px; color: var(--success); }
-.privacy-card p { margin: 0; font-size: 11.5px; line-height: 1.6; }
-.privacy-card strong { color: var(--text); }
-.privacy-card span { margin-left: 3px; }
 
 /* ------------------------------------------------------------ current job -- */
 
@@ -671,7 +666,6 @@ button.auth-submit { width: 100%; }
   .upload-icon { width: 46px; height: 46px; }
   .choose-file { display: none; }
   .upload-constraints { flex-direction: column; gap: 2px; }
-  .privacy-card { padding-right: 7px; padding-left: 7px; }
   .job-card { padding: 16px; }
   .job-header { align-items: flex-start; }
   .status-badge { margin-left: 0; }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>PDF2DOCX — Mathpix conversion workspace</title>
+<title>PDF2DOCX — conversion workspace</title>
 <script>
   (() => {
     let theme = 'light';
@@ -17,7 +17,7 @@
   })();
 </script>
 <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
-<link rel="stylesheet" href="/static/app.css?v=20260822-workspace" />
+<link rel="stylesheet" href="/static/app.css?v=20260822-unbranded" />
 </head>
 <body>
 <div class="workspace-shell" id="app-shell">
@@ -30,7 +30,7 @@
             <path d="M14 3.75v4h4M9.5 12h6M9.5 15h4.25" />
           </svg>
         </span>
-        <span><span class="wordmark">PDF<span>2</span>DOCX</span><small>Mathpix workspace</small></span>
+        <span><span class="wordmark">PDF<span>2</span>DOCX</span><small>Conversion workspace</small></span>
       </a>
       <nav class="sidebar-nav" aria-label="Primary navigation">
         <button class="nav-item active" id="uploads-nav" type="button" aria-current="page">
@@ -44,7 +44,7 @@
       </nav>
       <div class="provider-state" aria-label="Conversion provider">
         <span class="provider-dot" aria-hidden="true"></span>
-        <span><strong>Mathpix cloud</strong><small id="provider-state-text">Checking availability…</small></span>
+        <span><strong>Conversion service</strong><small id="provider-state-text">Checking availability…</small></span>
       </div>
     </div>
 
@@ -84,12 +84,12 @@
         <header class="dashboard-hero">
           <p class="eyebrow">New conversion</p>
           <h1 id="dashboard-heading">Convert a PDF into editable work.</h1>
-          <p>Choose the exact Mathpix outputs you need, follow progress live, then compare the result beside its source.</p>
+          <p>Choose the exact outputs you need, follow progress live, then compare the result beside its source.</p>
         </header>
 
         <div class="warn hidden" id="keywarn" role="status">
-          <strong>Mathpix is unavailable</strong>
-          <span>Add <code>MATHPIX_APP_KEY</code> to <code>.env</code> and restart the server.</span>
+          <strong>Conversion is unavailable</strong>
+          <span>The conversion service is not configured on this server.</span>
         </div>
 
         <section class="upload-zone-card" aria-labelledby="upload-title">
@@ -115,12 +115,6 @@
           </div>
         </section>
 
-        <aside class="privacy-card" aria-label="Privacy and retention">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5 19 6v5.5c0 4.3-2.65 7.55-7 9-4.35-1.45-7-4.7-7-9V6zM9 12l2 2 4-4" /></svg>
-          <p><strong>Remote processing, local history.</strong> Your PDF is sent to Mathpix.
-            <span id="retention-note">Model-improvement retention is off.</span>
-            <span id="delete-note">The remote upload is deleted after local outputs are stored.</span></p>
-        </aside>
 
         <section class="job-card hidden" id="job-card" aria-label="Current conversion">
           <div class="job-header">
@@ -135,10 +129,10 @@
               <span class="field-label">Output formats</span>
               <details class="format-menu" id="format-menu">
                 <summary id="format-summary">DOCX selected</summary>
-                <fieldset id="format-options" aria-label="Optional Mathpix output formats"></fieldset>
+                <fieldset id="format-options" aria-label="Optional output formats"></fieldset>
               </details>
               <div class="included-formats" id="included-formats" aria-label="Always included formats">
-                <span>Included</span><strong>Loading Mathpix preview formats…</strong>
+                <span>Included</span><strong>Loading preview formats…</strong>
               </div>
             </div>
             <div class="job-buttons">
@@ -241,7 +235,7 @@
 
         <section class="viewer-pane converted-pane" id="output-pane" role="tabpanel" aria-labelledby="show-converted">
           <header class="pane-header output-header">
-            <div><span class="eyebrow">Converted</span><h2>Mathpix output</h2></div>
+            <div><span class="eyebrow">Converted</span><h2>Converted output</h2></div>
             <div class="content-tabs" id="tabs" role="tablist" aria-label="Converted content view">
               <button data-tab="rendered" type="button" role="tab" aria-selected="true">Rendered</button>
               <button data-tab="text" type="button" role="tab" aria-selected="false" tabindex="-1">Text</button>
@@ -273,7 +267,7 @@
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/katex/katex.min.js"></script>
 <script src="/static/vendor/katex/contrib/auto-render.min.js"></script>
-<script src="/static/mmd.js?v=20260822-mmd"></script>
-<script src="/static/app.js?v=20260822-mmd"></script>
+<script src="/static/mmd.js?v=20260822-unbranded"></script>
+<script src="/static/app.js?v=20260822-unbranded"></script>
 </body>
 </html>

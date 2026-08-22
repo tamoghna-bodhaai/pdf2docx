@@ -47,7 +47,7 @@ def test_homepage_keeps_the_major_interaction_hooks() -> None:
         "app-shell", "sidebar", "menu-toggle", "sidebar-backdrop",
         "uploads-nav", "history-nav", "theme-toggle", "user-email", "sign-out",
         "dashboard-view", "dashboard-heading",
-        "drop", "picker", "keywarn", "retention-note", "delete-note",
+        "drop", "picker", "keywarn",
         "upload-progress", "upload-bar-fill", "upload-status",
         "job-card", "job-file", "format-menu", "format-summary", "format-options",
         "included-formats",
@@ -116,7 +116,9 @@ def test_homepage_exposes_only_the_mathpix_workflow() -> None:
     html = INDEX.read_text(encoding="utf-8")
     script = SCRIPT.read_text(encoding="utf-8")
     assert "Convert PDF" in html
-    assert "MATHPIX_APP_KEY" in html
+    # The page never names the conversion provider. Env-var names and vendor
+    # branding are for the operator, not for whoever is converting a PDF.
+    assert "mathpix" not in html.lower()
     assert "/api/models" not in script
     assert "body.append('layout'" not in script
     assert "body.append('model'" not in script

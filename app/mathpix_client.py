@@ -434,30 +434,30 @@ class MathpixClient:
                     timeout=self.timeout,
                 )
             if response.is_error:
-                raise MathpixError(f"mathpix upload failed: {_detail(response)}")
+                raise MathpixError(f"upload to the conversion service failed: {_detail(response)}")
             body = response.json()
         except MathpixError:
             raise
         except OSError as exc:
             raise MathpixError(f"could not read {pdf_path.name}: {exc}") from exc
         except (httpx.HTTPError, ValueError) as exc:
-            raise MathpixError(f"mathpix upload failed: {exc}") from exc
+            raise MathpixError(f"upload to the conversion service failed: {exc}") from exc
 
         file_id = body.get("file_id") if isinstance(body, dict) else None
         if not isinstance(file_id, str) or not file_id.strip():
-            raise MathpixError("mathpix did not return a file_id")
+            raise MathpixError("the conversion service did not return a file_id")
         return file_id.strip()
 
     def status(self, file_id: str) -> MathpixStatus:
         try:
             response = httpx.get(self._url(f"/{file_id}"), headers=self.headers, timeout=self.timeout)
             if response.is_error:
-                raise MathpixError(f"mathpix status failed: {_detail(response)}")
+                raise MathpixError(f"conversion status check failed: {_detail(response)}")
             return parse_status_response(response.json(), file_id)
         except MathpixError:
             raise
         except (httpx.HTTPError, ValueError) as exc:
-            raise MathpixError(f"mathpix status failed: {exc}") from exc
+            raise MathpixError(f"conversion status check failed: {exc}") from exc
 
     def poll(
         self,
@@ -472,12 +472,12 @@ class MathpixClient:
             if on_status is not None:
                 on_status(state)
             if state.failed:
-                raise MathpixError(f"mathpix could not process the document: {state.error or 'error'}")
+                raise MathpixError(f"the document could not be processed: {state.error or 'error'}")
             if state.done:
                 return state
             if time.monotonic() >= limit:
                 raise MathpixError(
-                    f"mathpix did not finish within {self.poll_timeout:.0f}s "
+                    f"the conversion did not finish within {self.poll_timeout:.0f}s "
                     f"(status {state.status}, {state.percent_done:.0f}% done)"
                 )
             time.sleep(self.poll_interval)
@@ -489,7 +489,7 @@ class MathpixClient:
                 self._url(f"/{file_id}.{ext}"), headers=self.headers, timeout=self.timeout
             )
         except httpx.HTTPError as exc:
-            raise MathpixError(f"mathpix download of .{ext} failed: {exc}") from exc
+            raise MathpixError(f"download of .{ext} failed: {exc}") from exc
 
         if not response.is_error:
             return response.content
@@ -499,7 +499,7 @@ class MathpixClient:
             raise MathpixUnsupported(f".{ext} was not requested for this document")
         if response.status_code == 409 or name == "format_not_ready":
             raise MathpixNotReady(f".{ext} is still converting")
-        raise MathpixError(f"mathpix download of .{ext} failed: {_detail(response)}")
+        raise MathpixError(f"download of .{ext} failed: {_detail(response)}")
 
     def fetch_all(
         self,
@@ -543,7 +543,7 @@ class MathpixClient:
         absent_required = [ext for ext in REQUIRED_RESULTS if ext in missing]
         if absent_required:
             ext = absent_required[0]
-            raise MathpixError(f"mathpix produced no .{ext}: {missing[ext]}")
+            raise MathpixError(f"no .{ext} was produced: {missing[ext]}")
         return missing
 
     def download_images(self, markdown: str, work_dir: Path) -> tuple[str, Applied]:

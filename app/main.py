@@ -31,6 +31,7 @@ from .auth import User, current_user
 from .config import settings
 from .marker_client import RAW_DIR, RAW_IMAGE_DIR
 from .mathpix_client import FORMATS as MATHPIX_FORMATS
+from .mathpix_client import MathpixError
 from .mathpix_client import RAW_DIR as MATHPIX_RAW_DIR
 from .mathpix_client import RAW_IMAGE_DIR as MATHPIX_RAW_IMAGE_DIR
 from .mathpix_client import requestable_formats
@@ -443,7 +444,9 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
     except Exception as exc:  # surfaced to the browser rather than swallowed
         with JOBS_LOCK:
             job.status = "error"
-            job.error = f"{type(exc).__name__}: {exc}"
+            # A conversion failure already reads as a sentence; prefixing it with
+            # the exception's class name only puts the provider's name on screen.
+            job.error = str(exc) if isinstance(exc, MathpixError) else f"{type(exc).__name__}: {exc}"
             job.finished_at = _now()
     finally:
         if staged is not None and staged.exists():

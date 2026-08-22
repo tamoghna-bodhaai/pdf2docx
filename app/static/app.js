@@ -171,7 +171,7 @@ function renderFormats(selected = ['docx']) {
   fieldset.replaceChildren();
   const legend = document.createElement('legend');
   legend.className = 'sr-only';
-  legend.textContent = 'Select optional Mathpix output formats';
+  legend.textContent = 'Select optional output formats';
   fieldset.appendChild(legend);
   const chosen = new Set(selected);
   const requestable = mathpixFormats.filter(entry => entry.requestable);
@@ -211,7 +211,7 @@ function formatDescription(ext) {
     pptx: 'PowerPoint presentation', xlsx: 'Spreadsheet for tables',
     pdf: 'Re-rendered PDF', 'latex.pdf': 'LaTeX-rendered PDF',
   };
-  return descriptions[ext] || 'Optional Mathpix export';
+  return descriptions[ext] || 'Optional export';
 }
 
 function selectedFormats() {
@@ -243,11 +243,6 @@ async function loadConfig() {
       'unavailable', !appConfig.mathpix_key_configured
     );
     $('keywarn').classList.toggle('hidden', appConfig.mathpix_key_configured);
-    $('retention-note').textContent = appConfig.improve_mathpix
-      ? 'Model-improvement retention is enabled.' : 'Model-improvement retention is off.';
-    $('delete-note').textContent = appConfig.remote_delete
-      ? 'The remote upload is deleted after local outputs are stored.'
-      : 'Remote deletion is disabled by this server.';
   } catch (_) {
     $('upload-limits').textContent = 'PDF only';
     $('provider-state-text').textContent = 'Unavailable';
@@ -487,7 +482,7 @@ async function startJob(id) {
   try {
     response = await api(`/api/jobs/${id}/start`, { method: 'POST', body });
   } catch (_) {
-    showConversionError('The start request was interrupted. Checking whether Mathpix received it…', 'status');
+    showConversionError('The start request was interrupted. Checking whether it got through…', 'status');
     schedulePoll(id, 1200);
     return;
   }
@@ -516,9 +511,9 @@ function progressFor(job) {
 function stageLabel(job) {
   const total = job.total || job.pages || 1;
   const labels = {
-    queued: 'Queued for Mathpix…',
+    queued: 'Queued…',
     rendering: 'Preparing the source PDF…',
-    transcribing: `Mathpix is processing page ${Math.min(job.done + 1, total)} of ${total}…`,
+    transcribing: `Processing page ${Math.min(job.done + 1, total)} of ${total}…`,
     building: 'Downloading selected outputs and preview data…',
   };
   return labels[job.status] || job.status;
@@ -1024,7 +1019,7 @@ function drawOverlay() {
   legend.classList.toggle('hidden', mathpix);
   const page = currentPage();
   if (mathpix) {
-    pageNote.textContent = 'Source page aligned with the Mathpix content beside it.';
+    pageNote.textContent = 'Source page aligned with the converted content beside it.';
     return;
   }
   if (!page) {
