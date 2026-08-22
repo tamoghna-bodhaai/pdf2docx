@@ -1108,6 +1108,21 @@ const MATH_DELIMITERS = [
   { left: '$', right: '$', display: false },
 ];
 
+// Mathpix does not wrap a paragraph across lines, so every newline it writes is
+// one it means. Without this they collapse and a page of separate answers —
+// "(a) …", "(b) …" — arrives as one unbroken sentence.
+const MARKED_OPTIONS = { gfm: true, breaks: true };
+
+// Markdown has no bullet that reads "(a)", so a labelled list is built out of
+// ordinary list items whose first child is the label. Marking the list itself
+// here is what lets the stylesheet drop the bullet that would sit beside it.
+function dressLists(root) {
+  root.querySelectorAll('.mmd-item-label').forEach(label => {
+    const list = label.closest('ul, ol');
+    if (list) list.classList.add('mmd-labelled');
+  });
+}
+
 async function markdownForScope() {
   if (!wholeDoc) {
     const page = currentPage();
@@ -1133,8 +1148,15 @@ async function renderOutput() {
   if (!hasContent) return;
   if (activeTab === 'rendered') {
     if (markdown.trim()) {
-      tabRendered.innerHTML = marked.parse(resolveImages(markdown));
+      // Mathpix returns Markdown with LaTeX still in it. `mmd.prepare` rewrites
+      // the parts Markdown cannot express and sets the mathematics aside, so
+      // that neither this step nor Markdown itself can reinterpret it; `restore`
+      // puts it back afterwards, exactly as written, for KaTeX to typeset.
+      const converted = mmd.prepare(markdown);
+      const html = marked.parse(resolveImages(converted.markdown), MARKED_OPTIONS);
+      tabRendered.innerHTML = mmd.restore(html, converted.math);
       scrub(tabRendered);
+      dressLists(tabRendered);
       renderMathInElement(tabRendered, { delimiters: MATH_DELIMITERS, throwOnError: false });
     } else {
       tabRendered.innerHTML = '<p class="empty-page">This source page produced no converted content.</p>';

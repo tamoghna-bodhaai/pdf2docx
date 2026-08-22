@@ -496,6 +496,23 @@ tbody tr.open { background: var(--brand-soft); }
 .rendered pre { padding: 12px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
 .rendered blockquote { margin: 14px 0; padding-left: 12px; border-left: 3px solid var(--brand-line); color: var(--text-muted); }
 .rendered .katex-display { overflow-x: auto; overflow-y: hidden; }
+.rendered p, .rendered ul, .rendered ol { margin: 10px 0; }
+.rendered h1, .rendered h2, .rendered h3, .rendered h4 { margin: 22px 0 10px; }
+.rendered > :first-child { margin-top: 0; }
+/* Mathpix writes its tables at whatever width the page had. Scrolling one is
+   the only way it stays a table on a phone without the page itself sliding. */
+.rendered .mmd-table { margin: 14px 0; overflow-x: auto; }
+.rendered .mmd-table table { margin: 0; }
+/* A figure number or a table title, set apart from the body around it. */
+.rendered .mmd-caption { margin: 6px 0 16px; color: var(--text-muted); font-size: 12px; text-align: center; }
+.rendered .mmd-footnote { color: var(--text-muted); font-size: 12px; }
+/* A list whose bullets are the question numbers — "(a)", "(ii)", "3." — which
+   carry meaning a disc does not. The label sits in the gutter and the wrapped
+   lines align under the text, so a long answer stays readable beside its mark. */
+.rendered .mmd-labelled { padding-left: 30px; list-style: none; }
+.rendered .mmd-labelled > li { margin: 5px 0; text-indent: -30px; }
+.rendered .mmd-labelled ul, .rendered .mmd-labelled ol { text-indent: 0; }
+.rendered .mmd-item-label { display: inline-block; min-width: 30px; color: var(--text-strong); font-weight: 640; text-indent: 0; }
 .empty-page { color: var(--text-muted); }
 pre.plain { margin: 0; padding: 22px 24px; color: var(--text); font: 12px/1.7 var(--font-mono); white-space: pre-wrap; word-break: break-word; }
 
@@ -599,36 +616,40 @@ button.auth-submit { width: 100%; }
   .job-buttons button { flex: 1 1 150px; }
   .section-heading { align-items: start; }
   .history-table-wrap { padding: 10px; overflow: visible; }
-  table, tbody { display: block; }
-  thead { display: none; }
-  tbody { display: grid; gap: 9px; }
+  /* Every rule below reshapes the history table into cards, and every one of
+     them is scoped to that table by name. Written against bare `table`/`tbody`
+     they also caught the tables inside a converted document, which then came out
+     as cards labelled "Date", "Pages" and "Status". */
+  #history-table, #history-table tbody { display: block; }
+  #history-table thead { display: none; }
+  #history-table tbody { display: grid; gap: 9px; }
   /* One card per conversion. The two-column track exists only for the top row —
      the filename beside its delete button. Every label/value pair below gets a
      whole row to itself: when two pairs share a row, one cell's value ends
      exactly where the next cell's label begins and the two read as a single run
      of text ("22 Aug" + "PAGES" → "22 AugPAGES"). */
-  tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; padding: 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
-  tbody td { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 14px; min-width: 0; padding: 6px 0; border: 0; white-space: normal; text-align: right; }
-  tbody td::before { flex: none; color: var(--text-faint); font-size: 9px; font-weight: 720; letter-spacing: .04em; text-transform: uppercase; }
-  tbody td:nth-child(1) { grid-column: 1; grid-row: 1; padding-bottom: 10px; text-align: left; }
-  tbody td:nth-child(1)::before { display: none; }
+  #history-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; padding: 13px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+  #history-table tbody td { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 14px; min-width: 0; padding: 6px 0; border: 0; white-space: normal; text-align: right; }
+  #history-table tbody td::before { flex: none; color: var(--text-faint); font-size: 9px; font-weight: 720; letter-spacing: .04em; text-transform: uppercase; }
+  #history-table tbody td:nth-child(1) { grid-column: 1; grid-row: 1; padding-bottom: 10px; text-align: left; }
+  #history-table tbody td:nth-child(1)::before { display: none; }
   /* Carries the divider under the top row, being the first cell that spans the
      full width of the card. */
-  tbody td:nth-child(2) { padding-top: 10px; border-top: 1px solid var(--border); }
-  tbody td:nth-child(2)::before { content: "Date"; }
-  tbody td:nth-child(3)::before { content: "Pages"; }
-  tbody td:nth-child(4)::before { content: "Outputs"; }
-  tbody td:nth-child(5)::before { content: "Status"; }
-  tbody td:nth-child(6)::before { content: "Cost"; }
-  tbody td:nth-child(7) { grid-column: 2; grid-row: 1; justify-content: flex-end; padding: 0 0 10px; }
-  tbody td:nth-child(7)::before { display: none; }
+  #history-table tbody td:nth-child(2) { padding-top: 10px; border-top: 1px solid var(--border); }
+  #history-table tbody td:nth-child(2)::before { content: "Date"; }
+  #history-table tbody td:nth-child(3)::before { content: "Pages"; }
+  #history-table tbody td:nth-child(4)::before { content: "Outputs"; }
+  #history-table tbody td:nth-child(5)::before { content: "Status"; }
+  #history-table tbody td:nth-child(6)::before { content: "Cost"; }
+  #history-table tbody td:nth-child(7) { grid-column: 2; grid-row: 1; justify-content: flex-end; padding: 0 0 10px; }
+  #history-table tbody td:nth-child(7)::before { display: none; }
   .history-document { max-width: 100%; }
   /* Wraps rather than being clipped to one line, but not past two: a long
      filename should not be the whole card. */
   .history-document strong { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
   /* A running job's status is a sentence rather than a word, and it now has a
      whole row to wrap inside instead of a 190px lozenge to be clipped by. */
-  tbody .history-status { max-width: none; overflow: visible; text-align: right; }
+  #history-table tbody .history-status { max-width: none; overflow: visible; text-align: right; }
   .comparison-header { grid-template-columns: auto minmax(0, 1fr); }
   .comparison-download { grid-column: 1 / -1; }
   .comparison-download > summary { width: 100%; }
@@ -671,6 +692,9 @@ button.auth-submit { width: 100%; }
   .pager { justify-content: center; }
   .pane-footer > span { text-align: center; }
   .rendered { padding: 18px; }
+  .rendered .mmd-labelled { padding-left: 26px; }
+  .rendered .mmd-labelled > li { text-indent: -26px; }
+  .rendered .mmd-item-label { min-width: 26px; }
   .confirm-dialog form { padding: 21px; }
 }
 
