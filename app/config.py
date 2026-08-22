@@ -70,6 +70,17 @@ def _marker_extra_formats() -> tuple[str, ...]:
     return tuple(value for value in wanted if value in {"markdown", "html", "json", "chunks"})
 
 
+def _invite_codes() -> tuple[str, ...]:
+    """The codes that may be used to create an account, comma-separated.
+
+    More than one so each teammate can be given their own. Removing one retires
+    that invitation without affecting other codes; it does not disable an
+    account that has already registered. Empty closes sign-ups.
+    """
+    raw = os.environ.get("PDF2DOCX_INVITE_CODES", "")
+    return tuple(code.strip() for code in raw.split(",") if code.strip())
+
+
 def _mathpix_options() -> dict:
     """Whatever the user wants passed straight through to Mathpix's own options.
 
@@ -91,7 +102,7 @@ def _mathpix_options() -> dict:
 
 
 def _mathpix_formats() -> tuple[str, ...]:
-    """Which of Mathpix's exports to ask for. Empty means all of them.
+    """Default Mathpix exports for clients that omit a per-job selection.
 
     This inverts `_marker_extra_formats` above, and the difference between the
     two backends is the reason. Every extra marker renderer is another full
@@ -99,10 +110,11 @@ def _mathpix_formats() -> tuple[str, ...]:
     the document once and renders each format from that same job, so there is no
     reason to withhold any.
 
-    Only the parsing happens here. Which names are real, what an empty selection
-    resolves to, and the fact that `docx` is always included are
-    `mathpix_client.requested_formats`'s to decide, because that is where the
-    table of formats lives — and importing it here would be circular.
+    Only the parsing happens here. Which names are real and what an empty
+    configured selection resolves to are `mathpix_client.requested_formats`'s
+    to decide, because that is where the format catalog lives — and importing it
+    here would be circular. A browser job's explicit selection bypasses this
+    legacy default, including when it deliberately omits DOCX.
     """
     raw = os.environ.get("PDF2DOCX_MATHPIX_FORMATS", "").strip()
     wanted = (value.strip().lower() for value in raw.split(","))
@@ -223,9 +235,27 @@ class Settings:
     data_dir: Path = field(default_factory=_data_dir)
     history_limit: int = _int("PDF2DOCX_HISTORY_LIMIT", 100)
 
+    # Accounts. Conversions are billed per page by Mathpix, so a public URL with
+    # open signup is an open wallet: an account can only be created by someone
+    # holding one of the invite codes, and configuring none closes signup
+    # entirely rather than opening it. Sessions are opaque tokens looked up in
+    # the database, so there is no signing secret to configure.
+    invite_codes: tuple[str, ...] = field(default_factory=_invite_codes)
+    session_days: int = _int("PDF2DOCX_SESSION_DAYS", 30)
+    # Off only for local development over plain HTTP; anything deployed serves
+    # over TLS and wants the flag on.
+    cookie_secure: bool = os.environ.get("PDF2DOCX_COOKIE_SECURE", "on").strip().lower() != "off"
+    # Refuse an upload larger than this before it is written, so one oversized
+    # PDF cannot fill the volume the whole history lives on. 0 means no limit.
+    max_upload_mb: int = _int("PDF2DOCX_MAX_UPLOAD_MB", 50)
+
     @property
     def jobs_dir(self) -> Path:
         return self.data_dir / "jobs"
+
+    @property
+    def max_upload_bytes(self) -> int:
+        return self.max_upload_mb * 1024 * 1024
 
     @property
     def headers(self) -> dict[str, str]:

@@ -1,19 +1,87 @@
-"""Synthetic PDFs to crop from.
+"""Synthetic PDFs to crop from, and the accounts the API is reached through.
 
 The defects these tests cover are about resolution, so the fixtures are built
 around it: a page that is nothing but a coarse scan, and a page that is drawn.
 Both are made here rather than checked in, so a fixture can never drift away
 from the resolution its test claims for it.
+
+The rest is authentication. Every `/api` route is behind a session now, so a
+bare `TestClient` gets 401 and nothing else; `client` below is signed in, and
+`other_client` is a second account for the tests that check one user cannot
+reach another's documents.
 """
 
 from __future__ import annotations
 
+import os
+import tempfile
+import uuid
 from pathlib import Path
+
+# Before anything imports `app`. `Settings` reads the environment once, at class
+# definition time, and `app.main` restores its job registry at import — so
+# pointing the data directory somewhere disposable has to happen first.
+_DATA_DIR = tempfile.mkdtemp(prefix="pdf2docx-tests-")
+os.environ["PDF2DOCX_DATA_DIR"] = _DATA_DIR
+os.environ["PDF2DOCX_INVITE_CODES"] = "test-invite,second-invite"
+os.environ["PDF2DOCX_COOKIE_SECURE"] = "off"
 
 import fitz
 import pytest
+from fastapi.testclient import TestClient
+
+from app import auth, db, main
 
 A4 = (595.0, 842.0)
+
+
+@pytest.fixture(autouse=True)
+def database(tmp_path, monkeypatch):
+    """A database per test, and an empty job registry to go with it."""
+    monkeypatch.setattr(db, "DATABASE", tmp_path / "pdf2docx.db")
+    monkeypatch.setattr(main, "JOBS", {})
+    auth.SIGN_IN.reset()
+    auth.INVITE.reset()
+    yield
+
+
+def _account(email: str) -> TestClient:
+    """A registered account, on a client already carrying its session cookie.
+
+    Signed up through the real endpoint rather than by writing rows: the cookie
+    the tests then ride on is the same one a browser would be given.
+    """
+    client = TestClient(main.app)
+    response = client.post(
+        "/api/auth/signup",
+        json={"email": email, "password": "a good password", "invite_code": "test-invite"},
+    )
+    assert response.status_code == 200, response.text
+    return client
+
+
+@pytest.fixture
+def client(database):
+    """Signed in. This is the client every API test should reach for."""
+    return _account("first@example.com")
+
+
+@pytest.fixture
+def user(client):
+    """The account `client` is signed in as."""
+    return auth.User(**client.get("/api/auth/me").json())
+
+
+@pytest.fixture
+def other_client(database):
+    """A second account, for proving one user cannot reach another's jobs."""
+    return _account("second@example.com")
+
+
+@pytest.fixture
+def anonymous(database):
+    """Signed out, for the tests about what an unauthenticated caller sees."""
+    return TestClient(main.app)
 
 
 def _speckled(width: int, height: int) -> fitz.Pixmap:

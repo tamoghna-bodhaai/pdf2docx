@@ -259,8 +259,8 @@ def test_retention_is_off_unless_asked_for(tmp_path, monkeypatch):
     assert FakeClient.submissions[0][1]["metadata"]["improve_mathpix"] is True
 
 
-def test_the_docx_is_requested_whatever_the_setting_says(tmp_path, monkeypatch):
-    """The mode has produced nothing without it, so it is not negotiable."""
+def test_legacy_config_defaults_still_include_docx(tmp_path, monkeypatch):
+    """Direct callers without a per-job selection retain their old default."""
     convert(tmp_path, monkeypatch, mathpix_formats=("html", "pptx"))
     formats = FakeClient.submissions[0][1]["conversion_formats"]
     assert formats["docx"] is True
@@ -310,10 +310,73 @@ def test_a_successful_rerun_removes_formats_left_by_the_previous_run(tmp_path, m
     assert (raw / "document.docx").read_bytes() == DOCX_BYTES
 
 
-def test_a_missing_docx_fails_the_job(tmp_path, monkeypatch):
-    monkeypatch.setattr(FakeClient, "available", {"mmd": MMD.encode("utf-8")})
-    with pytest.raises(MathpixError, match="no .docx"):
-        convert(tmp_path, monkeypatch)
+def test_a_non_docx_selection_completes_with_only_preview_and_selected_outputs(
+    tmp_path, monkeypatch
+):
+    available = {
+        "mmd": MMD.encode("utf-8"),
+        "html": b"<h1>Heat equation</h1>",
+        "lines.json": LINES_JSON.encode("utf-8"),
+    }
+    monkeypatch.setattr(FakeClient, "available", available)
+    prepare(monkeypatch)
+    pdf = source_pdf(tmp_path)
+    work = tmp_path / "job"
+
+    result = pipeline.convert_pdf(
+        pdf_path=pdf,
+        work_dir=work,
+        layout="mathpix",
+        mathpix_formats=("html",),
+    )
+
+    assert result.docx_path is None
+    assert result.markdown_path.exists()
+    assert not (work / "document.docx").exists()
+    assert (work / mathpix_client.RAW_DIR / "document.html").read_bytes() == available["html"]
+    assert not (work / mathpix_client.RAW_DIR / "document.docx").exists()
+    assert FakeClient.submissions[0][1]["conversion_formats"] == {"html": True}
+    metadata = json.loads(
+        (work / mathpix_client.RAW_DIR / "metadata.json").read_text()
+    )
+    assert metadata["requested_formats"] == ["html"]
+    assert "docx" not in metadata["formats_missing"]
+    assert "pptx" not in metadata["formats_missing"]
+
+
+def test_an_empty_selection_completes_with_only_always_produced_preview_data(
+    tmp_path, monkeypatch
+):
+    available = {
+        "mmd": MMD.encode("utf-8"),
+        "lines.json": LINES_JSON.encode("utf-8"),
+        "lines.mmd.json": b'{"pages": []}',
+    }
+    monkeypatch.setattr(FakeClient, "available", available)
+    prepare(monkeypatch)
+    pdf = source_pdf(tmp_path)
+    work = tmp_path / "job"
+
+    result = pipeline.convert_pdf(
+        pdf_path=pdf,
+        work_dir=work,
+        layout="mathpix",
+        mathpix_formats=(),
+    )
+
+    assert result.docx_path is None
+    assert result.markdown_path.exists()
+    assert FakeClient.submissions[0][1]["conversion_formats"] == {}
+    assert sorted(path.name for path in (work / mathpix_client.RAW_DIR).glob("document.*")) == [
+        "document.lines.json",
+        "document.lines.mmd.json",
+        "document.mmd",
+    ]
+    metadata = json.loads(
+        (work / mathpix_client.RAW_DIR / "metadata.json").read_text()
+    )
+    assert metadata["requested_formats"] == []
+    assert metadata["formats_missing"] == {}
 
 
 def test_missing_mathpix_markdown_fails_the_preview_job(tmp_path, monkeypatch):

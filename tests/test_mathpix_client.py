@@ -21,7 +21,7 @@ from app.mathpix_client import (
     ALWAYS,
     BY_EXT,
     FORMATS,
-    REQUIRED,
+    PREVIEW_REQUIRED,
     Applied,
     MathpixClient,
     MathpixError,
@@ -31,6 +31,7 @@ from app.mathpix_client import (
     is_empty,
     parse_lines_json,
     parse_status_response,
+    requestable_formats,
     requested_formats,
     split_pages,
     write_raw,
@@ -85,10 +86,15 @@ def test_unknown_format_names_are_dropped_not_raised():
     assert requested_formats(("docx", "not-a-format", "html")) == ("docx", "html")
 
 
-def test_the_deliverable_is_always_requested():
-    assert REQUIRED in requested_formats(("html",))
-    assert REQUIRED in requested_formats(("not-a-format",))
-    assert conversion_formats(("html",))["docx"] is True
+def test_the_legacy_configured_default_still_includes_docx():
+    assert "docx" in requested_formats(("html",))
+    assert "docx" in requested_formats(("not-a-format",))
+
+
+def test_an_explicit_selection_is_exact_and_may_be_empty():
+    assert requestable_formats(("html", "docx", "html")) == ("html", "docx")
+    assert conversion_formats(("html",)) == {"html": True}
+    assert conversion_formats(()) == {}
 
 
 def test_the_latex_archive_is_asked_about_under_the_name_mathpix_reports_it_by():
@@ -298,11 +304,19 @@ def test_missing_preview_markdown_fails_collection(monkeypatch):
         client().fetch_all("f1", ["docx", "mmd"], lambda ext, data: None)
 
 
-def test_a_missing_deliverable_is_the_one_failure_that_stops_the_job(monkeypatch):
-    monkeypatch.setattr(httpx, "get", lambda *a, **k: response(
-        415, {"error_id": "unsupported_format"}))
-    with pytest.raises(MathpixError, match="no .docx"):
-        client().fetch_all("f1", ["docx"], lambda ext, data: None)
+def test_a_missing_optional_docx_is_recorded_without_stopping_collection(monkeypatch):
+    def get(url, **kwargs):
+        if url.endswith(".docx"):
+            return response(415, {"error_id": "unsupported_format"})
+        return response(200, content=b"preview")
+
+    monkeypatch.setattr(httpx, "get", get)
+    got = {}
+    missing = client().fetch_all(
+        "f1", ["docx", PREVIEW_REQUIRED], lambda ext, data: got.update({ext: data})
+    )
+    assert got == {PREVIEW_REQUIRED: b"preview"}
+    assert "docx" in missing
 
 
 def test_formats_still_converting_when_time_runs_out_are_recorded(monkeypatch):

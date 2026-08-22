@@ -6,13 +6,12 @@ import json
 
 import fitz
 import pytest
-from fastapi.testclient import TestClient
 
 from app import detection, main
 
 
 @pytest.fixture
-def job(tmp_path, monkeypatch):
+def job(tmp_path, monkeypatch, user):
     """A finished job on disk, registered as if the server had just run it."""
     directory = tmp_path / "job"
     directory.mkdir()
@@ -41,14 +40,12 @@ def job(tmp_path, monkeypatch):
     (directory / "figures" / "page-0001-figure-1.png").write_bytes(b"\x89PNG\r\n\x1a\nnot-really")
     (directory / "secret.txt").write_text("private")
 
-    record = main.Job(id="testjob", filename="paper.pdf", pages=2, directory=directory, status="done")
+    record = main.Job(
+        id="testjob", user_id=user.id, filename="paper.pdf", pages=2,
+        directory=directory, status="done",
+    )
     monkeypatch.setitem(main.JOBS, record.id, record)
     return record
-
-
-@pytest.fixture
-def client():
-    return TestClient(main.app)
 
 
 def test_a_job_reports_whether_it_has_something_to_show(job):

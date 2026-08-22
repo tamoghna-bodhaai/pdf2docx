@@ -74,7 +74,7 @@ class ExtractionDiagnostic:
 @dataclass
 class ConversionResult:
     markdown_path: Path
-    docx_path: Path
+    docx_path: Path | None
     page_markdown: list[str] = field(default_factory=list)
     usage: ConversionUsage = field(default_factory=ConversionUsage)
     diagnostics: list[ExtractionDiagnostic] = field(default_factory=list)
@@ -112,6 +112,7 @@ def convert_pdf(
     on_usage: UsageHook = _noop_usage,
     layout: str | None = None,
     columns: str | None = None,
+    mathpix_formats: tuple[str, ...] | None = None,
 ) -> ConversionResult:
     """Convert `pdf_path` to .docx, either as a positioned replica or as flowing text.
 
@@ -143,6 +144,7 @@ def convert_pdf(
             work_dir=work_dir,
             on_progress=on_progress,
             on_usage=on_usage,
+            formats=mathpix_formats,
         )
     return convert_pdf_flow(
         pdf_path=pdf_path,
@@ -701,7 +703,7 @@ def convert_pdf_marker(
     )
 
 
-def _mathpix_config() -> dict:
+def _mathpix_config(formats: tuple[str, ...] | None = None) -> dict:
     """What Mathpix is asked to do, and which parts of it are not negotiable.
 
     `settings.mathpix_options` is passed through untouched and wins every
@@ -720,18 +722,20 @@ def _mathpix_config() -> dict:
       * `improve_mathpix`, which is off unless asked for. The document is
         someone else's, and the default should not give it away.
 
-    `conversion_formats` is the one thing an option cannot take away: a
-    `mathpix` job that produced no .docx has not produced anything.
+    `conversion_formats` is owned by the per-job selection. Provider options
+    cannot add an export the user did not choose or take one away.
     """
     options = dict(settings.mathpix_options)
     options.setdefault("math_inline_delimiters", ["$", "$"])
     options.setdefault("math_display_delimiters", ["$$", "$$"])
     options.setdefault("include_page_breaks", True)
 
-    formats = options.get("conversion_formats")
-    if not isinstance(formats, dict):
-        formats = mathpix.conversion_formats(settings.mathpix_formats)
-    options["conversion_formats"] = {**formats, mathpix.REQUIRED: True}
+    selected = (
+        mathpix.requested_formats(settings.mathpix_formats)
+        if formats is None
+        else mathpix.requestable_formats(formats)
+    )
+    options["conversion_formats"] = mathpix.conversion_formats(selected)
 
     # Mathpix counts pages from one, unlike marker's zero-based `page_range`.
     if settings.max_pages > 0 and not options.get("page_ranges"):
@@ -788,6 +792,7 @@ def _collect_mathpix_result(
     work_dir: Path,
     total: int,
     options: dict,
+    requested: tuple[str, ...],
     on_progress: ProgressHook,
     on_usage: UsageHook,
 ) -> ConversionResult:
@@ -804,7 +809,7 @@ def _collect_mathpix_result(
     on_progress("transcribing", total, total)
 
     # Everything asked for, plus the formats Mathpix produces without being asked.
-    wanted = list(mathpix.requested_formats(settings.mathpix_formats)) + list(mathpix.ALWAYS)
+    wanted = list(requested) + list(mathpix.ALWAYS)
     fetched: dict[str, bytes] = {}
 
     def keep(ext: str, data: bytes) -> None:
@@ -829,9 +834,12 @@ def _collect_mathpix_result(
     markdown_path = work_dir / "document.md"
     markdown_path.write_text(markdown, encoding="utf-8")
 
-    # Mathpix's own .docx, byte for byte. Not built here, and not edited here.
-    docx_path = work_dir / "document.docx"
-    docx_path.write_bytes(fetched[mathpix.REQUIRED])
+    # Mathpix's own .docx, byte for byte, when this job requested one. The
+    # page-aligned MMD preview is the required local result.
+    docx_path: Path | None = None
+    if "docx" in fetched:
+        docx_path = work_dir / "document.docx"
+        docx_path.write_bytes(fetched["docx"])
 
     (work_dir / mathpix.RAW_DIR / "metadata.json").write_text(
         json.dumps(
@@ -840,7 +848,8 @@ def _collect_mathpix_result(
                 "num_pages": status.num_pages or total,
                 "options": options,
                 "applied": applied.as_dict(),
-                "document_docx": "mathpix, unedited",
+                "document_docx": "mathpix, unedited" if docx_path else None,
+                "requested_formats": list(requested),
                 "formats": sorted(fetched),
                 # An absent format is usually a fact about the document rather
                 # than a failure — a document with no tables has no .xlsx.
@@ -894,15 +903,17 @@ def convert_pdf_mathpix(
     work_dir: Path,
     on_progress: ProgressHook = _noop,
     on_usage: UsageHook = _noop_usage,
+    formats: tuple[str, ...] | None = None,
 ) -> ConversionResult:
     """Hand the whole PDF to the Mathpix Files API and write back what it returns.
 
     This mode exists to show Mathpix's own work. Everything the other modes do to
     a page — locating figures, repairing boxes, recovering structure from
     coordinates — is deliberately absent, and every format Mathpix returns is
-    written to `mathpix/` verbatim before anything reads it. `document.docx` is
-    Mathpix's own file, copied byte for byte and not built here. The locally
-    rewritten Markdown exists only for the page-aligned browser preview.
+    written to `mathpix/` verbatim before anything reads it. If selected and
+    produced, `document.docx` is Mathpix's own file, copied byte for byte and not
+    built here. The locally rewritten Markdown exists only for the page-aligned
+    browser preview.
 
     Unlike every other backend here this one is a paid remote service, and the
     document leaves the machine. The upload is deleted in ``finally`` once it
@@ -910,7 +921,12 @@ def convert_pdf_mathpix(
     """
     work_dir.mkdir(parents=True, exist_ok=True)
     total = _marker_pages(pdf_path)
-    options = _mathpix_config()
+    requested = (
+        mathpix.requested_formats(settings.mathpix_formats)
+        if formats is None
+        else mathpix.requestable_formats(formats)
+    )
+    options = _mathpix_config(requested)
     client = mathpix.MathpixClient()
 
     on_progress("rendering", total, total)
@@ -924,6 +940,7 @@ def convert_pdf_mathpix(
             work_dir=work_dir,
             total=total,
             options=options,
+            requested=requested,
             on_progress=on_progress,
             on_usage=on_usage,
         )

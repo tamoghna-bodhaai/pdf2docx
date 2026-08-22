@@ -11,16 +11,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import fitz
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    Response,
+    UploadFile,
+)
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from . import detection, history
+from . import auth, db, detection
+from .auth import User, current_user
 from .config import settings
 from .marker_client import RAW_DIR, RAW_IMAGE_DIR
 from .mathpix_client import FORMATS as MATHPIX_FORMATS
 from .mathpix_client import RAW_DIR as MATHPIX_RAW_DIR
 from .mathpix_client import RAW_IMAGE_DIR as MATHPIX_RAW_IMAGE_DIR
+from .mathpix_client import requestable_formats
 from .mathpix_client import requested_formats
 from .pdf_render import page_count, page_zoom
 from .pipeline import ConversionUsage, convert_pdf
@@ -78,13 +91,41 @@ def _require_mathpix_credential() -> None:
         )
 
 
+def _start_formats(value: str | None) -> tuple[str, ...]:
+    """Resolve the optional start-form selection through the format catalog.
+
+    Omission is the legacy configured default. Presence is exact, including an
+    empty string, because Mathpix's MMD preview does not need an optional
+    conversion format.
+    """
+    if value is None:
+        return requested_formats(settings.mathpix_formats)
+
+    names = [name.strip().lower() for name in value.split(",") if name.strip()]
+    supported = tuple(entry.ext for entry in MATHPIX_FORMATS if entry.requested)
+    invalid = list(dict.fromkeys(name for name in names if name not in supported))
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Unsupported or non-requestable format(s): {', '.join(invalid)}. "
+                f"Supported values: {', '.join(supported)}."
+            ),
+        )
+    return requestable_formats(names)
+
+
 @dataclass
 class Job:
     id: str
     filename: str
     pages: int
+    # Which account uploaded this. Every route that reaches a job checks it, and
+    # it is the only thing separating one teammate's documents from another's.
+    user_id: str = ""
     model: str = settings.model
     layout: str = "mathpix"
+    requested_formats: tuple[str, ...] = ()
     # "natural" | "multi" | "" for whatever PDF2DOCX_COLUMNS says.
     columns: str = ""
     # The most columns any page of the uploaded PDF is set in, read from the PDF
@@ -128,6 +169,7 @@ class Job:
             "pages": self.pages,
             "model": self.model,
             "layout": self.layout,
+            "requested_formats": list(self.requested_formats),
             "columns": self.columns,
             "source_columns": self.source_columns,
             "diagnostics": self.diagnostics,
@@ -166,6 +208,9 @@ class Job:
 
     def to_record(self) -> dict:
         record = self.as_dict()
+        # Ownership is stored, but never reported: `as_dict` is what the browser
+        # sees, and it has no use for another account's identifier.
+        record["user_id"] = self.user_id
         record["calls"] = self.calls
         record["priced_calls"] = self.priced_calls
         record["directory"] = str(self.directory) if self.directory else None
@@ -179,12 +224,32 @@ class Job:
         if status in RUNNING:
             # The process that owned this job is gone.
             status, error = "error", "Interrupted — the server restarted mid-conversion."
+        raw_requested = record.get("requested_formats")
+        if isinstance(raw_requested, list):
+            selected = tuple(
+                name
+                for name in raw_requested
+                if isinstance(name, str)
+                and name in {entry.ext for entry in MATHPIX_FORMATS if entry.requested}
+            )
+        else:
+            # Records written before per-job selection existed infer what was
+            # requested from the requestable outputs that remain on disk.
+            root = Path(directory) if directory else Path()
+            selected = tuple(
+                entry.ext
+                for entry in MATHPIX_FORMATS
+                if entry.requested
+                and (root / MATHPIX_RAW_DIR / f"document.{entry.ext}").exists()
+            )
         return cls(
             id=str(record["id"]),
+            user_id=str(record.get("user_id") or ""),
             filename=record.get("filename") or "document.pdf",
             pages=int(record.get("pages") or 0),
             model=record.get("model") or settings.model,
             layout=record.get("layout") or settings.layout,
+            requested_formats=selected,
             columns=_columns_choice(record.get("columns") or ""),
             source_columns=int(record.get("source_columns") or 1),
             status=status,
@@ -209,31 +274,33 @@ JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
 
 
-def _newest_first() -> list[Job]:
+def _newest_first(user_id: str) -> list[Job]:
+    """One account's jobs, newest first. Never another account's."""
     with JOBS_LOCK:
-        jobs = list(JOBS.values())
+        jobs = [job for job in JOBS.values() if job.user_id == user_id]
     return sorted(jobs, key=lambda job: job.created_at, reverse=True)
 
 
-def _persist() -> None:
-    """Mirror the registry to disk, trimming (and deleting) the oldest overflow."""
-    jobs = _newest_first()
-    records = [job.to_record() for job in jobs]
+def _persist(job: Job) -> None:
+    """Mirror one job to the database, trimming (and deleting) its owner's overflow.
 
-    for stale in history.overflow(records):
+    The history limit is per account rather than global: one teammate's busy week
+    should not push another's finished documents off the end.
+    """
+    db.save_job(job.user_id, job.id, job.created_at, job.to_record())
+
+    for stale in db.overflow(job.user_id):
         directory = stale.get("directory")
         if directory:
             shutil.rmtree(directory, ignore_errors=True)
         with JOBS_LOCK:
             JOBS.pop(stale["id"], None)
-
-    limit = settings.history_limit
-    history.save(records[:limit] if limit > 0 else records)
+        db.delete_job(stale["id"])
 
 
 def _restore() -> None:
-    """Rebuild the registry from disk, dropping records whose files are gone."""
-    for record in history.load():
+    """Rebuild the registry from the database, dropping records whose files are gone."""
+    for record in db.load_jobs():
         job = Job.from_record(record)
         if job.directory is None or not job.directory.exists():
             continue
@@ -271,12 +338,20 @@ def _recover_interrupted_promotions(jobs_dir: Path | None = None) -> None:
 
 _recover_interrupted_promotions()
 _restore()
+# Sessions outlive the process; the expired ones are only ever refused, never
+# cleaned up in the request path, so boot is where they go.
+db.purge_expired_sessions()
 
 
-def _get_job(job_id: str) -> Job:
+def _get_job(job_id: str, user: User) -> Job:
+    """One of this account's jobs.
+
+    Someone else's job is reported as unknown rather than forbidden: a 403 would
+    confirm the id exists, and a job id is short enough to be worth guessing.
+    """
     with JOBS_LOCK:
         job = JOBS.get(job_id)
-    if job is None:
+    if job is None or job.user_id != user.id:
         raise HTTPException(status_code=404, detail="Unknown job id")
     return job
 
@@ -338,6 +413,7 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
             on_usage=on_usage,
             layout="mathpix",
             columns=None,
+            mathpix_formats=job.requested_formats,
         )
         _preserve_compatibility_files(directory, staged)
         _promote_staged_job(directory, staged)
@@ -363,7 +439,7 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
     finally:
         if staged is not None and staged.exists():
             shutil.rmtree(staged, ignore_errors=True)
-        _persist()
+        _persist(job)
 
 
 # The page's own stylesheet and script, and the vendored Markdown/maths
@@ -372,13 +448,81 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 
+@app.get("/healthz")
+def healthz() -> dict:
+    """Unauthenticated liveness check, for the platform rather than the browser."""
+    return {"ok": True}
+
+
 @app.get("/", response_class=HTMLResponse)
-def index() -> HTMLResponse:
+def index(request: Request):
+    if auth.session_user(request) is None:
+        # Relative, so a TLS-terminating proxy in front of this cannot turn the
+        # redirect back into plain http.
+        return RedirectResponse("/login", status_code=302)
     return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
 
 
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request):
+    if auth.session_user(request) is not None:
+        return RedirectResponse("/", status_code=302)
+    return HTMLResponse((STATIC_DIR / "login.html").read_text(encoding="utf-8"))
+
+
+class Credentials(BaseModel):
+    email: str
+    password: str
+
+
+class Registration(Credentials):
+    invite_code: str = ""
+
+
+@app.get("/api/auth/config")
+def auth_config() -> dict:
+    """What the sign-in page needs before anyone is signed in."""
+    return {"signup_open": auth.signup_open()}
+
+
+@app.post("/api/auth/signup")
+def signup(body: Registration, request: Request, response: Response) -> dict:
+    auth.check_invite(body.invite_code, request)
+    user = auth.register(body.email, body.password)
+    # Pre-account installations kept jobs in history.json. The first account
+    # that sees each legacy id claims it; subsequent registrations cannot move
+    # an already imported job.
+    for record in db.import_legacy_jobs(user.id):
+        job = Job.from_record(record)
+        if job.directory is None or not job.directory.exists():
+            continue
+        with JOBS_LOCK:
+            JOBS[job.id] = job
+        db.save_job(user.id, job.id, job.created_at, job.to_record())
+    auth.open_session(response, user.id)
+    return user.as_dict()
+
+
+@app.post("/api/auth/login")
+def login(body: Credentials, response: Response) -> dict:
+    user = auth.authenticate(body.email, body.password)
+    auth.open_session(response, user.id)
+    return user.as_dict()
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request, response: Response) -> dict:
+    auth.close_session(request, response)
+    return {"signed_out": True}
+
+
+@app.get("/api/auth/me")
+def whoami(user: User = Depends(current_user)) -> dict:
+    return user.as_dict()
+
+
 @app.get("/api/config")
-def config() -> dict:
+def config(user: User = Depends(current_user)) -> dict:
     return {
         "provider": "Mathpix",
         "mathpix_url": settings.mathpix_url,
@@ -387,34 +531,43 @@ def config() -> dict:
         # The browser labels its download buttons from this, so the list of
         # formats lives in one place rather than being spelled out again in JS.
         "mathpix_formats": [
-            {"ext": entry.ext, "media_type": entry.media_type, "note": entry.note}
+            {
+                "ext": entry.ext,
+                "media_type": entry.media_type,
+                "note": entry.note,
+                "requestable": entry.requested,
+                "always": not entry.requested,
+            }
             for entry in MATHPIX_FORMATS
         ],
         "mathpix_key_configured": bool(settings.mathpix_app_key),
         "dpi": settings.dpi,
         "max_pages": settings.max_pages,
+        "max_upload_mb": settings.max_upload_mb,
+        "mathpix_page_rate": settings.mathpix_page_rate,
         "remote_delete": settings.mathpix_delete,
         "improve_mathpix": settings.mathpix_improve,
-        "data_dir": str(settings.data_dir),
         "history_limit": settings.history_limit,
     }
 
 
 @app.get("/api/history")
-def get_history() -> dict:
-    jobs = [job.as_dict() for job in _newest_first()]
+def get_history(user: User = Depends(current_user)) -> dict:
+    jobs = [job.as_dict() for job in _newest_first(user.id)]
     spent = sum(job["cost"] for job in jobs if job["cost_known"])
     return {"jobs": jobs, "total_cost": round(spent, 6), "count": len(jobs)}
 
 
 @app.post("/api/convert")
 async def convert(
+    request: Request,
     background: BackgroundTasks,
     file: UploadFile = File(...),
     model: str = Form(default=""),
     layout: str = Form(default=""),
     columns: str = Form(default=""),
     start: bool = Form(default=False),
+    user: User = Depends(current_user),
 ) -> dict:
     """Stage an uploaded PDF. Conversion waits for /start unless `start` is set."""
     if not (file.filename or "").lower().endswith(".pdf"):
@@ -427,10 +580,25 @@ async def convert(
     directory.mkdir(parents=True, exist_ok=True)
     pdf_path = directory / "source.pdf"
 
-    with pdf_path.open("wb") as handle:
-        shutil.copyfileobj(file.file, handle)
+    # Streamed with a running total rather than copied wholesale, so an
+    # oversized upload is refused partway instead of after it has already filled
+    # the volume the whole history lives on.
+    limit = settings.max_upload_bytes
+    size = 0
+    try:
+        with pdf_path.open("wb") as handle:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if limit and size > limit:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"That PDF is larger than the {settings.max_upload_mb} MB limit.",
+                    )
+                handle.write(chunk)
+    except HTTPException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
 
-    size = pdf_path.stat().st_size
     if size == 0:
         shutil.rmtree(directory, ignore_errors=True)
         raise HTTPException(status_code=400, detail="The uploaded file is empty.")
@@ -446,6 +614,7 @@ async def convert(
 
     job = Job(
         id=job_id,
+        user_id=user.id,
         filename=file.filename,
         pages=pages,
         # Retained in the record schema for historical compatibility. The
@@ -460,27 +629,48 @@ async def convert(
     )
     with JOBS_LOCK:
         JOBS[job_id] = job
-    _persist()
+    _persist(job)
 
     if start:
-        return start_job(job_id, background, model=model, layout=layout, columns=columns)
+        return await start_job(
+            request,
+            job_id,
+            background,
+            model=model,
+            layout=layout,
+            columns=columns,
+            user=user,
+        )
     return job.as_dict()
 
 
 @app.post("/api/jobs/{job_id}/start")
-def start_job(
+async def start_job(
+    request: Request,
     job_id: str,
     background: BackgroundTasks,
     model: str = Form(default=""),
     layout: str = Form(default=""),
     columns: str = Form(default=""),
+    formats: str | None = Form(default=None),
+    user: User = Depends(current_user),
 ) -> dict:
     """Begin (or re-run) the conversion for an already-uploaded PDF."""
-    job = _get_job(job_id)
+    # FastAPI treats an empty optional form string like an omitted value. Read
+    # presence from the parsed form itself so ``formats=`` remains distinct
+    # from a legacy client that sent no field at all.
+    form = await request.form()
+    if "formats" in form:
+        raw_formats = str(form.get("formats") or "")
+    else:
+        raw_formats = formats
+
+    job = _get_job(job_id, user)
     if job.status in RUNNING:
         raise HTTPException(status_code=409, detail="This conversion is already running.")
 
     selected_layout = _mathpix_layout(layout)
+    selected_formats = _start_formats(raw_formats)
     _require_mathpix_credential()
 
     pdf_path = (job.directory or Path()) / "source.pdf"
@@ -491,6 +681,7 @@ def start_job(
 
     with JOBS_LOCK:
         job.layout = selected_layout
+        job.requested_formats = selected_formats
         # Model and column fields remain accepted so older clients do not break,
         # but neither has meaning for Mathpix's own exports.
         job.columns = ""
@@ -506,20 +697,20 @@ def start_job(
         job.diagnostics = []
         job.started_at = _now()
         job.finished_at = None
-    _persist()
+    _persist(job)
 
     background.add_task(_run_job, job_id, pdf_path)
     return job.as_dict()
 
 
 @app.get("/api/jobs/{job_id}")
-def job_status(job_id: str) -> dict:
-    return _get_job(job_id).as_dict()
+def job_status(job_id: str, user: User = Depends(current_user)) -> dict:
+    return _get_job(job_id, user).as_dict()
 
 
 @app.get("/api/jobs/{job_id}/markdown")
-def job_markdown(job_id: str) -> dict:
-    job = _get_job(job_id)
+def job_markdown(job_id: str, user: User = Depends(current_user)) -> dict:
+    job = _get_job(job_id, user)
     path = (job.directory or Path()) / "document.md"
     if not path.exists():
         raise HTTPException(status_code=409, detail="Markdown is not ready yet.")
@@ -527,9 +718,9 @@ def job_markdown(job_id: str) -> dict:
 
 
 @app.get("/api/jobs/{job_id}/detection")
-def job_detection(job_id: str) -> dict:
+def job_detection(job_id: str, user: User = Depends(current_user)) -> dict:
     """What the converter saw, page by page: block boxes, kinds, reading order."""
-    job = _get_job(job_id)
+    job = _get_job(job_id, user)
     path = (job.directory or Path()) / "detection.json"
     if not path.exists():
         raise HTTPException(status_code=409, detail="The page detection is not ready yet.")
@@ -537,7 +728,7 @@ def job_detection(job_id: str) -> dict:
 
 
 @app.get("/api/jobs/{job_id}/page/{number}.png")
-def job_page(job_id: str, number: int) -> FileResponse:
+def job_page(job_id: str, number: int, user: User = Depends(current_user)) -> FileResponse:
     """One page of the source PDF, rasterised for the viewer.
 
     Rendered on demand and kept, rather than rendered for every job up front:
@@ -545,7 +736,7 @@ def job_page(job_id: str, number: int) -> FileResponse:
     every page of every job would fill the history directory for a view that may
     never be opened.
     """
-    job = _get_job(job_id)
+    job = _get_job(job_id, user)
     directory = job.directory or Path()
     pdf_path = directory / "source.pdf"
     if not pdf_path.exists():
@@ -576,9 +767,9 @@ ASSET_DIRS = (
 
 
 @app.get("/api/jobs/{job_id}/asset/{asset:path}")
-def job_asset(job_id: str, asset: str) -> FileResponse:
+def job_asset(job_id: str, asset: str, user: User = Depends(current_user)) -> FileResponse:
     """An image referenced by a job's Markdown, for the rendered preview."""
-    job = _get_job(job_id)
+    job = _get_job(job_id, user)
     directory = (job.directory or Path()).resolve()
     path = (directory / asset).resolve()
     # Two separate questions: is this still inside the job (a `..` in the path
@@ -633,8 +824,10 @@ DOWNLOADS.update(
 
 
 @app.get("/api/jobs/{job_id}/download")
-def job_download(job_id: str, format: str = "docx") -> FileResponse:
-    job = _get_job(job_id)
+def job_download(
+    job_id: str, format: str = "docx", user: User = Depends(current_user)
+) -> FileResponse:
+    job = _get_job(job_id, user)
     choice = DOWNLOADS.get(format)
     if choice is None:
         raise HTTPException(
@@ -651,8 +844,8 @@ def job_download(job_id: str, format: str = "docx") -> FileResponse:
 
 
 @app.delete("/api/jobs/{job_id}")
-def job_delete(job_id: str) -> dict:
-    job = _get_job(job_id)
+def job_delete(job_id: str, user: User = Depends(current_user)) -> dict:
+    job = _get_job(job_id, user)
     if job.status in RUNNING:
         raise HTTPException(
             status_code=409, detail="This conversion is still running — wait for it to finish."
@@ -661,21 +854,21 @@ def job_delete(job_id: str) -> dict:
         shutil.rmtree(job.directory, ignore_errors=True)
     with JOBS_LOCK:
         JOBS.pop(job_id, None)
-    _persist()
+    db.delete_job(job_id)
     return {"deleted": job_id}
 
 
 @app.delete("/api/history")
-def history_clear() -> dict:
-    """Delete every job that is not currently running, and its files."""
+def history_clear(user: User = Depends(current_user)) -> dict:
+    """Delete every one of this account's jobs that is not currently running."""
     deleted = 0
-    for job in _newest_first():
+    for job in _newest_first(user.id):
         if job.status in RUNNING:
             continue
         if job.directory:
             shutil.rmtree(job.directory, ignore_errors=True)
         with JOBS_LOCK:
             JOBS.pop(job.id, None)
+        db.delete_job(job.id)
         deleted += 1
-    _persist()
     return {"deleted": deleted}

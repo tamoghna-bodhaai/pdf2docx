@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sign in · PDF → DOCX</title>
+<script>
+  (() => {
+    let theme = 'light';
+    try {
+      const saved = localStorage.getItem('pdf2docx-theme');
+      theme = saved === 'light' || saved === 'dark'
+        ? saved
+        : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    } catch (_) {}
+    document.documentElement.dataset.theme = theme;
+  })();
+</script>
+<link rel="stylesheet" href="/static/app.css?v=20260822-auth" />
+</head>
+<body class="auth-body">
+<main class="auth-frame">
+  <div class="auth-card workspace-card">
+    <div class="brand-lockup auth-brand">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M7 3.75h7l4 4V20.25H7z" />
+          <path d="M14 3.75v4h4M9.5 12h6M9.5 15h4.25" />
+        </svg>
+      </span>
+      <div>
+        <div class="wordmark">PDF<span>2</span>DOCX</div>
+        <div class="workspace-title">Document converter</div>
+      </div>
+    </div>
+
+    <div class="auth-tabs" id="auth-tabs" role="tablist">
+      <button id="tab-signin" role="tab" aria-selected="true" data-mode="signin">Sign in</button>
+      <button id="tab-signup" role="tab" aria-selected="false" data-mode="signup">Create account</button>
+    </div>
+
+    <form id="auth-form" novalidate>
+      <label class="auth-field">
+        <span>Email</span>
+        <input id="email" type="email" name="email" autocomplete="username" required />
+      </label>
+
+      <label class="auth-field">
+        <span>Password</span>
+        <input id="password" type="password" name="password"
+               autocomplete="current-password" required />
+      </label>
+
+      <label class="auth-field hidden" id="invite-field">
+        <span>Invite code</span>
+        <input id="invite-code" type="text" name="invite_code" autocomplete="off" />
+      </label>
+
+      <p class="auth-hint" id="auth-hint">Use at least 8 characters.</p>
+      <div class="warn hidden" id="auth-error" role="alert"></div>
+
+      <button class="primary auth-submit" id="auth-submit" type="submit">
+        Sign in <span aria-hidden="true">→</span>
+      </button>
+    </form>
+
+    <p class="auth-note" id="signup-closed">
+      Sign-ups are closed. Ask whoever runs this instance for an invite code.
+    </p>
+  </div>
+</main>
+<script src="/static/login.js?v=20260822-auth"></script>
+</body>
+</html>

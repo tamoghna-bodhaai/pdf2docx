@@ -14,19 +14,13 @@ import dataclasses
 import json
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app import main
 from app.mathpix_client import BY_EXT, FORMATS, RAW_DIR, RAW_IMAGE_DIR
 
 
 @pytest.fixture
-def client():
-    return TestClient(main.app)
-
-
-@pytest.fixture
-def job(tmp_path, monkeypatch):
+def job(tmp_path, monkeypatch, user):
     """A finished mathpix job holding only some of the exports."""
     directory = tmp_path / "job"
     (directory / RAW_DIR / RAW_IMAGE_DIR).mkdir(parents=True)
@@ -44,7 +38,7 @@ def job(tmp_path, monkeypatch):
     (directory / "secret.txt").write_text("private")
 
     record = main.Job(
-        id="mathpixjob", filename="paper.pdf", pages=2,
+        id="mathpixjob", user_id=user.id, filename="paper.pdf", pages=2,
         directory=directory, status="done", layout="mathpix",
     )
     monkeypatch.setitem(main.JOBS, record.id, record)
@@ -80,6 +74,10 @@ def test_the_config_lists_the_formats_the_browser_labels_buttons_from(client):
     assert "mathpix_app_key" not in json.dumps(body)
     assert body["provider"] == "Mathpix"
     assert {"model", "layout", "columns", "api_key_configured"}.isdisjoint(body)
+    by_ext = {entry["ext"]: entry for entry in body["mathpix_formats"]}
+    assert by_ext["docx"]["requestable"] is True
+    assert by_ext["mmd"]["requestable"] is False
+    assert by_ext["lines.json"]["always"] is True
 
 
 def test_the_openrouter_model_endpoint_is_not_exposed(client):
@@ -92,6 +90,24 @@ def test_the_openrouter_model_endpoint_is_not_exposed(client):
 def test_a_job_reports_only_the_exports_it_has(job):
     assert job.as_dict()["mathpix_formats"] == ["docx", "mmd", "tex.zip", "lines.json"]
     assert job.as_dict()["has_rebuilt"] is True
+
+
+def test_requested_formats_survive_the_job_record_round_trip(job):
+    job.requested_formats = ("html", "pptx")
+
+    restored = main.Job.from_record(job.to_record())
+
+    assert restored.requested_formats == ("html", "pptx")
+    assert restored.as_dict()["requested_formats"] == ["html", "pptx"]
+
+
+def test_historical_records_infer_requestable_outputs_from_existing_files(job):
+    record = job.to_record()
+    record.pop("requested_formats")
+
+    restored = main.Job.from_record(record)
+
+    assert restored.requested_formats == ("docx", "tex.zip")
 
 
 def test_an_export_this_document_has_downloads(client, job):
@@ -204,6 +220,128 @@ def test_web_jobs_ignore_the_configured_legacy_layout(client, monkeypatch, tmp_p
         main.JOBS.pop(job_id, None)
 
 
+def test_omitted_start_formats_keep_the_configured_default(
+    client, user, monkeypatch, tmp_path
+):
+    _settings(
+        monkeypatch,
+        mathpix_app_key="a-key",
+        mathpix_formats=("html",),
+        data_dir=tmp_path,
+    )
+    directory = tmp_path / "default-formats"
+    directory.mkdir()
+    (directory / "source.pdf").write_bytes(_one_page_pdf())
+    job = main.Job(
+        id="defaultformats",
+        user_id=user.id,
+        filename="paper.pdf",
+        pages=1,
+        directory=directory,
+    )
+    monkeypatch.setitem(main.JOBS, job.id, job)
+    called = {}
+
+    def fake_convert_pdf(**kwargs):
+        called.update(kwargs)
+        raise RuntimeError("stop after observing the public interface")
+
+    monkeypatch.setattr(main, "convert_pdf", fake_convert_pdf)
+
+    reply = client.post(f"/api/jobs/{job.id}/start")
+
+    assert reply.status_code == 200
+    assert reply.json()["requested_formats"] == ["docx", "html"]
+    assert called["mathpix_formats"] == ("docx", "html")
+
+
+def test_start_accepts_multiple_exact_formats(client, user, monkeypatch, tmp_path):
+    _settings(monkeypatch, mathpix_app_key="a-key", data_dir=tmp_path)
+    directory = tmp_path / "multiple-formats"
+    directory.mkdir()
+    (directory / "source.pdf").write_bytes(_one_page_pdf())
+    job = main.Job(
+        id="multipleformats",
+        user_id=user.id,
+        filename="paper.pdf",
+        pages=1,
+        directory=directory,
+    )
+    monkeypatch.setitem(main.JOBS, job.id, job)
+    called = {}
+
+    def fake_convert_pdf(**kwargs):
+        called.update(kwargs)
+        raise RuntimeError("stop after observing the public interface")
+
+    monkeypatch.setattr(main, "convert_pdf", fake_convert_pdf)
+
+    reply = client.post(
+        f"/api/jobs/{job.id}/start",
+        data={"formats": "docx, html,pptx,html"},
+    )
+
+    assert reply.status_code == 200
+    assert reply.json()["requested_formats"] == ["docx", "html", "pptx"]
+    assert called["mathpix_formats"] == ("docx", "html", "pptx")
+
+
+def test_present_empty_start_formats_request_only_always_produced_outputs(
+    client, user, monkeypatch, tmp_path
+):
+    _settings(monkeypatch, mathpix_app_key="a-key", data_dir=tmp_path)
+    directory = tmp_path / "no-optional-formats"
+    directory.mkdir()
+    (directory / "source.pdf").write_bytes(_one_page_pdf())
+    job = main.Job(
+        id="nooptionalformats",
+        user_id=user.id,
+        filename="paper.pdf",
+        pages=1,
+        directory=directory,
+    )
+    monkeypatch.setitem(main.JOBS, job.id, job)
+    called = {}
+
+    def fake_convert_pdf(**kwargs):
+        called.update(kwargs)
+        raise RuntimeError("stop after observing the public interface")
+
+    monkeypatch.setattr(main, "convert_pdf", fake_convert_pdf)
+
+    reply = client.post(f"/api/jobs/{job.id}/start", data={"formats": ""})
+
+    assert reply.status_code == 200
+    assert reply.json()["requested_formats"] == []
+    assert called["mathpix_formats"] == ()
+
+
+@pytest.mark.parametrize("formats", ["docx,exe", "mmd", "lines.json"])
+def test_start_rejects_unknown_and_non_requestable_formats(
+    client, user, monkeypatch, tmp_path, formats
+):
+    _settings(monkeypatch, mathpix_app_key="a-key", data_dir=tmp_path)
+    directory = tmp_path / f"invalid-formats-{formats.replace('.', '-').replace(',', '-')}"
+    directory.mkdir()
+    (directory / "source.pdf").write_bytes(_one_page_pdf())
+    job = main.Job(
+        id=f"invalid{len(formats)}",
+        user_id=user.id,
+        filename="paper.pdf",
+        pages=1,
+        directory=directory,
+    )
+    monkeypatch.setitem(main.JOBS, job.id, job)
+
+    reply = client.post(f"/api/jobs/{job.id}/start", data={"formats": formats})
+
+    assert reply.status_code == 400
+    detail = reply.json()["detail"]
+    assert "Supported values" in detail
+    assert "docx" in detail and "html" in detail
+    assert job.status == "ready"
+
+
 def test_non_pdf_uploads_are_rejected_before_staging(client, monkeypatch, tmp_path):
     _settings(monkeypatch, mathpix_app_key="a-key", data_dir=tmp_path)
     reply = client.post(
@@ -214,7 +352,7 @@ def test_non_pdf_uploads_are_rejected_before_staging(client, monkeypatch, tmp_pa
     assert ".pdf" in reply.json()["detail"]
 
 
-def test_rerunning_a_historical_job_is_pinned_to_mathpix(client, monkeypatch, tmp_path):
+def test_rerunning_a_historical_job_is_pinned_to_mathpix(client, user, monkeypatch, tmp_path):
     _settings(monkeypatch, mathpix_app_key="a-key", api_key="", data_dir=tmp_path)
     directory = tmp_path / "legacy"
     directory.mkdir()
@@ -226,7 +364,7 @@ def test_rerunning_a_historical_job_is_pinned_to_mathpix(client, monkeypatch, tm
     (directory / "detection.json").write_text('{"mode":"structured","pages":[]}')
     (directory / "rebuilt.docx").write_bytes(b"historical comparison")
     legacy = main.Job(
-        id="legacyjob", filename="old.pdf", pages=1, directory=directory,
+        id="legacyjob", user_id=user.id, filename="old.pdf", pages=1, directory=directory,
         status="done", layout="structured", columns="multi",
     )
     monkeypatch.setitem(main.JOBS, legacy.id, legacy)
@@ -262,13 +400,13 @@ def test_rerunning_a_historical_job_is_pinned_to_mathpix(client, monkeypatch, tm
     assert (directory / "rebuilt.docx").read_bytes() == b"historical comparison"
 
 
-def test_rerun_rejects_an_explicit_legacy_layout(client, monkeypatch, tmp_path):
+def test_rerun_rejects_an_explicit_legacy_layout(client, user, monkeypatch, tmp_path):
     _settings(monkeypatch, mathpix_app_key="a-key", data_dir=tmp_path)
     directory = tmp_path / "legacy-rejected"
     directory.mkdir()
     (directory / "source.pdf").write_bytes(_one_page_pdf())
     legacy = main.Job(
-        id="legacyrejected", filename="old.pdf", pages=1, directory=directory,
+        id="legacyrejected", user_id=user.id, filename="old.pdf", pages=1, directory=directory,
         status="done", layout="replica",
     )
     monkeypatch.setitem(main.JOBS, legacy.id, legacy)

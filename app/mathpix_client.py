@@ -20,7 +20,8 @@ Nothing is reordered, rewritten, stripped or repaired. In particular the maths i
 not touched: `math_inline_delimiters` is set at request time so Mathpix emits the
 `$…$` / `$$…$$` this codebase already reads, rather than being translated here after
 the fact. What Mathpix returned is also written to disk verbatim before any of this
-runs, and `document.docx` is Mathpix's own file copied byte for byte.
+runs. When DOCX is requested, `document.docx` is Mathpix's own file copied byte
+for byte.
 
 Endpoint shapes follow Mathpix's official `mpxpy` client, which is the only complete
 statement of the multipart upload contract — `POST /files/v1` takes the file part
@@ -105,11 +106,9 @@ BY_EXT: dict[str, Format] = {entry.ext: entry for entry in FORMATS}
 # Formats produced without being asked for. Fetched, never requested.
 ALWAYS = tuple(entry.ext for entry in FORMATS if not entry.requested)
 
-# The one format a `mathpix` job cannot be said to have produced without.
-REQUIRED = "docx"
 # The page-aligned viewer cannot fulfil its contract without Mathpix Markdown.
 PREVIEW_REQUIRED = "mmd"
-REQUIRED_RESULTS = (REQUIRED, PREVIEW_REQUIRED)
+REQUIRED_RESULTS = (PREVIEW_REQUIRED,)
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 MAX_IMAGES = 2000
@@ -189,26 +188,46 @@ class Applied:
 EVERYTHING = tuple(entry.ext for entry in FORMATS if entry.requested)
 
 
+def requestable_formats(wanted: Iterable[str]) -> tuple[str, ...]:
+    """Known requestable formats in caller order, without adding defaults.
+
+    This is the exact-selection half of the catalog interface. It intentionally
+    preserves an empty selection: the browser may request only Mathpix's
+    always-produced preview outputs.
+    """
+    seen: set[str] = set()
+    return tuple(
+        name
+        for name in wanted
+        if name in BY_EXT
+        and BY_EXT[name].requested
+        and not (name in seen or seen.add(name))
+    )
+
+
 def requested_formats(wanted: Iterable[str] | None = None) -> tuple[str, ...]:
-    """The formats to ask for, always including the one the mode exists to produce.
+    """Resolve the configured default used by clients that omit a selection.
 
     An empty selection means all of them rather than none: Mathpix renders every
     requested format from the one conversion, so withholding any buys nothing.
     Unknown names are dropped rather than raised, the way the marker settings
     treat theirs — a stale entry in an `.env` file should not stop a conversion.
     """
-    chosen = [name for name in (wanted or ()) if name in BY_EXT and BY_EXT[name].requested]
+    chosen = list(requestable_formats(wanted or ()))
     if not chosen:
         chosen = list(EVERYTHING)
-    if REQUIRED not in chosen:
-        chosen.insert(0, REQUIRED)
-    seen: set[str] = set()
-    return tuple(name for name in chosen if not (name in seen or seen.add(name)))
+    # Older clients expected DOCX even when a configured subset omitted it.
+    # Keep that default contract; an explicit start-form selection uses
+    # ``requestable_formats`` and can deliberately leave DOCX out.
+    if "docx" not in chosen:
+        chosen.insert(0, "docx")
+    return tuple(chosen)
 
 
 def conversion_formats(wanted: Iterable[str] | None = None) -> dict[str, bool]:
     """`conversion_formats` as Mathpix wants it, from a list of extensions."""
-    return {BY_EXT[name].key: True for name in requested_formats(wanted)}
+    chosen = requested_formats() if wanted is None else requestable_formats(wanted)
+    return {BY_EXT[name].key: True for name in chosen}
 
 
 def _error_id(response: httpx.Response) -> str:
@@ -485,7 +504,9 @@ class MathpixClient:
         than giving up on it. An explicitly unsupported optional format is simply
         absent — a document with no tables has no `.xlsx`. Operational HTTP errors
         still fail collection instead of masquerading as unsupported output.
-        DOCX and MMD are required for the deliverable and page-aligned preview.
+        MMD is required for the page-aligned preview; every selected conversion
+        format, including DOCX, is optional because Mathpix may not produce it
+        for a particular document.
         """
         limit = deadline if deadline is not None else time.monotonic() + self.poll_timeout
         pending = list(dict.fromkeys(wanted))
