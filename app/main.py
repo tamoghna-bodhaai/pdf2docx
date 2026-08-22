@@ -352,8 +352,18 @@ _restore()
 # passed is dead weight, and they are minted by anyone who can reach /login.
 db.purge_expired_sessions()
 
-# Loud, once, at boot. An instance whose volume was never attached otherwise
-# looks completely healthy right up until the deploy that empties it.
+# Fatal, at boot, before anything can be written. An instance whose volume was
+# never attached otherwise looks completely healthy right up until the deploy
+# that empties it, and a warning cannot stop that deploy — it has already
+# happened by the time anyone reads the log. Refusing to start does stop it: the
+# healthcheck goes unanswered, Railway marks the deploy failed, and the previous
+# deployment keeps serving. Nothing is lost by a failed deploy; everything is
+# lost by a successful one writing to disposable storage.
+#
+# This raises only on Railway. Everywhere else the check is advisory, because a
+# data directory on the root device is completely normal on a laptop.
+storage.require_durable_storage()
+
 _EPHEMERAL_WARNING = storage.warn_if_ephemeral()
 if _EPHEMERAL_WARNING:
     logging.getLogger("uvicorn.error").warning(_EPHEMERAL_WARNING)
@@ -479,10 +489,11 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 def healthz() -> dict:
     """Unauthenticated liveness check, for the platform rather than the browser.
 
-    It also reports whether the data directory is ephemeral, because a missing
-    volume does not stop the app running — it just quietly deletes every account
-    on the next deploy, and this is somewhere the answer can be read without
-    signing in to an instance that may have just lost the account to sign in as.
+    It also reports where the data lives: which volume, mounted where, and how
+    much room is left on it. A missing volume can no longer get this far on
+    Railway, but free space can still run out, and running out is the next way
+    conversions start failing. Unauthenticated on purpose, so an instance can be
+    diagnosed without signing in to it.
     """
     return {"ok": True, "storage": storage.report()}
 

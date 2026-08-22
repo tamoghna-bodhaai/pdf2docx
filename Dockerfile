@@ -6,9 +6,12 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
-# The volume. Job directories and the database both live under it, and nothing
-# outside it survives a redeploy. A Railway variable can override this default.
-ENV PDF2DOCX_DATA_DIR=/data
+# No PDF2DOCX_DATA_DIR here, deliberately. Hardcoding /data made a deployment
+# with no volume attached look configured for durable storage: the directory
+# exists either way, so nothing could tell the difference, and the accounts were
+# gone by the time anyone noticed. The path is read from
+# RAILWAY_VOLUME_MOUNT_PATH instead, which Railway sets only when a volume is
+# really there — and app/storage.py refuses to boot when it is not.
 
 WORKDIR /srv
 

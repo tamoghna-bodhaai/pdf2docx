@@ -1,0 +1,62 @@
+// Volume declaration for Railway Infrastructure as Code.
+//
+// WHY THIS EXISTS
+// The volume holding pdf2docx.db and every converted document was, for a long
+// time, a thing somebody had to remember to attach in the dashboard. Nobody did,
+// and every redeploy silently destroyed every account. Declaring it here makes
+// the mount path and size reviewable in a pull request like any other code.
+//
+// NOT YET ADOPTED — READ BEFORE RENAMING
+// Railway IaC manages the *whole project*, not just the volume, so the names
+// below have to match what already exists or Railway may create a second
+// service alongside the running one. Before renaming this to `railway.ts`:
+//
+//   1. `railway config migrate`  — generates .railway/railway.ts from the
+//      existing railway.toml, with the real project and service names already
+//      filled in.
+//   2. Copy the `volume(...)` and `volumeMounts` lines below into it.
+//   3. Confirm the project and service names match what is already deployed.
+//      The repo slug below is correct — Railway builds from the `bodhaai`
+//      remote — but the names below are placeholders and a mismatch makes
+//      Railway create a second service alongside the running one. Check the
+//      deployed branch too: this work is on `mathpix`, not `main`.
+//   4. Delete railway.toml, which the IaC file supersedes.
+//
+// Until then railway.toml remains the active configuration, and the volume is
+// attached with:
+//
+//     railway volume add -m /data
+//
+// Either way the application refuses to boot on Railway without it — see
+// app/storage.py — so a missing volume can no longer be discovered by losing
+// the accounts.
+
+import { defineRailway, github, project, service, volume } from "railway/iac";
+
+export default defineRailway(() => {
+  // Sized for the history limit rather than for today. PDF2DOCX_HISTORY_LIMIT
+  // is 100 *per account* and observed jobs run 1.1–5.2 MB, so a handful of
+  // active accounts reaches several GB. Volumes resize live on paid plans.
+  const data = volume("pdf2docx-data", { sizeMB: 10240 });
+
+  const app = service("pdf2docx", {
+    source: github("tamoghna-bodhaai/pdf2docx"),
+
+    // Mounted here and nowhere else. The application reads the path back out of
+    // RAILWAY_VOLUME_MOUNT_PATH rather than being told it separately, so this
+    // is the single place the location is decided and there is no second value
+    // for it to disagree with.
+    volumeMounts: { "/data": data },
+
+    healthcheck: "/healthz",
+    healthcheckTimeout: 30,
+
+    // One, and not negotiable: JOBS is a module-global dict in app/main.py and
+    // JOBS_LOCK protects nothing across processes, so a second replica would
+    // see only its own conversions in /api/history. A volume attaches to one
+    // container anyway.
+    replicas: 1,
+  });
+
+  return project("pdf2docx", { resources: [data, app] });
+});

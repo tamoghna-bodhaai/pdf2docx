@@ -35,9 +35,27 @@ def _model_setting(name: str, default: str) -> str:
 
 
 def _data_dir() -> Path:
-    """Where conversion history and finished documents are kept between runs."""
+    """Where conversion history and finished documents are kept between runs.
+
+    The volume comes before the default, and deliberately so. Railway injects
+    `RAILWAY_VOLUME_MOUNT_PATH` only when a volume is actually attached, which
+    makes it the one trustworthy answer to "is there durable storage here" — a
+    hardcoded `/data` says nothing, because the directory exists either way.
+    Reading the mount path rather than being told it also removes the failure
+    where a volume is attached at one path while this points at another; there
+    is no second place for the two to disagree.
+
+    An explicit `PDF2DOCX_DATA_DIR` still wins, because the tests set it to a
+    temporary directory before importing `app` and a developer may reasonably
+    want to override it on a machine that has a volume.
+    """
     raw = os.environ.get("PDF2DOCX_DATA_DIR", "").strip()
-    return Path(raw).expanduser() if raw else Path.home() / ".pdf2docx"
+    if raw:
+        return Path(raw).expanduser()
+    mount = os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "").strip()
+    if mount:
+        return Path(mount)
+    return Path.home() / ".pdf2docx"
 
 
 def _marker_options() -> dict:
