@@ -377,6 +377,42 @@ def test_a_reference_that_is_already_local_is_left_alone(tmp_path, monkeypatch):
     assert applied.images_unresolved == 1
 
 
+def test_a_figure_written_as_latex_is_downloaded_like_any_other_image(tmp_path, monkeypatch):
+    """Mathpix names a crop twice over: as Markdown, and as LaTeX inside a float.
+
+    Only the Markdown spelling used to be brought into the job, so a document
+    whose pictures came back as figures kept pointing at Mathpix's CDN — and the
+    preview showed the gaps once those URLs expired.
+    """
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: response(200, content=b"\x89PNG-ish"))
+    markdown = (
+        "\\begin{figure}\n"
+        "\\includegraphics[alt={},max width=\\textwidth]"
+        "{https://cdn.mathpix.com/cropped/a.png?height=240&width=303}\n"
+        "\\caption{Figure 1}\n"
+        "\\end{figure}"
+    )
+    text, applied = client().download_images(markdown, tmp_path)
+    assert "{mathpix/images/a.png}" in text
+    assert "cdn.mathpix.com" not in text
+    assert applied.images_downloaded == 1
+    assert (tmp_path / "mathpix" / "images" / "a.png").read_bytes() == b"\x89PNG-ish"
+
+
+def test_a_figure_and_an_image_naming_one_crop_download_it_once(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(httpx, "get", lambda url, **k: (
+        calls.append(url), response(200, content=b"png"))[1])
+    markdown = (
+        "![](https://cdn.mathpix.com/cropped/a.png)\n"
+        "\\includegraphics{https://cdn.mathpix.com/cropped/a.png}"
+    )
+    text, applied = client().download_images(markdown, tmp_path)
+    assert len(calls) == 1
+    assert text.count("mathpix/images/a.png") == 2
+    assert applied.images_downloaded == 1
+
+
 def test_the_same_image_is_downloaded_once_however_often_it_is_referenced(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(httpx, "get", lambda url, **k: (

@@ -123,6 +123,16 @@ PAGE_BREAK_RE = re.compile(r"^[ \t]*\\pagebreak\s*(?:\{\})?[ \t]*$", re.M)
 # query string, so unlike marker's this has to match a full URL.
 IMAGE_REF_RE = re.compile(r"(?P<prefix>!\[[^\]]*\]\()(?P<target>[^)\s]+)(?P<suffix>\))")
 
+# Mathpix writes a picture two ways. A plain crop comes back as a Markdown image
+# reference; a crop it considers a *figure* comes back as LaTeX inside a float,
+# and only the first of those was ever brought into the job. The second names the
+# same expiring CDN URL, so a preview opened later showed a broken image where
+# the figure should be. Both are the same kind of reference and get the same
+# treatment. The groups are named to match the rewrite above.
+GRAPHICS_REF_RE = re.compile(
+    r"(?P<prefix>\\includegraphics(?:\[[^\]]*\])?\{)(?P<target>[^}\s]+)(?P<suffix>\})"
+)
+
 
 class MathpixError(RuntimeError):
     """Mathpix is unavailable, refused the document, or returned something unusable."""
@@ -587,7 +597,7 @@ class MathpixClient:
             downloaded[target] = reference
             return f"{match.group('prefix')}{reference}{match.group('suffix')}"
 
-        rewritten = IMAGE_REF_RE.sub(replace, markdown)
+        rewritten = GRAPHICS_REF_RE.sub(replace, IMAGE_REF_RE.sub(replace, markdown))
         applied = Applied(
             images_downloaded=len(downloaded),
             images_failed=len(failed),
