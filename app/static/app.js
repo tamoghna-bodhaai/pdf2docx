@@ -16,6 +16,10 @@ let historyLoading = false;
 let firstHistoryLoad = true;
 let uploadInFlight = false;
 let retryMode = 'conversion';
+// How many extra reads a job that reports itself finished but shows no outputs
+// gets before the answer is taken at face value.
+const SETTLE_TRIES = 6;
+let settling = 0;
 
 async function api(path, options) {
   const response = await fetch(path, options);
@@ -474,6 +478,7 @@ $('retry').addEventListener('click', () => {
 
 async function startJob(id) {
   if (!id) return;
+  settling = 0;
   $('start').disabled = true;
   $('retry').disabled = true;
   const body = new FormData();
@@ -566,8 +571,15 @@ async function check(id) {
     if (job.status === 'done') await openJob(job);
   }
   loadHistory();
-  if (RUNNING.has(job.status)) schedulePoll(id);
-  else stopPolling();
+  if (RUNNING.has(job.status)) { settling = 0; schedulePoll(id); }
+  else if (job.status === 'done' && !job.has_md && settling < SETTLE_TRIES) {
+    // A finished conversion always leaves the page-aligned Markdown behind, so
+    // this can only be a job caught between finishing and having its results in
+    // place. Polling stops at "done", which would freeze that half-written view
+    // on screen for good — so give it a few more reads before believing it.
+    settling += 1;
+    schedulePoll(id, 700);
+  } else { settling = 0; stopPolling(); }
 }
 
 function showJob(job, options = {}) {

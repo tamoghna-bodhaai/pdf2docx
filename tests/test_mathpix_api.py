@@ -15,8 +15,9 @@ import json
 
 import pytest
 
-from app import main
+from app import main, pipeline
 from app.mathpix_client import BY_EXT, FORMATS, RAW_DIR, RAW_IMAGE_DIR
+from app.mathpix_client import RAW_DIR as MATHPIX_RAW_DIR
 
 
 @pytest.fixture
@@ -440,3 +441,53 @@ def test_interrupted_job_directory_promotion_is_recovered(tmp_path):
     assert (jobs / "abc123" / "source.pdf").read_bytes() == b"old valid job"
     assert not backup.exists()
     assert not abandoned.exists()
+
+
+def test_a_job_is_not_reported_done_before_its_outputs_are_in_place(
+    tmp_path, monkeypatch, user
+):
+    """The pipeline's own "done" must not reach the browser.
+
+    Every mode signals "done" when its work in the staging directory is over,
+    which for mathpix is still one remote deletion and two directory renames
+    away from the results existing where a download route would look. A poll
+    that saw "done" there would find no outputs — and the browser stops polling
+    at "done", so it would keep showing that empty result for good.
+    """
+    jobs = tmp_path / "jobs"
+    directory = jobs / "settling"
+    directory.mkdir(parents=True)
+    pdf_path = directory / "source.pdf"
+    pdf_path.write_bytes(_one_page_pdf())
+
+    job = main.Job(
+        id="settling", user_id=user.id, filename="paper.pdf", pages=1,
+        directory=directory, status="queued", requested_formats=("docx",),
+    )
+    monkeypatch.setitem(main.JOBS, job.id, job)
+
+    seen: dict = {}
+
+    def fake_convert(*, pdf_path, work_dir, on_progress, **kwargs):
+        markdown = work_dir / "document.md"
+        markdown.write_text("# Converted", encoding="utf-8")
+        (work_dir / "detection.json").write_text('{"mode": "mathpix", "pages": []}')
+        (work_dir / MATHPIX_RAW_DIR).mkdir(parents=True, exist_ok=True)
+        (work_dir / MATHPIX_RAW_DIR / "document.docx").write_bytes(b"the docx")
+        # Where the mathpix mode then deletes the remote upload, and where the
+        # caller has yet to promote any of the above into `directory`.
+        on_progress("done", 1, 1)
+        seen["mid_run"] = main.JOBS[job.id].as_dict()
+        return pipeline.ConversionResult(markdown_path=markdown, docx_path=None)
+
+    monkeypatch.setattr(main, "convert_pdf", fake_convert)
+    main._run_job(job.id, pdf_path)
+
+    assert seen["mid_run"]["status"] != "done"
+    assert seen["mid_run"]["has_md"] is False
+    # And the finished job is only ever seen with everything it produced.
+    finished = job.as_dict()
+    assert finished["status"] == "done"
+    assert finished["has_md"] is True
+    assert finished["has_detection"] is True
+    assert "docx" in finished["mathpix_formats"]

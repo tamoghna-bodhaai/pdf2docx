@@ -387,7 +387,16 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
 
     def on_progress(stage: str, done: int, total: int) -> None:
         with JOBS_LOCK:
-            job.status = stage
+            # A pipeline reports "done" when *its* work is over, which is still
+            # several steps before the results reach `job.directory`: the
+            # mathpix mode then deletes the remote upload over the network, and
+            # this function's caller has yet to promote the staged directory.
+            # Publishing that stage verbatim would let a poll see a finished job
+            # whose outputs do not exist yet — and the browser stops polling on
+            # "done", so it would never see them appear. Only the promotion path
+            # below may end a job; until then the last stage the job can be in
+            # is the one that is still assembling it.
+            job.status = "building" if stage == "done" else stage
             job.done = done
             job.total = total or job.total
 
