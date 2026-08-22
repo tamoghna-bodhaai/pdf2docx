@@ -10,3 +10,5 @@ __pycache__/
 models/pdf-extract-kit-1.0/
 vendor/PDF-Extract-Kit/
 vendor/llama/
+# Regenerable palette previews; brand.md is the tracked output.
+.brand-preview/
