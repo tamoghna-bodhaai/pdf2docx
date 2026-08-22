@@ -98,8 +98,16 @@ class Throttle:
         return len(self._failures)
 
 
-# Sign-ins, keyed by address.
-SIGN_IN = Throttle(limit=5, window=15 * 60)
+# Sign-ins, keyed by address. The limit is a ceiling on work rather than a
+# tripwire: `authenticate` checks the password before consulting it, so a
+# correct one always gets in and clears the count. An earlier version refused
+# first, which meant five typos locked the right password out for a quarter of
+# an hour — the single most common way this sign-in form "failed" for someone
+# holding valid credentials. What the throttle still has to do is bound the
+# scrypt work an attacker can force (~16 MB and real CPU per verification) and
+# hold online guessing to a rate that a password of the required length
+# survives, which a limit at this height does.
+SIGN_IN = Throttle(limit=20, window=15 * 60)
 
 # Wrong invite codes, keyed by client address. An invite code is short enough to
 # be worth guessing — five digits is a hundred thousand of them — so without
@@ -113,13 +121,29 @@ class User:
     id: str
     email: str
     created_at: str
+    name: str | None = None
+    picture: str | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> User:
-        return cls(id=row["id"], email=row["email"], created_at=row["created_at"])
+        return cls(
+            id=row["id"],
+            email=row["email"],
+            created_at=row["created_at"],
+            # `.get`, because a row read back by an older query — or by a test
+            # that builds one by hand — need not carry the profile columns.
+            name=row.get("name"),
+            picture=row.get("picture"),
+        )
 
     def as_dict(self) -> dict:
-        return {"id": self.id, "email": self.email, "created_at": self.created_at}
+        return {
+            "id": self.id,
+            "email": self.email,
+            "created_at": self.created_at,
+            "name": self.name,
+            "picture": self.picture,
+        }
 
 
 # ----------------------------------------------------------------- passwords --
@@ -170,11 +194,39 @@ def caller(request: Request) -> str:
 
 # ------------------------------------------------------------------ sessions --
 
-def _token_hash(token: str) -> str:
+def token_hash(token: str) -> str:
+    """What gets stored for an opaque token. Never the token itself.
+
+    The session cookie is a random token held by the browser; only its hash is
+    stored, so a database read is not enough to mint one.
+    """
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def open_session(response: Response, user_id: str) -> str:
+_token_hash = token_hash
+
+
+def cookie_secure(request: Request) -> bool:
+    """Whether to mark cookies `Secure`, for the scheme this request arrived on.
+
+    `auto` is the default and the only answer that is right in both places this
+    runs. Marking a cookie `Secure` over plain HTTP does not downgrade it — the
+    browser discards it outright, and silently: the sign-in returns 200, the
+    redirect follows, and the app sends the caller straight back to the sign-in
+    page with nothing to explain why. Hard-coding it off would instead ship a
+    session cookie without the flag in production.
+
+    Uvicorn runs with `--proxy-headers`, so behind a TLS-terminating proxy the
+    request still reports the scheme the browser actually used.
+    """
+    if settings.cookie_secure == "on":
+        return True
+    if settings.cookie_secure == "off":
+        return False
+    return request.url.scheme == "https"
+
+
+def open_session(request: Request, response: Response, user_id: str) -> str:
     """Mint a session, store its hash, and set the cookie. Returns the raw token."""
     token = secrets.token_urlsafe(32)
     expires = datetime.now(timezone.utc) + timedelta(days=settings.session_days)
@@ -187,7 +239,7 @@ def open_session(response: Response, user_id: str) -> str:
         # Every request the browser makes is same-origin, and `lax` keeps plain
         # `<img src="/api/jobs/.../page/1.png">` authenticated without any JS.
         samesite="lax",
-        secure=settings.cookie_secure,
+        secure=cookie_secure(request),
         path="/",
     )
     return token
@@ -296,21 +348,30 @@ def register(email: str, password: str) -> User:
 
 
 def authenticate(email: str, password: str) -> User:
-    """Check a sign-in, counting failures against the throttle."""
+    """Check a sign-in, counting failures against the throttle.
+
+    The password is verified before the throttle is consulted, so a correct one
+    is never refused for the sake of earlier typos — it succeeds and wipes the
+    count. The throttle only ever refuses once the ceiling is reached, which
+    caps the scrypt work a stranger can force without punishing the account
+    holder for mistyping.
+    """
     address = email.strip()
+    row = db.user_by_email(address)
+    # Hash regardless of whether the account exists, so the response time does
+    # not say which addresses are registered. An account that signs in only
+    # through Google has no password hash, and takes the dummy for the same
+    # reason: whether an address is Google-only is not worth leaking either.
+    stored = (row["password_hash"] if row else None) or _DUMMY_PASSWORD_HASH
+    if row is not None and row["password_hash"] and verify_password(password, stored):
+        SIGN_IN.clear(_throttle_key(address))
+        return User.from_row(row)
+
     if SIGN_IN.blocked(_throttle_key(address)):
         raise HTTPException(
             status_code=429,
             detail="Too many failed sign-ins. Try again in a few minutes.",
         )
+    SIGN_IN.record(_throttle_key(address))
+    raise HTTPException(status_code=401, detail="Wrong email or password.")
 
-    row = db.user_by_email(address)
-    # Hash regardless of whether the account exists, so the response time does
-    # not say which addresses are registered.
-    stored = row["password_hash"] if row else _DUMMY_PASSWORD_HASH
-    if row is None or not verify_password(password, stored):
-        SIGN_IN.record(_throttle_key(address))
-        raise HTTPException(status_code=401, detail="Wrong email or password.")
-
-    SIGN_IN.clear(_throttle_key(address))
-    return User.from_row(row)

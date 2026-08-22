@@ -38,7 +38,9 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
   id            TEXT PRIMARY KEY,
   email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
-  password_hash TEXT NOT NULL,
+  password_hash TEXT,
+  name          TEXT,
+  picture       TEXT,
   created_at    TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
@@ -58,9 +60,78 @@ CREATE INDEX IF NOT EXISTS sessions_by_user ON sessions(user_id);
 """
 
 
+def _migrate(connection: sqlite3.Connection) -> None:
+    """Bring a database written by an earlier version up to `SCHEMA`.
+
+    Two changes since accounts were password-only. `name` and `picture` are
+    plain additions, which SQLite can do in place. `password_hash` dropping its
+    NOT NULL is not: SQLite cannot relax a constraint, so that one needs the
+    table rebuilt around the new definition. Both are guarded by what is
+    actually in the file, so this is a no-op on every boot after the first.
+    """
+    columns = {row["name"]: row for row in connection.execute("PRAGMA table_info(users)")}
+    if not columns:  # A fresh database; `SCHEMA` has already built it correctly.
+        return
+
+    for added in ("name", "picture"):
+        if added not in columns:
+            connection.execute(f"ALTER TABLE users ADD COLUMN {added} TEXT")
+
+    if not columns["password_hash"]["notnull"]:
+        return
+
+    # A Google-only account has no password to store, so the column has to admit
+    # NULL. Foreign keys are deferred for the swap because `jobs` and `sessions`
+    # reference `users(id)` and the rename would otherwise be seen as orphaning
+    # them mid-flight.
+    connection.executescript(
+        """
+        CREATE TABLE users_rebuilt (
+          id            TEXT PRIMARY KEY,
+          email         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+          password_hash TEXT,
+          name          TEXT,
+          picture       TEXT,
+          created_at    TEXT NOT NULL
+        );
+        INSERT INTO users_rebuilt (id, email, password_hash, name, picture, created_at)
+          SELECT id, email, password_hash, NULL, NULL, created_at FROM users;
+        DROP TABLE users;
+        ALTER TABLE users_rebuilt RENAME TO users;
+        """
+    )
+
+
 def path() -> Path:
     """Where the database lives. Resolved per call, the way the old history was."""
     return DATABASE if DATABASE is not None else settings.data_dir / "pdf2docx.db"
+
+
+def _initialise(file: Path) -> None:
+    """Create the schema and run migrations, once per database file per process.
+
+    On its own connection, and deliberately one that never turns foreign keys
+    on: rebuilding `users` drops and recreates a table that `jobs` and
+    `sessions` both reference, which enforcement would refuse mid-flight. Every
+    connection handed out by `connect` enforces them as before.
+    """
+    key = str(file)
+    if key in _INITIALISED:
+        return
+    with _INIT_LOCK:
+        if key in _INITIALISED:
+            return
+        file.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(file, timeout=10.0)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.executescript(SCHEMA)
+            _migrate(connection)
+            connection.commit()
+        finally:
+            connection.close()
+        _INITIALISED.add(key)
 
 
 @contextlib.contextmanager
@@ -72,19 +143,10 @@ def connect():
     is used. Hence the wrapper.
     """
     file = path()
-    file.parent.mkdir(parents=True, exist_ok=True)
+    _initialise(file)
     connection = sqlite3.connect(file, timeout=10.0)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
-
-    key = str(file)
-    if key not in _INITIALISED:
-        with _INIT_LOCK:
-            if key not in _INITIALISED:
-                connection.execute("PRAGMA journal_mode = WAL")
-                connection.executescript(SCHEMA)
-                connection.commit()
-                _INITIALISED.add(key)
 
     try:
         yield connection
@@ -99,14 +161,24 @@ def now() -> str:
 
 # --------------------------------------------------------------------- users --
 
-def create_user(user_id: str, email: str, password_hash: str) -> dict:
-    """Register an account. Raises `sqlite3.IntegrityError` if the email is taken."""
+def create_user(
+    user_id: str,
+    email: str,
+    password_hash: str | None,
+    name: str | None = None,
+    picture: str | None = None,
+) -> dict:
+    """Register an account. Raises `sqlite3.IntegrityError` if the email is taken.
+
+    `password_hash` is None for an account that signs in through Google and has
+    no password of its own to check.
+    """
     record = {"id": user_id, "email": email, "password_hash": password_hash,
-              "created_at": now()}
+              "name": name, "picture": picture, "created_at": now()}
     with connect() as connection:
         connection.execute(
-            "INSERT INTO users (id, email, password_hash, created_at)"
-            " VALUES (:id, :email, :password_hash, :created_at)",
+            "INSERT INTO users (id, email, password_hash, name, picture, created_at)"
+            " VALUES (:id, :email, :password_hash, :name, :picture, :created_at)",
             record,
         )
     return record

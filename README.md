@@ -84,11 +84,13 @@ need more than a handful.
 Run the server:
 
 ```bash
-PDF2DOCX_COOKIE_SECURE=off .venv/bin/uvicorn app.main:app --reload --port 8000
+.venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 
-`PDF2DOCX_COOKIE_SECURE=off` is needed only for local development over plain
-HTTP; anything served over TLS should leave it on.
+`PDF2DOCX_COOKIE_SECURE` defaults to `auto`, which reads the scheme off the
+request — plain HTTP locally, TLS in front of a deployment — so neither case
+needs it set. Force it with `on` or `off` only if something in front of the app
+misreports the scheme.
 
 Open <http://localhost:8000>. You will be sent to the sign-in page — create an
 account with the invite code, then choose a PDF, select its output formats, and
@@ -96,10 +98,19 @@ press **Convert PDF**. Only PDFs are accepted.
 
 ## Accounts
 
-Sign-in is email and password, held entirely by this application: passwords are
-hashed with `hashlib.scrypt`, and a session is a random token whose hash is
-stored in the database, so signing out actually revokes it. There is no third
-party involved and no additional dependency — it is all standard library.
+One way in: an email and a password. A session is a random token whose hash is
+stored in the database, so signing out actually revokes it, and no token ever
+reaches the browser — the cookie is `HttpOnly` and JavaScript never sees it.
+Passwords are hashed with `hashlib.scrypt`. No dependency is involved; this is
+all standard library.
+
+Identity used to be held in Supabase, with Google OAuth as a fallback, and both
+have been removed. The reason is worth recording, because it was not about
+Supabase working badly. It worked fine — and that was the problem. Supabase
+survived a redeploy while the local `users` rows did not, so after every deploy
+the password was accepted and the account behind it had vanished, and the user
+was asked for an invite code as though they had never been here. One store, on
+the volume, cannot disagree with itself that way.
 
 Everything behind the sign-in page is per account. You see your own uploads,
 your own conversions, and your own history; another account's job id returns
@@ -111,16 +122,19 @@ the list entirely once everyone has signed up, never signs anyone out — so the
 tightest steady state is to empty `PDF2DOCX_INVITE_CODES` once your team is in.
 The sign-up tab then disappears from the sign-in page.
 
-There is no password reset (that needs an email provider), account-deletion
-command, or admin UI. Accounts and sessions live in `pdf2docx.db` in
-`PDF2DOCX_DATA_DIR`. Do not remove an account with a bare SQLite `DELETE`: an
+There is no password reset (that needs an email provider), no
+account-deletion command, and no admin UI. Accounts and sessions live in
+`pdf2docx.db` in `PDF2DOCX_DATA_DIR`, which must be a mounted volume. Do not remove an account with a bare SQLite `DELETE`: an
 external client may not enable foreign keys, and database cascades cannot remove
 the account's job directories. Account removal therefore needs a maintenance
 operation that deletes both that user's rows and the job directories named by
 their records.
 
-Two things are rate limited, both in memory and both per hour or quarter hour:
-sign-ins, counted per email address, and wrong invite codes, counted per caller.
+Two things are rate limited, both in memory: sign-ins, counted per email address
+over a quarter hour, and wrong invite codes, counted per caller over an hour.
+The sign-in limit is a ceiling on work rather than a lockout — the password is
+checked before the limit is consulted, so a correct one always gets in and
+resets the count. Typing it wrong a few times never costs you the right one.
 
 ## Exports
 
@@ -257,16 +271,25 @@ service:
 1. **Attach a volume mounted at `/data`.** The container filesystem is wiped on
    every redeploy; the volume is where job directories and `pdf2docx.db` live.
    Without it, every account and every conversion disappears on the next deploy.
-2. **Keep it at one replica.** `railway.toml` already sets this. A volume
-   attaches to a single instance, and the job registry lives in that process's
-   memory, so a second replica would serve a different history and could not
-   reach the first one's files.
+2. **Keep it at one replica.** A volume attaches to a single instance, and the
+   job registry lives in that process's memory, so a second replica would serve
+   a different history and could not reach the first one's files.
 3. **Set the variables:** `MATHPIX_APP_KEY`, `MATHPIX_APP_ID`,
    `PDF2DOCX_DATA_DIR=/data`, and `PDF2DOCX_INVITE_CODES`. `PDF2DOCX_DATA_DIR`
    is already `/data` in the image, so it only needs setting if you mount the
    volume elsewhere.
 
-The healthcheck is `/healthz`, which needs no session.
+The healthcheck is `/healthz`, which needs no session. It also reports whether
+the data directory is ephemeral:
+
+```json
+{"ok": true, "storage": {"data_dir": "/data", "ephemeral": false, "mount": true}}
+```
+
+`"ephemeral": true` means step 1 was missed and the volume is not attached.
+Nothing will look wrong until the next deploy, which will then delete every
+account and every conversion — so it is worth reading this once after the first
+deploy. The same warning is logged at boot.
 
 A redeploy kills any conversion that is running at the time. That is handled:
 the interrupted job is marked as an error on the next boot and can be rerun from

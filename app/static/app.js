@@ -1224,9 +1224,24 @@ document.addEventListener('keydown', event => {
 
 api('/api/auth/me').then(response => response.ok ? response.json() : null).then(user => {
   if (!user) return;
-  $('user-email').textContent = user.email;
+  // The name Google gave, falling back to the address for an account that
+  // signed up with one. The address stays in the tooltip either way, because it
+  // is what identifies the account and two people can share a display name.
+  $('user-email').textContent = user.name || user.email;
+  $('user-email').title = user.email;
+
   const avatar = document.querySelector('.account-avatar');
-  if (avatar) avatar.textContent = user.email.slice(0, 1).toUpperCase();
+  if (!avatar) return;
+  if (user.picture) {
+    const image = new Image();
+    image.alt = '';
+    image.referrerPolicy = 'no-referrer';
+    // Only swap the initial out once the picture has actually loaded, so a
+    // blocked or broken avatar URL leaves a letter rather than an empty box.
+    image.addEventListener('load', () => { avatar.textContent = ''; avatar.append(image); });
+    image.src = user.picture;
+  }
+  avatar.textContent = (user.name || user.email).slice(0, 1).toUpperCase();
 }).catch(() => {});
 
 $('sign-out').addEventListener('click', async () => {

@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+import secrets
 import shutil
 import tempfile
 import threading
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import fitz
 from fastapi import (
@@ -22,11 +25,16 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, db, detection
+from . import auth, db, detection, storage
 from .auth import User, current_user
 from .config import settings
 from .marker_client import RAW_DIR, RAW_IMAGE_DIR
@@ -340,8 +348,15 @@ def _recover_interrupted_promotions(jobs_dir: Path | None = None) -> None:
 _recover_interrupted_promotions()
 _restore()
 # Sessions outlive the process; the expired ones are only ever refused, never
-# cleaned up in the request path, so boot is where they go.
+# cleaned up in the request path, so boot is where they go. Half-finished Google
+# passed is dead weight, and they are minted by anyone who can reach /login.
 db.purge_expired_sessions()
+
+# Loud, once, at boot. An instance whose volume was never attached otherwise
+# looks completely healthy right up until the deploy that empties it.
+_EPHEMERAL_WARNING = storage.warn_if_ephemeral()
+if _EPHEMERAL_WARNING:
+    logging.getLogger("uvicorn.error").warning(_EPHEMERAL_WARNING)
 
 
 def _get_job(job_id: str, user: User) -> Job:
@@ -462,8 +477,14 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/healthz")
 def healthz() -> dict:
-    """Unauthenticated liveness check, for the platform rather than the browser."""
-    return {"ok": True}
+    """Unauthenticated liveness check, for the platform rather than the browser.
+
+    It also reports whether the data directory is ephemeral, because a missing
+    volume does not stop the app running — it just quietly deletes every account
+    on the next deploy, and this is somewhere the answer can be read without
+    signing in to an instance that may have just lost the account to sign in as.
+    """
+    return {"ok": True, "storage": storage.report()}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -492,33 +513,60 @@ class Registration(Credentials):
 
 
 @app.get("/api/auth/config")
-def auth_config() -> dict:
-    """What the sign-in page needs before anyone is signed in."""
+def auth_config(request: Request) -> dict:
+    """What the sign-in page needs before anyone is signed in.
+
+    Only whether an account can be created at all. With no invite codes
+    configured, signup is closed and the page says so rather than offering a
+    form that can only be refused.
+    """
     return {"signup_open": auth.signup_open()}
 
 
-@app.post("/api/auth/signup")
-def signup(body: Registration, request: Request, response: Response) -> dict:
-    auth.check_invite(body.invite_code, request)
-    user = auth.register(body.email, body.password)
-    # Pre-account installations kept jobs in history.json. The first account
-    # that sees each legacy id claims it; subsequent registrations cannot move
-    # an already imported job.
-    for record in db.import_legacy_jobs(user.id):
+def _adopt_legacy_jobs(user_id: str) -> None:
+    """Claim any pre-account jobs for a newly created account.
+
+    Pre-account installations kept jobs in history.json. The first account that
+    sees each legacy id claims it; later registrations cannot move an already
+    imported job.
+    """
+    for record in db.import_legacy_jobs(user_id):
         job = Job.from_record(record)
         if job.directory is None or not job.directory.exists():
             continue
         with JOBS_LOCK:
             JOBS[job.id] = job
-        db.save_job(user.id, job.id, job.created_at, job.to_record())
-    auth.open_session(response, user.id)
+        db.save_job(user_id, job.id, job.created_at, job.to_record())
+
+
+@app.post("/api/auth/signup")
+def signup(body: Registration, request: Request, response: Response) -> dict:
+    """Create an account.
+
+    The invite code is checked before anything is created. It is what decides
+    whether an address may spend this instance's Mathpix credit, so it is the
+    first thing consulted and the password is not even looked at until it
+    passes.
+    """
+    auth.check_invite(body.invite_code, request)
+    user = auth.register(body.email, body.password)
+    _adopt_legacy_jobs(user.id)
+    auth.open_session(request, response, user.id)
     return user.as_dict()
 
 
 @app.post("/api/auth/login")
-def login(body: Credentials, response: Response) -> dict:
+def login(body: Credentials, request: Request, response: Response):
+    """Sign in against the `users` table.
+
+    Identity lives here and nowhere else. It used to be held in Supabase, which
+    survived a redeploy while the local rows did not — so after every deploy the
+    password was accepted and the account behind it was gone, and the user was
+    asked for an invite code as though they were a stranger. One store, on the
+    volume, cannot disagree with itself that way.
+    """
     user = auth.authenticate(body.email, body.password)
-    auth.open_session(response, user.id)
+    auth.open_session(request, response, user.id)
     return user.as_dict()
 
 

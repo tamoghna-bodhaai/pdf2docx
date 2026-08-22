@@ -16,7 +16,7 @@
     document.documentElement.dataset.theme = theme;
   })();
 </script>
-<link rel="stylesheet" href="/static/app.css?v=20260822-auth" />
+<link rel="stylesheet" href="/static/app.css?v=20260822-volume" />
 </head>
 <body class="auth-body">
 <main class="auth-frame">
@@ -39,6 +39,8 @@
       <button id="tab-signup" role="tab" aria-selected="false" data-mode="signup">Create account</button>
     </div>
 
+    <div class="warn hidden" id="auth-error" role="alert"></div>
+
     <form id="auth-form" novalidate>
       <label class="auth-field">
         <span>Email</span>
@@ -57,7 +59,6 @@
       </label>
 
       <p class="auth-hint" id="auth-hint">Use at least 8 characters.</p>
-      <div class="warn hidden" id="auth-error" role="alert"></div>
 
       <button class="primary auth-submit" id="auth-submit" type="submit">
         Sign in <span aria-hidden="true">→</span>
@@ -69,6 +70,6 @@
     </p>
   </div>
 </main>
-<script src="/static/login.js?v=20260822-auth"></script>
+<script src="/static/login.js?v=20260822-volume"></script>
 </body>
 </html>

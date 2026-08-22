@@ -159,9 +159,26 @@ def test_repeated_failures_are_throttled(anonymous) -> None:
         assert anonymous.post("/api/auth/login", json=body).status_code == 401
 
     assert anonymous.post("/api/auth/login", json=body).status_code == 429
-    # Even the right password waits out the lockout.
-    body["password"] = "a good password"
-    assert anonymous.post("/api/auth/login", json=body).status_code == 429
+
+
+def test_the_right_password_is_never_refused_for_earlier_typos(anonymous) -> None:
+    """The throttle caps work; it does not lock out whoever knows the password.
+
+    This is the regression the sign-in form was actually failing on. Refusing
+    before checking meant a handful of typos made the correct password useless
+    for a quarter of an hour, which is indistinguishable — from the outside —
+    from authentication being broken.
+    """
+    _signup(anonymous)
+    wrong = {"email": "new@example.com", "password": "wrong"}
+    for _ in range(auth.SIGN_IN.limit * 2):
+        anonymous.post("/api/auth/login", json=wrong)
+    assert auth.SIGN_IN.blocked("new@example.com")
+
+    right = {"email": "new@example.com", "password": "a good password"}
+    assert anonymous.post("/api/auth/login", json=right).status_code == 200
+    # And getting in wipes the count, so the next typo starts from zero.
+    assert not auth.SIGN_IN.blocked("new@example.com")
 
 
 def test_a_successful_sign_in_clears_the_failures(anonymous) -> None:
@@ -257,7 +274,12 @@ def test_the_sign_in_page_redirects_when_already_signed_in(anonymous, client) ->
 
 
 def test_the_health_check_needs_nothing(anonymous) -> None:
-    assert anonymous.get("/healthz").json() == {"ok": True}
+    body = anonymous.get("/healthz").json()
+    assert body["ok"] is True
+    # It also reports on storage, which is how a deployment missing its volume
+    # can be spotted without signing in to an instance that just lost the
+    # account you would sign in as.
+    assert "data_dir" in body["storage"]
 
 
 def test_the_first_account_claims_legacy_json_history(

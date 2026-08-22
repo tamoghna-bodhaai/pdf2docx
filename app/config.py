@@ -242,9 +242,14 @@ class Settings:
     # the database, so there is no signing secret to configure.
     invite_codes: tuple[str, ...] = field(default_factory=_invite_codes)
     session_days: int = _int("PDF2DOCX_SESSION_DAYS", 30)
-    # Off only for local development over plain HTTP; anything deployed serves
-    # over TLS and wants the flag on.
-    cookie_secure: bool = os.environ.get("PDF2DOCX_COOKIE_SECURE", "on").strip().lower() != "off"
+    # `auto` reads the scheme off the request, which is the only setting that is
+    # right in both places this runs: `on` silently drops the cookie when the
+    # app is reached over plain HTTP (a LAN address during development), and
+    # `off` would ship a session cookie without the flag in production. Uvicorn
+    # runs with `--proxy-headers`, so behind Railway's TLS termination the
+    # request still reports `https`. `on`/`off` remain as overrides.
+    cookie_secure: str = os.environ.get("PDF2DOCX_COOKIE_SECURE", "auto").strip().lower()
+
     # Refuse an upload larger than this before it is written, so one oversized
     # PDF cannot fill the volume the whole history lives on. 0 means no limit.
     max_upload_mb: int = _int("PDF2DOCX_MAX_UPLOAD_MB", 50)

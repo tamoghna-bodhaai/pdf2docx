@@ -25,6 +25,13 @@ _DATA_DIR = tempfile.mkdtemp(prefix="pdf2docx-tests-")
 os.environ["PDF2DOCX_DATA_DIR"] = _DATA_DIR
 os.environ["PDF2DOCX_INVITE_CODES"] = "test-invite,second-invite"
 os.environ["PDF2DOCX_COOKIE_SECURE"] = "off"
+# Emptied rather than left alone: `load_dotenv` does not override what is
+# already set, so this is what stops a developer's real .env pointing the suite
+# at a live Supabase project. Nothing here may depend on the network, and a test
+# that signs up must not create accounts in somebody's actual dashboard. The
+# Supabase tests opt back in by replacing `settings` on the modules that read it.
+os.environ["SUPABASE_URL"] = ""
+os.environ["SUPABASE_ANON_KEY"] = ""
 
 import fitz
 import pytest
