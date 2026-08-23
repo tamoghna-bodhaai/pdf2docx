@@ -173,9 +173,6 @@ class Settings:
     mathpix_poll_timeout: float = _float("PDF2DOCX_MATHPIX_POLL_TIMEOUT", 1800.0)
     mathpix_options: dict = field(default_factory=_mathpix_options)
     mathpix_formats: tuple[str, ...] = field(default_factory=_mathpix_formats)
-    # Legacy setting retained so old `.env` files remain harmless. Mathpix line
-    # geometry is now kept only as a raw export and never drawn in the viewer.
-    mathpix_detection: bool = os.environ.get("PDF2DOCX_MATHPIX_DETECTION", "on").strip().lower() != "off"
     # Let Mathpix retain the document to improve their models. Off unless asked
     # for: this is someone else's PDF, and the default should not give it away.
     mathpix_improve: bool = os.environ.get("PDF2DOCX_MATHPIX_IMPROVE", "off").strip().lower() == "on"

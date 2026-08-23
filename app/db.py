@@ -192,12 +192,6 @@ def user_by_email(email: str) -> dict | None:
     return dict(row) if row else None
 
 
-def user_by_id(user_id: str) -> dict | None:
-    with connect() as connection:
-        row = connection.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    return dict(row) if row else None
-
-
 def user_count() -> int:
     with connect() as connection:
         count = connection.execute("SELECT count(*) FROM users").fetchone()[0]
@@ -309,11 +303,6 @@ def import_legacy_jobs(user_id: str) -> list[dict]:
 def delete_job(job_id: str) -> None:
     with connect() as connection:
         connection.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
-
-
-def delete_jobs_for(user_id: str) -> None:
-    with connect() as connection:
-        connection.execute("DELETE FROM jobs WHERE user_id = ?", (user_id,))
 
 
 def overflow(user_id: str, limit: int | None = None) -> list[dict]:

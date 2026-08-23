@@ -215,7 +215,7 @@ All active web-workflow settings live in `.env` (see `.env.example`).
 | `PDF2DOCX_HISTORY_LIMIT` | `100` | Retained jobs per account; `0` keeps all. |
 | `PDF2DOCX_INVITE_CODES` | blank | Comma-separated; any one creates an account. Blank closes sign-ups. |
 | `PDF2DOCX_SESSION_DAYS` | `30` | How long a sign-in lasts. |
-| `PDF2DOCX_COOKIE_SECURE` | `on` | Set `off` only for local development over plain HTTP. |
+| `PDF2DOCX_COOKIE_SECURE` | `auto` | Reads the scheme off the request. `on`/`off` force it either way. |
 | `PDF2DOCX_MAX_UPLOAD_MB` | `50` | Largest accepted PDF; `0` is unlimited. |
 
 `PDF2DOCX_LAYOUT`, `PDF2DOCX_MODEL`, `PDF2DOCX_COLUMNS`, and OpenRouter settings

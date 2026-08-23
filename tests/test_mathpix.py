@@ -136,7 +136,6 @@ def settings(**overrides):
         "max_pages": 0,
         "mathpix_options": {},
         "mathpix_formats": (),
-        "mathpix_detection": True,
         "mathpix_improve": False,
         "mathpix_delete": True,
         "mathpix_poll_timeout": 30.0,
@@ -468,12 +467,6 @@ def test_pages_without_geometry_still_appear(tmp_path, monkeypatch):
     assert len(written["pages"]) == len(result.page_markdown)
     assert all(not page["blocks"] for page in written["pages"])
     assert written["pages"][0]["markdown"]
-
-
-def test_legacy_detection_setting_cannot_turn_mathpix_boxes_back_on(tmp_path, monkeypatch):
-    _, work = convert(tmp_path, monkeypatch, mathpix_detection=False)
-    written = json.loads((work / "detection.json").read_text())
-    assert all(not page["blocks"] for page in written["pages"])
 
 
 # -- cost ------------------------------------------------------------------------ #

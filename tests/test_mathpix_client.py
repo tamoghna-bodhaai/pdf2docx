@@ -29,7 +29,6 @@ from app.mathpix_client import (
     MathpixUnsupported,
     conversion_formats,
     is_empty,
-    parse_lines_json,
     parse_status_response,
     requestable_formats,
     requested_formats,
@@ -469,14 +468,6 @@ def test_write_raw_writes_bytes_verbatim(tmp_path):
 def test_write_raw_keeps_a_compound_extension_whole(tmp_path):
     assert write_raw("tex.zip", b"z", tmp_path).name == "document.tex.zip"
     assert write_raw("lines.json", b"{}", tmp_path).name == "document.lines.json"
-
-
-def test_lines_json_is_validated_before_it_is_read():
-    assert parse_lines_json('{"pages": []}') == {"pages": []}
-    with pytest.raises(MathpixError):
-        parse_lines_json("not json")
-    with pytest.raises(MathpixError):
-        parse_lines_json("[1, 2]")
 
 
 def test_the_applied_record_states_what_was_done():

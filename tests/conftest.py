@@ -25,17 +25,11 @@ _DATA_DIR = tempfile.mkdtemp(prefix="pdf2docx-tests-")
 os.environ["PDF2DOCX_DATA_DIR"] = _DATA_DIR
 os.environ["PDF2DOCX_INVITE_CODES"] = "test-invite,second-invite"
 os.environ["PDF2DOCX_COOKIE_SECURE"] = "off"
-# Emptied rather than left alone: `load_dotenv` does not override what is
-# already set, so this is what stops a developer's real .env pointing the suite
-# at a live Supabase project. Nothing here may depend on the network, and a test
-# that signs up must not create accounts in somebody's actual dashboard. The
-# Supabase tests opt back in by replacing `settings` on the modules that read it.
-os.environ["SUPABASE_URL"] = ""
-os.environ["SUPABASE_ANON_KEY"] = ""
-# Same reasoning, for the storage guard. `PDF2DOCX_DATA_DIR` above already wins
-# over the volume, but a suite run *on* Railway would otherwise inherit its
-# environment and decide the fatal check applies to it. No test may depend on
-# the host it happens to be running on.
+# Emptied rather than left alone, for the storage guard: `load_dotenv` does not
+# override what is already set. `PDF2DOCX_DATA_DIR` above already wins over the
+# volume, but a suite run *on* Railway would otherwise inherit its environment
+# and decide the fatal check applies to it. No test may depend on the host it
+# happens to be running on.
 os.environ["RAILWAY_ENVIRONMENT"] = ""
 os.environ["RAILWAY_VOLUME_MOUNT_PATH"] = ""
 os.environ["RAILWAY_VOLUME_NAME"] = ""

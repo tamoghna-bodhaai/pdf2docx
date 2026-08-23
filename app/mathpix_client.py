@@ -310,17 +310,6 @@ def parse_status_response(payload: Any, file_id: str) -> MathpixStatus:
     )
 
 
-def parse_lines_json(raw: bytes | str) -> dict:
-    """Validate `lines.json` far enough to hand it to the detection reader."""
-    try:
-        payload = json.loads(raw)
-    except ValueError as exc:
-        raise MathpixError(f"lines.json is not valid JSON: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise MathpixError("lines.json must be an object")
-    return payload
-
-
 def _safe_image_name(target: str, index: int) -> str:
     """Derive a plain filename from a Mathpix image URL, or refuse it.
 
