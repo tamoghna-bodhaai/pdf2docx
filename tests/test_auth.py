@@ -7,12 +7,11 @@ was the only thing protecting a document, and job ids are twelve hex characters.
 from __future__ import annotations
 
 import dataclasses
-import json
 import sqlite3
 
 import pytest
 
-from app import auth, db, history, main
+from app import auth, db, main
 
 
 def _settings(monkeypatch, **overrides):
@@ -280,51 +279,6 @@ def test_the_health_check_needs_nothing(anonymous) -> None:
     # can be spotted without signing in to an instance that just lost the
     # account you would sign in as.
     assert "data_dir" in body["storage"]
-
-
-def test_the_first_account_claims_legacy_json_history(
-    anonymous, monkeypatch, tmp_path
-) -> None:
-    directory = tmp_path / "jobs" / "legacyjob"
-    directory.mkdir(parents=True)
-    (directory / "source.pdf").write_bytes(b"%PDF legacy")
-    legacy_file = tmp_path / "history.json"
-    legacy_file.write_text(json.dumps({
-        "version": 1,
-        "jobs": [{
-            "id": "legacyjob",
-            "filename": "legacy.pdf",
-            "pages": 2,
-            "status": "ready",
-            "created_at": "2025-01-01T00:00:00+00:00",
-            "directory": str(directory),
-        }, {
-            "id": "missinglegacy",
-            "filename": "missing.pdf",
-            "pages": 1,
-            "status": "done",
-            "created_at": "2024-01-01T00:00:00+00:00",
-            "directory": str(tmp_path / "jobs" / "missinglegacy"),
-        }],
-    }))
-    monkeypatch.setattr(history, "path", lambda: legacy_file)
-
-    reply = _signup(anonymous)
-
-    assert reply.status_code == 200
-    owner = reply.json()["id"]
-    assert main.JOBS["legacyjob"].user_id == owner
-    assert anonymous.get("/api/history").json()["jobs"][0]["id"] == "legacyjob"
-    assert [record["id"] for record in db.load_jobs()] == ["legacyjob"]
-    assert legacy_file.exists()
-
-    second = _signup(
-        anonymous,
-        email="second-new@example.com",
-        code="second-invite",
-    )
-    assert second.status_code == 200
-    assert main.JOBS["legacyjob"].user_id == owner
 
 
 # -- isolation: the point of the whole change ------------------------------------- #

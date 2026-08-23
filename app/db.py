@@ -1,9 +1,8 @@
 """Durable store for accounts, sessions, and conversion history.
 
-This replaces the single `history.json` the app kept when it had one implicit
-user. The job registry itself still lives in memory; this module is only
-responsible for mirroring it to disk — and now for saying who each job belongs
-to — so that history and the finished documents it points at survive a restart.
+The job registry itself still lives in memory; this module is only responsible
+for mirroring it to disk — and for saying who each job belongs to — so that
+history and the finished documents it points at survive a restart.
 
 A job's record is kept as the JSON blob `Job.to_record()` already produces
 rather than being spread across columns. Only `id`, `user_id` and `created_at`
@@ -24,7 +23,6 @@ import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import history
 from .config import settings
 
 # Set by the tests. `settings` is a frozen dataclass whose fields are read at
@@ -161,24 +159,20 @@ def now() -> str:
 
 # --------------------------------------------------------------------- users --
 
-def create_user(
-    user_id: str,
-    email: str,
-    password_hash: str | None,
-    name: str | None = None,
-    picture: str | None = None,
-) -> dict:
+def create_user(user_id: str, email: str, password_hash: str) -> dict:
     """Register an account. Raises `sqlite3.IntegrityError` if the email is taken.
 
-    `password_hash` is None for an account that signs in through Google and has
-    no password of its own to check.
+    The `name` and `picture` columns are left to their defaults. They exist only
+    because accounts once arrived from an identity provider that supplied them;
+    nothing writes or reads them now, and `_migrate` still adds them so a
+    database from before that change opens.
     """
     record = {"id": user_id, "email": email, "password_hash": password_hash,
-              "name": name, "picture": picture, "created_at": now()}
+              "created_at": now()}
     with connect() as connection:
         connection.execute(
-            "INSERT INTO users (id, email, password_hash, name, picture, created_at)"
-            " VALUES (:id, :email, :password_hash, :name, :picture, :created_at)",
+            "INSERT INTO users (id, email, password_hash, created_at)"
+            " VALUES (:id, :email, :password_hash, :created_at)",
             record,
         )
     return record
@@ -266,38 +260,6 @@ def load_jobs() -> list[dict]:
             record["user_id"] = row["user_id"]
             records.append(record)
     return records
-
-
-def import_legacy_jobs(user_id: str) -> list[dict]:
-    """Claim unowned ``history.json`` records for the first registering account.
-
-    ``INSERT OR IGNORE`` makes this safe to call after every registration: the
-    first account to see a legacy id owns it, and a later registration cannot
-    move that job. The source JSON remains untouched as a recovery copy.
-    """
-    claimed: list[dict] = []
-    records = history.load()
-    if not records:
-        return claimed
-
-    with connect() as connection:
-        for record in records:
-            directory = record.get("directory")
-            if not directory or not Path(directory).exists():
-                continue
-            job_id = str(record["id"])
-            created_at = str(record.get("created_at") or now())
-            connection.execute(
-                "INSERT OR IGNORE INTO jobs (id, user_id, created_at, record)"
-                " VALUES (?, ?, ?, ?)",
-                (job_id, user_id, created_at, json.dumps(record)),
-            )
-            owner = connection.execute(
-                "SELECT user_id FROM jobs WHERE id = ?", (job_id,)
-            ).fetchone()
-            if owner and owner["user_id"] == user_id:
-                claimed.append({**record, "user_id": user_id})
-    return claimed
 
 
 def delete_job(job_id: str) -> None:

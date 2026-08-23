@@ -501,22 +501,6 @@ def auth_config(request: Request) -> dict:
     return {"signup_open": auth.signup_open()}
 
 
-def _adopt_legacy_jobs(user_id: str) -> None:
-    """Claim any pre-account jobs for a newly created account.
-
-    Pre-account installations kept jobs in history.json. The first account that
-    sees each legacy id claims it; later registrations cannot move an already
-    imported job.
-    """
-    for record in db.import_legacy_jobs(user_id):
-        job = Job.from_record(record)
-        if job.directory is None or not job.directory.exists():
-            continue
-        with JOBS_LOCK:
-            JOBS[job.id] = job
-        db.save_job(user_id, job.id, job.created_at, job.to_record())
-
-
 @app.post("/api/auth/signup")
 def signup(body: Registration, request: Request, response: Response) -> dict:
     """Create an account.
@@ -528,7 +512,6 @@ def signup(body: Registration, request: Request, response: Response) -> dict:
     """
     auth.check_invite(body.invite_code, request)
     user = auth.register(body.email, body.password)
-    _adopt_legacy_jobs(user.id)
     auth.open_session(request, response, user.id)
     return user.as_dict()
 

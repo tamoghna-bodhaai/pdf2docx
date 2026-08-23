@@ -181,10 +181,6 @@ Finished downloads remain available until the entry is deleted or evicted by
 `PDF2DOCX_HISTORY_LIMIT`, which is counted per account rather than globally — so
 one person's busy week cannot push another's documents off the end.
 
-On the first registration after upgrading a pre-account installation, records
-from `history.json` are assigned to that account and imported into the database.
-The JSON file is retained as a recovery copy.
-
 Historical jobs created before the move to Mathpix remain visible, and the
 files they still have remain downloadable — including a `rebuilt.docx`, which
 nothing produces now but the compatibility download route still serves.

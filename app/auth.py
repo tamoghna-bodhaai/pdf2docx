@@ -121,29 +121,13 @@ class User:
     id: str
     email: str
     created_at: str
-    name: str | None = None
-    picture: str | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> User:
-        return cls(
-            id=row["id"],
-            email=row["email"],
-            created_at=row["created_at"],
-            # `.get`, because a row read back by an older query — or by a test
-            # that builds one by hand — need not carry the profile columns.
-            name=row.get("name"),
-            picture=row.get("picture"),
-        )
+        return cls(id=row["id"], email=row["email"], created_at=row["created_at"])
 
     def as_dict(self) -> dict:
-        return {
-            "id": self.id,
-            "email": self.email,
-            "created_at": self.created_at,
-            "name": self.name,
-            "picture": self.picture,
-        }
+        return {"id": self.id, "email": self.email, "created_at": self.created_at}
 
 
 # ----------------------------------------------------------------- passwords --
@@ -359,9 +343,9 @@ def authenticate(email: str, password: str) -> User:
     address = email.strip()
     row = db.user_by_email(address)
     # Hash regardless of whether the account exists, so the response time does
-    # not say which addresses are registered. An account that signs in only
-    # through Google has no password hash, and takes the dummy for the same
-    # reason: whether an address is Google-only is not worth leaking either.
+    # not say which addresses are registered. A row with no password hash —
+    # left by an account created before sign-in required one — takes the dummy
+    # for the same reason.
     stored = (row["password_hash"] if row else None) or _DUMMY_PASSWORD_HASH
     if row is not None and row["password_hash"] and verify_password(password, stored):
         SIGN_IN.clear(_throttle_key(address))
