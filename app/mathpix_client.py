@@ -315,7 +315,7 @@ def _safe_image_name(target: str, index: int) -> str:
 
     The name decides where bytes are written inside the job directory and what
     the saved Markdown points at, so it is checked here rather than trusted and
-    caught later by `docx_builder.resolve_picture`. Mathpix's crops are CDN URLs
+    caught by whatever reads it later. Mathpix's crops are CDN URLs
     with a query string (`.../cropped/abc123.jpg?height=200&width=400`), so the
     query is dropped and only the last path segment is considered — and that
     segment still has to be a plain filename with a known suffix.

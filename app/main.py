@@ -64,8 +64,9 @@ def _mathpix_layout(value: str) -> str:
 
     Old clients can keep sending ``layout=mathpix`` and clients that omit the
     field get the same result. An explicit legacy value is refused instead of
-    being silently reinterpreted, which makes the API contract unambiguous.
-    ``PDF2DOCX_LAYOUT`` remains available to direct pipeline callers only.
+    being silently reinterpreted: the backend it names no longer exists, and
+    converting the request into a different one would be the wrong answer given
+    confidently.
     """
     choice = (value or "").strip().lower()
     if choice and choice != "mathpix":
