@@ -1,4 +1,4 @@
-# pdf2docx — Mathpix paper export workspace
+# pdf2docx — paper export workspace
 
 Upload one PDF, select the exact Mathpix outputs you need, follow conversion
 progress, and inspect each source page beside Mathpix's rendered Markdown.
