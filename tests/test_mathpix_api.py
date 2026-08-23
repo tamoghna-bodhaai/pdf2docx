@@ -182,17 +182,19 @@ def test_a_mathpix_job_without_a_mathpix_key_is_refused(client, monkeypatch, tmp
     assert "MATHPIX_APP_KEY" in reply.json()["detail"]
 
 
-def test_a_mathpix_job_does_not_need_an_openrouter_key(client, monkeypatch, tmp_path):
-    """The two credentials are separate, and the mode reaches only one service."""
-    _settings(monkeypatch, mathpix_app_key="a-key", api_key="", data_dir=tmp_path)
+def test_the_legacy_form_fields_are_accepted_and_ignored(client, monkeypatch, tmp_path):
+    """A client written against the older API still gets a job, not a 400."""
+    _settings(monkeypatch, mathpix_app_key="a-key", data_dir=tmp_path)
     reply = client.post(
         "/api/convert",
         files={"file": ("a.pdf", _one_page_pdf(), "application/pdf")},
         data={"model": "anthropic/claude-unused", "columns": "multi"},
     )
     assert reply.status_code == 200
-    assert reply.json()["layout"] == "mathpix"
-    assert reply.json()["columns"] == ""
+    body = reply.json()
+    assert body["layout"] == "mathpix"
+    # Neither field survives onto the record, so neither can be acted on later.
+    assert {"model", "columns", "source_columns"}.isdisjoint(body)
 
 
 @pytest.mark.parametrize("layout", ["structured", "replica", "flow", "marker", "sideways"])
@@ -205,20 +207,6 @@ def test_explicit_non_mathpix_layouts_are_rejected(client, monkeypatch, tmp_path
     )
     assert reply.status_code == 400
     assert "mathpix" in reply.json()["detail"].lower()
-
-
-def test_web_jobs_ignore_the_configured_legacy_layout(client, monkeypatch, tmp_path):
-    _settings(monkeypatch, mathpix_app_key="a-key", api_key="", layout="flow", data_dir=tmp_path)
-    reply = client.post(
-        "/api/convert",
-        files={"file": ("a.pdf", _one_page_pdf(), "application/pdf")},
-    )
-    assert reply.status_code == 200
-    job_id = reply.json()["id"]
-    try:
-        assert reply.json()["layout"] == "mathpix"
-    finally:
-        main.JOBS.pop(job_id, None)
 
 
 def test_omitted_start_formats_keep_the_configured_default(
@@ -354,7 +342,7 @@ def test_non_pdf_uploads_are_rejected_before_staging(client, monkeypatch, tmp_pa
 
 
 def test_rerunning_a_historical_job_is_pinned_to_mathpix(client, user, monkeypatch, tmp_path):
-    _settings(monkeypatch, mathpix_app_key="a-key", api_key="", data_dir=tmp_path)
+    _settings(monkeypatch, mathpix_app_key="a-key", data_dir=tmp_path)
     directory = tmp_path / "legacy"
     directory.mkdir()
     (directory / "source.pdf").write_bytes(_one_page_pdf())
@@ -366,7 +354,7 @@ def test_rerunning_a_historical_job_is_pinned_to_mathpix(client, user, monkeypat
     (directory / "rebuilt.docx").write_bytes(b"historical comparison")
     legacy = main.Job(
         id="legacyjob", user_id=user.id, filename="old.pdf", pages=1, directory=directory,
-        status="done", layout="structured", columns="multi",
+        status="done", layout="structured",
     )
     monkeypatch.setitem(main.JOBS, legacy.id, legacy)
     called = {}
@@ -386,10 +374,9 @@ def test_rerunning_a_historical_job_is_pinned_to_mathpix(client, user, monkeypat
 
     assert reply.status_code == 200
     assert legacy.layout == "mathpix"
-    assert legacy.columns == ""
-    assert called["layout"] == "mathpix"
-    assert called["model"] is None
-    assert called["columns"] is None
+    # convert_pdf no longer takes a layout: there is one backend, so a rerun
+    # cannot be pointed at the mode the historical record names.
+    assert {"layout", "model", "columns"}.isdisjoint(called)
     assert called["work_dir"] != directory
     assert legacy.status == "error"
     # The old successful outputs survive until the replacement conversion has

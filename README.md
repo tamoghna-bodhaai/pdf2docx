@@ -185,11 +185,10 @@ On the first registration after upgrading a pre-account installation, records
 from `history.json` are assigned to that account and imported into the database.
 The JSON file is retained as a recovery copy.
 
-Historical jobs created by the legacy Vision, replica, structured, or Marker
-paths remain visible and their existing files remain downloadable. Rerunning any
-historical job uses Mathpix and requires `MATHPIX_APP_KEY`. Existing historical
-`rebuilt.docx` files remain reachable through the compatibility download route;
-new jobs do not create or advertise them.
+Historical jobs created before the move to Mathpix remain visible, and the
+files they still have remain downloadable — including a `rebuilt.docx`, which
+nothing produces now but the compatibility download route still serves.
+Rerunning any historical job uses Mathpix and requires `MATHPIX_APP_KEY`.
 
 ## Configuration
 
@@ -218,12 +217,12 @@ All active web-workflow settings live in `.env` (see `.env.example`).
 | `PDF2DOCX_COOKIE_SECURE` | `auto` | Reads the scheme off the request. `on`/`off` force it either way. |
 | `PDF2DOCX_MAX_UPLOAD_MB` | `50` | Largest accepted PDF; `0` is unlimited. |
 
-`PDF2DOCX_LAYOUT`, `PDF2DOCX_MODEL`, `PDF2DOCX_COLUMNS`, and OpenRouter settings
-remain in the legacy implementation for rollback and direct internal use, but
-the web UI ignores them. The API continues accepting the old `model`, `layout`,
-and `columns` form fields for client compatibility: model and columns are
-ignored, omitted or `mathpix` layout is accepted, and every explicit non-Mathpix
-layout is rejected.
+The API still accepts the old `model`, `layout`, and `columns` form fields so
+an older client keeps working. `model` and `columns` are ignored; an omitted or
+`mathpix` layout is accepted, and every explicit non-Mathpix layout is rejected
+rather than silently reinterpreted. `PDF2DOCX_LAYOUT`, `PDF2DOCX_MODEL`,
+`PDF2DOCX_COLUMNS` and the OpenRouter settings no longer exist — the backends
+they configured were removed once Mathpix became the only one.
 
 ## HTTP API
 

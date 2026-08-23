@@ -55,15 +55,6 @@ RUNNING = ("queued", "rendering", "transcribing", "building")
 app = FastAPI(title="PDF → DOCX", version="2.0.0")
 
 
-# The two answers the browser can give about columns. `natural` is one flowing
-# column — what a transcription is, being one linear stream of text — and `multi`
-# sets each page the way the source page was set. Only the flowing modes can act
-# on either; the replica modes put every block back where it came from, columns
-# and all. Anything else, including the empty string the form sends when the
-# control was never shown, leaves `PDF2DOCX_COLUMNS` in charge.
-COLUMN_CHOICES = ("natural", "multi")
-
-
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -83,11 +74,6 @@ def _mathpix_layout(value: str) -> str:
             detail="Only the mathpix layout is available for new conversions.",
         )
     return "mathpix"
-
-
-def _columns_choice(value: str) -> str:
-    choice = (value or "").strip().lower()
-    return choice if choice in COLUMN_CHOICES else ""
 
 
 def _require_mathpix_credential() -> None:
@@ -131,15 +117,10 @@ class Job:
     # Which account uploaded this. Every route that reaches a job checks it, and
     # it is the only thing separating one teammate's documents from another's.
     user_id: str = ""
-    model: str = settings.model
+    # Always "mathpix" for a new job; the browser reads it to pick the viewer,
+    # and a pre-Mathpix record may still say something else.
     layout: str = "mathpix"
     requested_formats: tuple[str, ...] = ()
-    # "natural" | "multi" | "" for whatever PDF2DOCX_COLUMNS says.
-    columns: str = ""
-    # The most columns any page of the uploaded PDF is set in, read from the PDF
-    # at upload. One means the browser has no choice to offer: a source with a
-    # single column has no second column for the output to have.
-    source_columns: int = 1
     # ready | queued | rendering | transcribing | building | done | error
     status: str = "ready"
     done: int = 0
@@ -175,11 +156,8 @@ class Job:
             "id": self.id,
             "filename": self.filename,
             "pages": self.pages,
-            "model": self.model,
             "layout": self.layout,
             "requested_formats": list(self.requested_formats),
-            "columns": self.columns,
-            "source_columns": self.source_columns,
             "diagnostics": self.diagnostics,
             "status": self.status,
             "done": self.done,
@@ -254,11 +232,8 @@ class Job:
             user_id=str(record.get("user_id") or ""),
             filename=record.get("filename") or "document.pdf",
             pages=int(record.get("pages") or 0),
-            model=record.get("model") or settings.model,
-            layout=record.get("layout") or settings.layout,
+            layout=record.get("layout") or "mathpix",
             requested_formats=selected,
-            columns=_columns_choice(record.get("columns") or ""),
-            source_columns=int(record.get("source_columns") or 1),
             status=status,
             done=int(record.get("done") or 0),
             total=int(record.get("total") or 0),
@@ -346,8 +321,8 @@ def _recover_interrupted_promotions(jobs_dir: Path | None = None) -> None:
 _recover_interrupted_promotions()
 _restore()
 # Sessions outlive the process; the expired ones are only ever refused, never
-# cleaned up in the request path, so boot is where they go. Half-finished Google
-# passed is dead weight, and they are minted by anyone who can reach /login.
+# cleaned up in the request path, so boot is where they go. A row that can only
+# ever be refused is dead weight, and anyone reaching /login can mint one.
 db.purge_expired_sessions()
 
 # Fatal, at boot, before anything can be written. An instance whose volume was
@@ -438,13 +413,8 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
         result = convert_pdf(
             pdf_path=staged_pdf,
             work_dir=staged,
-            title=Path(job.filename).stem,
-            # Web-created jobs never select or initialise an OpenRouter model.
-            model=None,
             on_progress=on_progress,
             on_usage=on_usage,
-            layout="mathpix",
-            columns=None,
             mathpix_formats=job.requested_formats,
         )
         _preserve_compatibility_files(directory, staged)
@@ -631,6 +601,9 @@ async def convert(
     request: Request,
     background: BackgroundTasks,
     file: UploadFile = File(...),
+    # Accepted and ignored, so a client written against the older API still
+    # works. `layout` is the exception: `_mathpix_layout` refuses a legacy value
+    # rather than silently converting something else.
     model: str = Form(default=""),
     layout: str = Form(default=""),
     columns: str = Form(default=""),
@@ -685,12 +658,7 @@ async def convert(
         user_id=user.id,
         filename=file.filename,
         pages=pages,
-        # Retained in the record schema for historical compatibility. The
-        # legacy form field is deliberately ignored for new Mathpix jobs.
-        model=settings.model,
         layout=selected_layout,
-        columns="",
-        source_columns=1,
         total=pages,
         size_bytes=size,
         directory=directory,
@@ -750,9 +718,6 @@ async def start_job(
     with JOBS_LOCK:
         job.layout = selected_layout
         job.requested_formats = selected_formats
-        # Model and column fields remain accepted so older clients do not break,
-        # but neither has meaning for Mathpix's own exports.
-        job.columns = ""
         job.status = "queued"
         job.done = 0
         job.total = job.pages

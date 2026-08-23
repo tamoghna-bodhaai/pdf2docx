@@ -140,7 +140,6 @@ def settings(**overrides):
         "mathpix_delete": True,
         "mathpix_poll_timeout": 30.0,
         "mathpix_page_rate": 0.0015,
-        "columns": "auto",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -159,20 +158,13 @@ def source_pdf(tmp_path, pages: int = 2):
 def prepare(monkeypatch, **overrides):
     monkeypatch.setattr(pipeline, "settings", settings(**overrides))
     monkeypatch.setattr(pipeline.mathpix, "MathpixClient", FakeClient)
-    # A remote model client must never be built in this mode; if anything
-    # reaches for one the test should fail loudly rather than try the network.
-    monkeypatch.setattr(
-        pipeline, "build_client", lambda *a, **k: pytest.fail("mathpix mode called OpenRouter")
-    )
 
 
-def convert(tmp_path, monkeypatch, columns=None, **overrides):
+def convert(tmp_path, monkeypatch, **overrides):
     prepare(monkeypatch, **overrides)
     pdf = source_pdf(tmp_path)
     work = tmp_path / "job"
-    result = pipeline.convert_pdf(
-        pdf_path=pdf, work_dir=work, title="Paper", layout="mathpix", columns=columns
-    )
+    result = pipeline.convert_pdf(pdf_path=pdf, work_dir=work)
     return result, work
 
 
@@ -303,7 +295,7 @@ def test_a_successful_rerun_removes_formats_left_by_the_previous_run(tmp_path, m
     raw.mkdir(parents=True)
     (raw / "document.xlsx").write_bytes(b"old table export")
 
-    pipeline.convert_pdf(pdf_path=pdf, work_dir=work, layout="mathpix")
+    pipeline.convert_pdf(pdf_path=pdf, work_dir=work)
 
     assert not (raw / "document.xlsx").exists()
     assert (raw / "document.docx").read_bytes() == DOCX_BYTES
@@ -325,7 +317,6 @@ def test_a_non_docx_selection_completes_with_only_preview_and_selected_outputs(
     result = pipeline.convert_pdf(
         pdf_path=pdf,
         work_dir=work,
-        layout="mathpix",
         mathpix_formats=("html",),
     )
 
@@ -359,7 +350,6 @@ def test_an_empty_selection_completes_with_only_always_produced_preview_data(
     result = pipeline.convert_pdf(
         pdf_path=pdf,
         work_dir=work,
-        layout="mathpix",
         mathpix_formats=(),
     )
 
