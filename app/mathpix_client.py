@@ -1,7 +1,7 @@
 """Validated client for the Mathpix Files API, and the little that is done to its output.
 
 This module is the boundary that validates Mathpix's untrusted HTTP responses, and
-it is deliberately thin, for the same reason `marker_client` is: Mathpix returns a
+it is deliberately thin: Mathpix returns a
 finished document rather than detector output needing interpretation, and the whole
 point of the `mathpix` mode is to see what Mathpix produced rather than what this
 codebase made of it.
@@ -120,7 +120,7 @@ MAX_IMAGE_BYTES = 64 * 1024 * 1024
 PAGE_BREAK_RE = re.compile(r"^[ \t]*\\pagebreak\s*(?:\{\})?[ \t]*$", re.M)
 
 # An inline image reference. Mathpix's targets are absolute CDN URLs carrying a
-# query string, so unlike marker's this has to match a full URL.
+# query string, so this has to match a full URL rather than a bare path.
 IMAGE_REF_RE = re.compile(r"(?P<prefix>!\[[^\]]*\]\()(?P<target>[^)\s]+)(?P<suffix>\))")
 
 # Mathpix writes a picture two ways. A plain crop comes back as a Markdown image
@@ -220,7 +220,7 @@ def requested_formats(wanted: Iterable[str] | None = None) -> tuple[str, ...]:
 
     An empty selection means all of them rather than none: Mathpix renders every
     requested format from the one conversion, so withholding any buys nothing.
-    Unknown names are dropped rather than raised, the way the marker settings
+    Unknown names are dropped rather than raised, the way the other settings
     treat theirs — a stale entry in an `.env` file should not stop a conversion.
     """
     chosen = list(requestable_formats(wanted or ()))
@@ -351,7 +351,7 @@ def split_pages(markdown: str) -> list[str]:
     must still convert — one long page is a worse document than five, not a
     failed one.
 
-    Unlike marker, Mathpix writes its separator *between* pages rather than above
+    Mathpix writes its separator *between* pages rather than above
     each one, so what precedes the first is the first page and is kept. A page
     read as nothing is still a page: dropping it would shift every page after it
     out of step with the PDF, and would hide exactly the failure worth knowing

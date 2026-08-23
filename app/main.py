@@ -37,7 +37,6 @@ from pydantic import BaseModel
 from . import auth, db, detection, storage
 from .auth import User, current_user
 from .config import settings
-from .marker_client import RAW_DIR, RAW_IMAGE_DIR
 from .mathpix_client import FORMATS as MATHPIX_FORMATS
 from .mathpix_client import MathpixError
 from .mathpix_client import RAW_DIR as MATHPIX_RAW_DIR
@@ -198,7 +197,6 @@ class Job:
             "has_docx": self._file("document.docx").exists(),
             "has_md": self._file("document.md").exists(),
             "has_source": self._file("source.pdf").exists(),
-            "has_marker": self._file(f"{RAW_DIR}/document.md").exists(),
             "has_rebuilt": self._file("rebuilt.docx").exists(),
             # Which of Mathpix's exports this job actually has, read from disk
             # rather than remembered. A format Mathpix does not produce for a
@@ -384,11 +382,10 @@ def _get_job(job_id: str, user: User) -> Job:
 
 def _preserve_compatibility_files(previous: Path, staged: Path) -> None:
     """Carry historical-only downloads and the source preview into a rerun."""
-    for name in ("preview", RAW_DIR):
-        source = previous / name
-        target = staged / name
-        if source.is_dir() and not target.exists():
-            shutil.copytree(source, target)
+    source = previous / "preview"
+    target = staged / "preview"
+    if source.is_dir() and not target.exists():
+        shutil.copytree(source, target)
     rebuilt = previous / "rebuilt.docx"
     if rebuilt.is_file():
         shutil.copy2(rebuilt, staged / rebuilt.name)
@@ -827,12 +824,11 @@ def job_page(job_id: str, number: int, user: User = Depends(current_user)) -> Fi
     return FileResponse(path, media_type="image/png")
 
 
-# Where a job's Markdown may point. Figures this application cut, and images
-# marker extracted — nothing else in a job directory is meant to be fetched by
-# the browser, and the finished documents have their own download route.
+# Where a job's Markdown may point: the crops Mathpix returned, and the figures
+# a pre-Mathpix job cut for itself. Nothing else in a job directory is meant to
+# be fetched by the browser, and the finished documents have their own route.
 ASSET_DIRS = (
     "figures",
-    f"{RAW_DIR}/{RAW_IMAGE_DIR}",
     f"{MATHPIX_RAW_DIR}/{MATHPIX_RAW_IMAGE_DIR}",
 )
 
@@ -853,9 +849,9 @@ def job_asset(job_id: str, asset: str, user: User = Depends(current_user)) -> Fi
     return FileResponse(path)
 
 
-# What each `format` names, as a fixed path and media type. Marker's own output
-# is downloadable because reading it is how the mode gets judged — and because
-# it is the only copy that nothing in this application has edited.
+# What each `format` names, as a fixed path and media type. `rebuilt.docx` is
+# only ever a pre-Mathpix job's comparison render — nothing produces one now —
+# but it stays downloadable for the accounts that still have one.
 DOWNLOADS = {
     "docx": (
         "document.docx",
@@ -863,10 +859,6 @@ DOWNLOADS = {
         "docx",
     ),
     "md": ("document.md", "text/markdown", "md"),
-    "marker-md": (f"{RAW_DIR}/document.md", "text/markdown", "marker.md"),
-    "marker-html": (f"{RAW_DIR}/document.html", "text/html", "marker.html"),
-    "marker-json": (f"{RAW_DIR}/document.json", "application/json", "marker.json"),
-    "marker-meta": (f"{RAW_DIR}/metadata.json", "application/json", "marker.meta.json"),
     "rebuilt-docx": (
         "rebuilt.docx",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

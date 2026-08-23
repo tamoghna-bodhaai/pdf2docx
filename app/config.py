@@ -58,36 +58,6 @@ def _data_dir() -> Path:
     return Path.home() / ".pdf2docx"
 
 
-def _marker_options() -> dict:
-    """Whatever the user wants passed straight through to marker's own config.
-
-    Deliberately not an allowlist of the options this codebase happens to know
-    about. Marker's `ConfigParser` is the same object its CLI builds its flags
-    into, so anything the CLI accepts — `use_llm`, `force_ocr`, `mode`,
-    `format_lines`, or whatever upstream adds next — is reachable from here
-    without a change to this file. A malformed value is dropped rather than
-    raised, the way `_int` and `_float` above treat theirs.
-    """
-    raw = os.environ.get("PDF2DOCX_MARKER_OPTIONS", "").strip()
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except ValueError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _marker_extra_formats() -> tuple[str, ...]:
-    """Extra renderers to run purely so their output can be read.
-
-    Each one is a second conversion of the same PDF, so this is off by default.
-    """
-    raw = os.environ.get("PDF2DOCX_MARKER_EXTRA_FORMATS", "")
-    wanted = (value.strip().lower() for value in raw.split(","))
-    return tuple(value for value in wanted if value in {"markdown", "html", "json", "chunks"})
-
-
 def _invite_codes() -> tuple[str, ...]:
     """The codes that may be used to create an account, comma-separated.
 
@@ -102,8 +72,7 @@ def _invite_codes() -> tuple[str, ...]:
 def _mathpix_options() -> dict:
     """Whatever the user wants passed straight through to Mathpix's own options.
 
-    Deliberately not an allowlist, for the same reason `_marker_options` is not.
-    The Files API accepts every OCR and conversion option `POST /v3/pdf` does, so
+    Deliberately not an allowlist. The Files API accepts every OCR and conversion option `POST /v3/pdf` does, so
     `rm_spaces`, `idiomatic_eqn_arrays`, `include_equation_tags`,
     `enable_tables_fallback`, `alphabets_allowed`, `conversion_options` or
     whatever Mathpix adds next has to reach it intact for the mode to be worth
@@ -122,11 +91,9 @@ def _mathpix_options() -> dict:
 def _mathpix_formats() -> tuple[str, ...]:
     """Default Mathpix exports for clients that omit a per-job selection.
 
-    This inverts `_marker_extra_formats` above, and the difference between the
-    two backends is the reason. Every extra marker renderer is another full
-    conversion of the PDF, so marker's list is off by default; Mathpix converts
-    the document once and renders each format from that same job, so there is no
-    reason to withhold any.
+    Blank means every export. Mathpix converts the document once and renders
+    each format from that same job, so there is no per-format cost and no reason
+    to withhold any.
 
     Only the parsing happens here. Which names are real and what an empty
     configured selection resolves to are `mathpix_client.requested_formats`'s
@@ -141,23 +108,6 @@ def _mathpix_formats() -> tuple[str, ...]:
 
 @dataclass(frozen=True)
 class Settings:
-    # marker-pdf sidecar, used by the `marker` layout mode. Its timeout covers a
-    # whole document rather than one page, so it is generous by comparison with
-    # anything measured per request.
-    marker_url: str = os.environ.get("PDF2DOCX_MARKER_URL", "http://127.0.0.1:8011").strip().rstrip("/")
-    marker_connect_timeout: float = _float("PDF2DOCX_MARKER_CONNECT_TIMEOUT", 2.0)
-    marker_request_timeout: float = _float("PDF2DOCX_MARKER_REQUEST_TIMEOUT", 900.0)
-    marker_options: dict = field(default_factory=_marker_options)
-    marker_extra_formats: tuple[str, ...] = field(default_factory=_marker_extra_formats)
-    # Ask marker for its JSON renderer as well, so the page viewer can draw the
-    # blocks marker found over the page. That is a second conversion of the same
-    # PDF — marker renders the document it just built, and the sidecar builds it
-    # again per request — so it is a real cost, and turning this off leaves a
-    # marker job converting exactly as it did before, with a plain page image in
-    # place of the overlay. What marker returns is still written verbatim; this
-    # only changes what it is asked for.
-    marker_detection: bool = os.environ.get("PDF2DOCX_MARKER_DETECTION", "on").strip().lower() != "off"
-
     # Mathpix Files API, used by the `mathpix` layout mode. Unlike every other
     # backend here this one is a paid remote service and the document leaves the
     # machine, so retention is off by default and the job deletes what it

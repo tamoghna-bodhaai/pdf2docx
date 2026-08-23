@@ -21,16 +21,6 @@ from .docx_structured import StructuredWriter, dominant_font
 from .columns import detect_columns
 from .figures import place_figures, strip_boxes
 from .locate import relocate_figures
-from .marker_client import (
-    RAW_DIR,
-    Applied,
-    MarkerClient,
-    MarkerError,
-    is_empty,
-    prefix_image_refs,
-    split_pages,
-    write_raw,
-)
 from .latex_omml import is_math_latex
 from .pdf_extract import PageLayout, Span, TextLine, extract_page, render_size
 from .reflow import build as reflow_build
@@ -129,14 +119,6 @@ def convert_pdf(
             on_progress=on_progress,
             on_usage=on_usage,
             structured=mode == "structured",
-        )
-    if mode == "marker":
-        return convert_pdf_marker(
-            pdf_path=pdf_path,
-            work_dir=work_dir,
-            title=title,
-            on_progress=on_progress,
-            columns=columns,
         )
     if mode == "mathpix":
         return convert_pdf_mathpix(
@@ -525,182 +507,12 @@ def _column_layout(pdf_path: Path, pages: int, choice: str | None = None) -> lis
     return counts
 
 
-def _marker_config() -> dict:
-    """What marker is asked to do: the user's options, and the page cap if set.
-
-    `settings.marker_options` is passed through untouched — it is marker's own
-    config vocabulary, not this application's, and an option this codebase has
-    never heard of has to reach marker intact for the mode to be worth having.
-    An explicit `page_range` in those options therefore wins over `MAX_PAGES`:
-    the more specific instruction is the one the user wrote by hand.
-    """
-    config = dict(settings.marker_options)
-    if settings.max_pages > 0 and not config.get("page_range"):
-        config["page_range"] = f"0-{settings.max_pages - 1}"
-    return config
-
-
-def _marker_formats() -> tuple[str, ...]:
-    """The extra renderers to run, and why there might be one nobody asked for.
-
-    `PDF2DOCX_MARKER_EXTRA_FORMATS` is the user's list. `json` joins it when
-    `PDF2DOCX_MARKER_DETECTION` is on, because marker states where its blocks
-    are in that renderer and nowhere else, and the page viewer has nothing to
-    draw without it. Each format is another full conversion of the PDF, so the
-    list is kept free of duplicates and the setting can be turned off.
-    """
-    formats = list(settings.marker_extra_formats)
-    if settings.marker_detection and "json" not in formats:
-        formats.append("json")
-    return tuple(formats)
-
-
-def _marker_detection(pdf_path: Path, work_dir: Path, pages: list[str]) -> list:
-    """Read marker's own JSON back as page boxes, if it wrote any.
-
-    Best effort throughout: a marker job exists to show marker's work, and it
-    must not fail — or lose its .docx — because a viewer wanted extra data.
-    """
-    path = work_dir / RAW_DIR / "document.json"
-    detected = []
-    if path.exists():
-        try:
-            detected = detection.from_marker_json(path.read_text(encoding="utf-8"))
-        except OSError:
-            detected = []
-    if not detected:
-        # No geometry, but the pages and their text are still worth showing.
-        return detection.from_markdown(_page_sizes(pdf_path, len(pages)), pages)
-    return detection.attach_markdown(detected, pages)
-
-
-def _marker_pages(pdf_path: Path) -> int:
+def _page_total(pdf_path: Path) -> int:
     with fitz.open(pdf_path) as doc:
         total = _page_limit(doc)
     if total == 0:
         raise ValueError("The PDF contains no pages.")
     return total
-
-
-def convert_pdf_marker(
-    pdf_path: Path,
-    work_dir: Path,
-    title: str | None = None,
-    on_progress: ProgressHook = _noop,
-    columns: str | None = None,
-) -> ConversionResult:
-    """Hand the whole PDF to marker-pdf and write back what it returns.
-
-    This mode exists to show marker's own work. Everything the other modes do to
-    a page — locating figures, repairing boxes, recovering structure from
-    coordinates, stripping mark-up — is deliberately absent, and marker's output
-    is written to `marker/` verbatim before anything reads it. The only edits
-    between that file and `document.md` are image-reference prefixes, and they
-    are counted in `marker/metadata.json` so the difference is always accountable.
-    """
-    work_dir.mkdir(parents=True, exist_ok=True)
-    total = _marker_pages(pdf_path)
-    config = _marker_config()
-    client = MarkerClient()
-
-    # marker converts a document in one call and reports nothing on the way, so
-    # the page count is all the progress there is to give until it returns.
-    on_progress("rendering", total, total)
-    on_progress("transcribing", 0, total)
-    document = client.convert_document(pdf_path, config)
-    raw_path = write_raw(document, work_dir)
-
-    # Formats asked for purely so they can be read. Each is another full
-    # conversion, so a failure here must not cost the job its .docx.
-    for fmt in _marker_formats():
-        if fmt == document.format:
-            continue
-        try:
-            write_raw(client.convert_document(pdf_path, {**config, "output_format": fmt}), work_dir)
-        except MarkerError:
-            continue
-
-    markdown_source = document
-    if document.format != "markdown":
-        # The writers read Markdown. A document rendered as HTML or JSON is kept
-        # as it is and converted a second time for the .docx rather than being
-        # translated here, which would put this module's reading of marker's
-        # output between marker and the page.
-        markdown_source = client.convert_document(pdf_path, {**config, "output_format": "markdown"})
-        write_raw(markdown_source, work_dir)
-    on_progress("transcribing", total, total)
-
-    markdown, prefixed, unresolved = prefix_image_refs(
-        markdown_source.content, set(markdown_source.images)
-    )
-    pages = split_pages(markdown)
-    applied = Applied(
-        images_prefixed=prefixed,
-        images_unresolved=unresolved,
-        pages=len(pages),
-        paginated=len(pages) > 1,
-    )
-    # A page marker read as nothing still converts, and the job would otherwise
-    # report success over a blank document. Recorded per page, because a backend
-    # that has degraded usually empties some pages rather than all of them.
-    empty = {number for number, page in enumerate(pages, start=1) if is_empty(page)}
-    empty_pages = sorted(empty)
-
-    # Read from the source PDF, never from marker's text, and recorded here for
-    # the same reason the image prefixes are: it is a decision this application
-    # made about marker's output, and a page that came out in the wrong number of
-    # columns should be attributable without having to guess who did it.
-    layout = _column_layout(pdf_path, len(pages), columns)
-
-    markdown_path = work_dir / "document.md"
-    markdown_path.write_text(markdown, encoding="utf-8")
-    (raw_path.parent / "metadata.json").write_text(
-        json.dumps(
-            {
-                "format": document.format,
-                "config": document.config or config,
-                "metadata": document.metadata,
-                "applied": applied.as_dict(),
-                "columns_setting": (columns or settings.columns or "auto"),
-                "columns": layout,
-                "empty_pages": empty_pages,
-            },
-            indent=2,
-            default=str,
-        ),
-        encoding="utf-8",
-    )
-
-    detection.write(
-        _marker_detection(pdf_path, work_dir, pages), work_dir / "detection.json", "marker"
-    )
-
-    on_progress("building", 0, len(pages))
-    writer = DocxWriter(title=title, base_dir=work_dir)
-    for index, page_markdown in enumerate(pages):
-        writer.start_page(layout[index])
-        render_markdown(writer, page_markdown)
-        on_progress("building", index + 1, len(pages))
-
-    docx_path = work_dir / "document.docx"
-    writer.save(docx_path)
-    on_progress("done", len(pages), len(pages))
-
-    return ConversionResult(
-        markdown_path=markdown_path,
-        docx_path=docx_path,
-        page_markdown=pages,
-        usage=ConversionUsage(),
-        diagnostics=[
-            ExtractionDiagnostic(
-                number,
-                "document",
-                "marker",
-                "empty_output" if number in empty else None,
-            )
-            for number in range(1, len(pages) + 1)
-        ],
-    )
 
 
 def _mathpix_config(formats: tuple[str, ...] | None = None) -> dict:
@@ -920,7 +732,7 @@ def convert_pdf_mathpix(
     has a remote id, including when polling, downloads, or local writes fail.
     """
     work_dir.mkdir(parents=True, exist_ok=True)
-    total = _marker_pages(pdf_path)
+    total = _page_total(pdf_path)
     requested = (
         mathpix.requested_formats(settings.mathpix_formats)
         if formats is None

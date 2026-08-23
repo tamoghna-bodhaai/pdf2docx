@@ -184,117 +184,6 @@ def from_layouts(layouts: list[PageLayout]) -> list[DetectedPage]:
 
 
 # --------------------------------------------------------------------------- #
-# marker — read out of its JSON renderer, never written back to
-# --------------------------------------------------------------------------- #
-
-# marker's block vocabulary, mapped onto the kinds the viewer draws. Anything
-# not named here is drawn as plain text rather than dropped, so a block type
-# marker adds later still appears on the page.
-MARKER_KINDS = {
-    "sectionheader": "heading",
-    "title": "heading",
-    "text": "paragraph",
-    "textinlinemath": "paragraph",
-    "listitem": "paragraph",
-    "listgroup": "paragraph",
-    "caption": "paragraph",
-    "footnote": "paragraph",
-    "pagefooter": "text",
-    "pageheader": "text",
-    "equation": "equation",
-    "picture": "figure",
-    "figure": "figure",
-    "diagram": "figure",
-    "picturegroup": "figure",
-    "figuregroup": "figure",
-    "table": "table",
-    "tablegroup": "table",
-    "form": "table",
-    "line": "rule",
-    "handwriting": "text",
-    "code": "paragraph",
-}
-
-_TAGS = re.compile(r"<[^>]+>")
-
-
-def _plain_html(html: str) -> str:
-    """The words a marker block carries, without its mark-up."""
-    return _clip(_TAGS.sub(" ", html or ""))
-
-
-def _marker_kind(block_type: str) -> str:
-    # marker spells its types as "BlockTypes.SectionHeader" in some renderers
-    # and bare "SectionHeader" in others.
-    name = str(block_type or "").rsplit(".", 1)[-1].strip().lower()
-    return MARKER_KINDS.get(name, "text")
-
-
-def _marker_leaves(children, frame: Box, out: list[DetectedBlock]) -> None:
-    """Flatten marker's block tree, keeping the outermost block that has a box.
-
-    A group block (a list, a figure with its caption) is the unit worth drawing;
-    descending into it would cover the page in nested rectangles that all say
-    the same thing.
-    """
-    x0, y0 = frame[0], frame[1]
-    for child in children or []:
-        if not isinstance(child, dict):
-            continue
-        bbox = child.get("bbox")
-        if not (isinstance(bbox, (list, tuple)) and len(bbox) == 4):
-            _marker_leaves(child.get("children"), frame, out)
-            continue
-        left, top, right, bottom = _box(bbox)
-        out.append(
-            DetectedBlock(
-                index=len(out),
-                kind=_marker_kind(child.get("block_type")),
-                bbox=(left - x0, top - y0, right - x0, bottom - y0),
-                text=_plain_html(child.get("html")),
-            )
-        )
-
-
-def from_marker_json(raw: str) -> list[DetectedPage]:
-    """Read page boxes out of marker's JSON output.
-
-    Each page is described in whatever coordinates marker chose to report, so
-    the page block's own bbox is taken as the frame and its children are
-    translated into it. The viewer scales that frame to the rendered page, which
-    means the overlay lines up without this module having to know marker's
-    units.
-
-    Best effort by design: this reads a copy of marker's output and never writes
-    to it, and anything unreadable comes back as no pages rather than an error.
-    """
-    try:
-        payload = json.loads(raw)
-    except ValueError:
-        return []
-    if not isinstance(payload, dict):
-        return []
-
-    pages: list[DetectedPage] = []
-    for number, page in enumerate(payload.get("children") or [], start=1):
-        if not isinstance(page, dict):
-            continue
-        bbox = page.get("bbox")
-        if not (isinstance(bbox, (list, tuple)) and len(bbox) == 4):
-            continue
-        frame = _box(bbox)
-        width, height = frame[2] - frame[0], frame[3] - frame[1]
-        if width <= 0 or height <= 0:
-            continue
-        blocks: list[DetectedBlock] = []
-        _marker_leaves(page.get("children"), frame, blocks)
-        pages.append(
-            DetectedPage(number=number, width=width, height=height, ordered=True, blocks=blocks)
-        )
-    return pages
-
-
-# --------------------------------------------------------------------------- #
 # Pages without geometry, and storage
 # --------------------------------------------------------------------------- #
 
@@ -312,15 +201,6 @@ def from_markdown(sizes: list[tuple[float, float]], markdown: list[str]) -> list
         pages.append(
             DetectedPage(number=index + 1, width=width, height=height, markdown=text or "")
         )
-    return pages
-
-
-def attach_markdown(pages: list[DetectedPage], markdown: list[str]) -> list[DetectedPage]:
-    """Give each page its own Markdown, where the two were produced apart."""
-    for page in pages:
-        index = page.number - 1
-        if 0 <= index < len(markdown):
-            page.markdown = markdown[index] or ""
     return pages
 
 
