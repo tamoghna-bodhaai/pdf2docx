@@ -34,7 +34,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, db, detection, storage
+from . import auth, db, detection, pipeline, storage
 from .auth import User, current_user
 from .config import settings
 from .mathpix_client import FORMATS as MATHPIX_FORMATS
@@ -122,6 +122,9 @@ class Job:
     # and a pre-Mathpix record may still say something else.
     layout: str = "mathpix"
     requested_formats: tuple[str, ...] = ()
+    # Lay the document out in the columns the source page used, instead of
+    # delivering it in one column at Mathpix's assumed measure.
+    multi_column: bool = False
     # ready | queued | rendering | transcribing | building | done | error
     status: str = "ready"
     done: int = 0
@@ -159,6 +162,7 @@ class Job:
             "pages": self.pages,
             "layout": self.layout,
             "requested_formats": list(self.requested_formats),
+            "multi_column": self.multi_column,
             "diagnostics": self.diagnostics,
             "status": self.status,
             "done": self.done,
@@ -235,6 +239,9 @@ class Job:
             pages=int(record.get("pages") or 0),
             layout=record.get("layout") or "mathpix",
             requested_formats=selected,
+            # Absent from every record written before the toggle existed, and
+            # single-column is what those conversions actually produced.
+            multi_column=bool(record.get("multi_column")),
             status=status,
             done=int(record.get("done") or 0),
             total=int(record.get("total") or 0),
@@ -417,6 +424,7 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
             on_progress=on_progress,
             on_usage=on_usage,
             mathpix_formats=job.requested_formats,
+            multi_column=job.multi_column,
         )
         _preserve_compatibility_files(directory, staged)
         _promote_staged_job(directory, staged)
@@ -591,6 +599,7 @@ async def convert(
     model: str = Form(default=""),
     layout: str = Form(default=""),
     columns: str = Form(default=""),
+    multi_column: bool = Form(default=False),
     start: bool = Form(default=False),
     user: User = Depends(current_user),
 ) -> dict:
@@ -659,6 +668,7 @@ async def convert(
             model=model,
             layout=layout,
             columns=columns,
+            multi_column=multi_column,
             user=user,
         )
     return job.as_dict()
@@ -672,6 +682,7 @@ async def start_job(
     model: str = Form(default=""),
     layout: str = Form(default=""),
     columns: str = Form(default=""),
+    multi_column: bool = Form(default=False),
     formats: str | None = Form(default=None),
     user: User = Depends(current_user),
 ) -> dict:
@@ -702,6 +713,7 @@ async def start_job(
     with JOBS_LOCK:
         job.layout = selected_layout
         job.requested_formats = selected_formats
+        job.multi_column = multi_column
         job.status = "queued"
         job.done = 0
         job.total = job.pages
@@ -718,6 +730,45 @@ async def start_job(
 
     background.add_task(_run_job, job_id, pdf_path)
     return job.as_dict()
+
+
+@app.post("/api/jobs/{job_id}/refit")
+def refit_job(
+    job_id: str,
+    multi_column: bool = Form(default=False),
+    user: User = Depends(current_user),
+) -> dict:
+    """Lay a finished job out again, without converting it again.
+
+    Re-running a conversion re-uploads the PDF and is billed in full, so
+    changing one's mind about columns would otherwise cost the price of the
+    document each time. Everything the layout is derived from — Mathpix's own
+    .docx, its `lines.json`, the source PDF's page sizes — is already on disk,
+    so this rebuilds the delivered document from those and reaches no network.
+    Mathpix's export is read, never written; only `document.docx` and the `fit`
+    block of the job's metadata change.
+    """
+    job = _get_job(job_id, user)
+    if job.status in RUNNING:
+        raise HTTPException(
+            status_code=409,
+            detail="This conversion is still running — wait for it to finish.",
+        )
+    directory = job.directory
+    if directory is None or not directory.exists():
+        raise HTTPException(status_code=409, detail="This job's files are no longer available.")
+
+    try:
+        fit = pipeline.refit_docx(directory, multi_column=multi_column)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    with JOBS_LOCK:
+        job.multi_column = multi_column
+    _persist(job)
+    return {**job.as_dict(), "fit": fit.as_dict()}
 
 
 @app.get("/api/jobs/{job_id}")

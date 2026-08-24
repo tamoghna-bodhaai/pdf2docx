@@ -218,6 +218,12 @@ function selectedFormats() {
   return [...$('format-options').querySelectorAll('input:checked')].map(input => input.value);
 }
 
+// Whether to lay the document out in the columns the source page used. Read at
+// the moment the conversion starts, the same way the formats are.
+function multiColumnSelected() {
+  return $('multi-column').checked;
+}
+
 function updateFormatSummary() {
   const selected = selectedFormats();
   const summary = $('format-summary');
@@ -478,6 +484,7 @@ async function startJob(id) {
   $('retry').disabled = true;
   const body = new FormData();
   body.append('formats', selectedFormats().join(','));
+  body.append('multi_column', multiColumnSelected() ? 'true' : 'false');
   let response;
   try {
     response = await api(`/api/jobs/${id}/start`, { method: 'POST', body });
@@ -598,8 +605,13 @@ function showJob(job, options = {}) {
     $('job-badge').textContent = 'Ready';
     $('job-badge').className = 'status-badge ready';
     $('start-actions').classList.remove('hidden');
-    if (options.fresh || !job.started_at) renderFormats(['docx']);
-    else renderFormats(job.requested_formats || []);
+    if (options.fresh || !job.started_at) {
+      renderFormats(['docx']);
+      $('multi-column').checked = false;
+    } else {
+      renderFormats(job.requested_formats || []);
+      $('multi-column').checked = !!job.multi_column;
+    }
   } else if (RUNNING.has(job.status)) {
     $('job-badge').textContent = 'Converting';
     $('job-badge').className = 'status-badge working';
@@ -615,6 +627,7 @@ function showJob(job, options = {}) {
     $('bar-fill').style.width = '0%';
     $('retry').classList.remove('hidden');
     renderFormats(job.requested_formats || []);
+    $('multi-column').checked = !!job.multi_column;
   } else if (job.status === 'done') {
     $('job-badge').textContent = 'Complete';
     $('job-badge').className = 'status-badge complete';

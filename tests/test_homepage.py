@@ -50,7 +50,7 @@ def test_homepage_keeps_the_major_interaction_hooks() -> None:
         "drop", "picker", "keywarn",
         "upload-progress", "upload-bar-fill", "upload-status",
         "job-card", "job-file", "format-menu", "format-summary", "format-options",
-        "included-formats",
+        "included-formats", "multi-column", "multi-column-field",
         "job-meta", "start", "discard", "start-actions", "run-area", "bar-fill",
         "job-status", "cost-box", "retry", "actions", "download-menu", "download-links",
         "open-comparison", "reset", "history-panel", "history-loading", "history-error",
@@ -129,6 +129,9 @@ def test_homepage_exposes_only_the_mathpix_workflow() -> None:
     assert "Resume status updates" in script
     assert "response.status >= 500" in script
     assert "body.append('formats'" in script
+    # The column toggle travels the same way the formats do, and under a name
+    # the older `columns` field never had.
+    assert "body.append('multi_column'" in script
     assert "new URLSearchParams" in script
     assert "confirm(" not in script
     assert not (INDEX.parent / "index.html.orig").exists()

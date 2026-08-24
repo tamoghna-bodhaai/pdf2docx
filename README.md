@@ -11,7 +11,8 @@ OpenRouter model, and it does not rebuild Mathpix's DOCX locally.
 1. Stores the uploaded PDF in the local job directory and reads its page count.
 2. Uploads the PDF to the Mathpix Files API with page breaks and the outputs
    selected for that job.
-3. Saves every returned export byte-for-byte under `mathpix/`.
+3. Saves every returned export byte-for-byte under `mathpix/`, then writes a
+   copy of the DOCX fitted to its own measure as `document.docx`.
 4. Downloads images referenced by Mathpix Markdown into `mathpix/images/` and
    rewrites only the local preview Markdown to those local paths.
 5. Splits the preview Markdown on Mathpix page breaks so source-page navigation
@@ -19,9 +20,84 @@ OpenRouter model, and it does not rebuild Mathpix's DOCX locally.
 6. Deletes the remote Mathpix upload after exports and preview images are stored,
    unless deletion is explicitly disabled.
 
-When DOCX was selected and produced, `document.docx` is a byte-for-byte copy of
-`mathpix/document.docx`, the file Mathpix returned. New jobs do not create a
-rebuilt DOCX.
+When DOCX was selected and produced, `mathpix/document.docx` is the file Mathpix
+returned, byte for byte, and `document.docx` is that same file fitted to the
+measure it is laid out in. New jobs do not create a rebuilt DOCX; the fitted copy
+is Mathpix's own document with three geometry defects corrected and nothing else
+touched.
+
+## Fitting the DOCX
+
+Mathpix extracts well and states its geometry absolutely, which only reads
+correctly at the one measure it assumed — 6.00in, from a US Letter page with
+1.25in side margins. Three things follow from that, all of them measurable in a
+returned file:
+
+- **Every image is sized at its crop's pixel count over 96 DPI.** Mathpix
+  discards how large the figure was on the source page and re-derives a size
+  from the crop resolution, which is not 96 DPI — it is whatever Mathpix
+  rendered the page at. A figure occupying 1.8in of a two-column paper is
+  cropped at ~420px and arrives 4.4in wide.
+- **Every table is pinned to an absolute grid** summing to exactly the content
+  width, with no `w:tblW`, no `w:tcW` and no `w:tblLayout`. Word therefore has no
+  declared width to honour, falls back to autofit, and recomputes the columns
+  from cell content — which is what a table "breaking" looks like.
+- **No display equation carries a break opportunity.** `m:brkBin` is set and
+  `m:wrapIndent` is a full inch, but there is not one `m:brk` in the document, so
+  Word has nowhere to wrap a long equation.
+
+Each is the same mistake — an absolute number where a relative one belongs — and
+each stops being survivable the moment the document is narrowed, which is why
+putting a Mathpix DOCX into two columns breaks images, tables and equations at
+once rather than breaking something new.
+
+`app/docx_fit.py` re-expresses that geometry in units that survive a resize. It
+changes no text, no maths, no table content, no reading order and not one image
+crop. Image sizes are *restored rather than guessed*: `lines.json` reports each
+rendered page's pixel width, the PDF reports the same page in points, and the
+ratio is the resolution every crop was taken at — so a crop of *n* pixels is
+genuinely `n / dpi` inches wide. A document that arrives without usable geometry
+has oversized images capped at the measure instead. Tables are restated as
+percentages, and long top-level relations in flat equations are given break
+points; equations Mathpix encodes as OMML matrices are left alone, because a
+matrix is an unbreakable box in Word and a break inside one would do nothing.
+
+Two further repairs have nothing to do with the measure. Every maths argument
+Mathpix leaves without a left-hand side — an empty `<m:e/>`, the unused half of a
+one-sided script, a matrix row of padding, or a row opening on `=` because its
+left side is on the row above — is given a zero-width space. Word supplies that
+operand itself and draws nothing; LibreOffice draws its missing-operand
+placeholder instead, which is why a chapter of worked examples reads with an
+inverted question mark on every other line. On a 41-page textbook that removes
+225 of 269 such marks; the rest are LibreOffice's own rendering of `|…|`
+delimiters and are correct in Word either way.
+
+### Matching the source page's columns
+
+A two-column book converts to a single-column DOCX at a measure it was never set
+in, and narrowing it by hand is what breaks images, tables and equations at once.
+The **page layout** toggle produces the columns instead of leaving them to be
+added afterwards. With it on, the section is restated as the page the source was
+actually laid out on — size, margins, column count and gutter, all read out of
+`lines.json` — and everything else is then fitted to that column, because the
+measure is read back out of the section rather than passed around. Display
+equations and paragraphs are left-aligned so the narrower column is used.
+
+At the source's own column width essentially nothing overflows, because nothing
+overflowed in the book: on the same textbook, 53 of 53 figures fit a column and 2
+of 559 equations exceed it. Wide tables are fitted *to* the column rather than
+spanned across both, which stops the breakage but leaves a full-width table
+cramped. Sources whose geometry cannot be read confidently — too few lines, pages
+that disagree about their column count, overlapping columns — stay single-column
+rather than being laid out on a guess.
+
+What each job changed is recorded under `fit` in `mathpix/metadata.json`,
+including the column count and page size when one was applied. Set
+`PDF2DOCX_FIT_DOCX=off` to download exactly what Mathpix returned.
+
+Changing your mind about columns does not mean paying for the document again:
+`POST /api/jobs/{id}/refit` rebuilds the delivered DOCX from the exports the job
+already has and reaches no network.
 
 ## Privacy and retention
 
@@ -237,7 +313,8 @@ route are reachable signed out.
 | `GET` | `/healthz` | Liveness check, for the platform. |
 | `GET` | `/api/config` | Effective Mathpix/web settings without secret values. |
 | `POST` | `/api/convert` | Stage a multipart PDF; optional `start=true` starts it immediately. |
-| `POST` | `/api/jobs/{id}/start` | Start or rerun with Mathpix. Optional CSV `formats`; empty requests preview-only, omitted uses the configured default. |
+| `POST` | `/api/jobs/{id}/start` | Start or rerun with Mathpix. Optional CSV `formats`; empty requests preview-only, omitted uses the configured default. Optional `multi_column` lays the document out in the source page's columns. |
+| `POST` | `/api/jobs/{id}/refit` | Rebuild the delivered DOCX from the job's stored exports, optionally with `multi_column`. No Mathpix call and no charge. |
 | `GET` | `/api/jobs/{id}` | Status, progress, available exports, and cost estimate. |
 | `GET` | `/api/history` | Stored jobs, newest first. |
 | `GET` | `/api/jobs/{id}/detection` | Page dimensions and page-aligned Markdown; Mathpix blocks are empty. |

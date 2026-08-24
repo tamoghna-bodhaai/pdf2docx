@@ -13,6 +13,7 @@ from typing import Callable
 import fitz
 
 from . import detection
+from . import docx_fit
 from . import mathpix_client as mathpix
 from .config import settings
 
@@ -73,6 +74,7 @@ def convert_pdf(
     on_progress: ProgressHook = _noop,
     on_usage: UsageHook = _noop_usage,
     mathpix_formats: tuple[str, ...] | None = None,
+    multi_column: bool = False,
 ) -> ConversionResult:
     """Convert `pdf_path`, writing the results into `work_dir`.
 
@@ -86,6 +88,7 @@ def convert_pdf(
         on_progress=on_progress,
         on_usage=on_usage,
         formats=mathpix_formats,
+        multi_column=multi_column,
     )
 
 
@@ -156,6 +159,24 @@ def _mathpix_config(formats: tuple[str, ...] | None = None) -> dict:
     return options
 
 
+def _read_lines(data: bytes | None) -> dict | None:
+    """Mathpix's `lines.json`, when it is readable, for the geometry it carries.
+
+    The export stays an untouched raw download; this only reads it. It is the one
+    place the true size of every figure is recorded — each page's rendered pixel
+    width against the same page's width in points is the resolution Mathpix
+    cropped at — so a document that arrives without it is fitted by capping
+    oversized images rather than by restoring them.
+    """
+    if not data:
+        return None
+    try:
+        parsed = json.loads(data.decode("utf-8", "replace"))
+    except ValueError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def _mathpix_detection(pdf_path: Path, pages: list[str]) -> list:
     """Build page-aligned preview data without exposing Mathpix line boxes.
 
@@ -204,6 +225,7 @@ def _collect_mathpix_result(
     requested: tuple[str, ...],
     on_progress: ProgressHook,
     on_usage: UsageHook,
+    multi_column: bool = False,
 ) -> ConversionResult:
     """Collect and store one submitted Mathpix job while its cleanup is guarded."""
     deadline = time.monotonic() + settings.mathpix_poll_timeout
@@ -243,12 +265,30 @@ def _collect_mathpix_result(
     markdown_path = work_dir / "document.md"
     markdown_path.write_text(markdown, encoding="utf-8")
 
-    # Mathpix's own .docx, byte for byte, when this job requested one. The
-    # page-aligned MMD preview is the required local result.
+    # `mathpix/document.docx` is already Mathpix's file byte for byte; this is
+    # the copy people download, fitted to the measure it is laid out in. Mathpix
+    # states its geometry absolutely — images at their crop resolution over 96
+    # DPI rather than at the size the figure occupied, tables pinned to a grid
+    # summing to exactly the content width — and that only reads correctly at
+    # the one measure it assumed. The two files stay side by side so a defect can
+    # still be attributed to whichever of them introduced it.
     docx_path: Path | None = None
+    fit = docx_fit.Fit(reason="no docx requested")
     if "docx" in fetched:
         docx_path = work_dir / "document.docx"
-        docx_path.write_bytes(fetched["docx"])
+        document = fetched["docx"]
+        if settings.fit_docx:
+            document, fit = docx_fit.fit_docx(
+                document,
+                page_sizes=_page_sizes(pdf_path, total),
+                lines=_read_lines(fetched.get("lines.json")),
+                max_image_fraction=settings.fit_max_image_fraction,
+                wrap_indent_twips=settings.fit_wrap_indent,
+                multi_column=multi_column,
+            )
+        else:
+            fit = docx_fit.Fit(reason="fitting disabled")
+        docx_path.write_bytes(document)
 
     (work_dir / mathpix.RAW_DIR / "metadata.json").write_text(
         json.dumps(
@@ -257,7 +297,12 @@ def _collect_mathpix_result(
                 "num_pages": status.num_pages or total,
                 "options": options,
                 "applied": applied.as_dict(),
-                "document_docx": "mathpix, unedited" if docx_path else None,
+                "document_docx": (
+                    ("mathpix, fitted to measure" if fit.applied else "mathpix, unedited")
+                    if docx_path
+                    else None
+                ),
+                "fit": fit.as_dict(),
                 "requested_formats": list(requested),
                 "formats": sorted(fetched),
                 # An absent format is usually a fact about the document rather
@@ -307,12 +352,82 @@ def _collect_mathpix_result(
     )
 
 
+def _write_fit_record(work_dir: Path, fit: docx_fit.Fit) -> None:
+    """Keep `mathpix/metadata.json` telling the truth about the delivered file."""
+    path = work_dir / mathpix.RAW_DIR / "metadata.json"
+    record: dict = {}
+    if path.exists():
+        try:
+            parsed = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            record = parsed
+    record["fit"] = fit.as_dict()
+    record["document_docx"] = (
+        "mathpix, fitted to measure" if fit.applied else "mathpix, unedited"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2, default=str), encoding="utf-8")
+
+
+def refit_docx(work_dir: Path, *, multi_column: bool = False) -> docx_fit.Fit:
+    """Rebuild `document.docx` from what the job already has on disk.
+
+    Re-running a conversion re-submits the PDF and is billed again in full;
+    nothing of the previous run is reused. But every input the fitting needs
+    outlives that run — Mathpix's own .docx, its `lines.json` and the source
+    PDF's page sizes are all still in the job directory — so changing how the
+    document is laid out costs nothing and reaches no network.
+
+    Mathpix's export is read and never written. The only files this touches are
+    the delivered `document.docx` and the `fit` block of the job's metadata.
+
+    Raises ``FileNotFoundError`` when the export it rebuilds from is gone, and
+    ``ValueError`` when columns were asked for and the source geometry could not
+    be read — because delivering a single-column document to someone who asked
+    for two is a failure reported as a success.
+    """
+    source = work_dir / mathpix.RAW_DIR / "document.docx"
+    if not source.exists():
+        raise FileNotFoundError(
+            "This job no longer has Mathpix's own .docx to rebuild from."
+        )
+
+    pdf_path = work_dir / "source.pdf"
+    page_sizes: list[tuple[float, float]] = []
+    if pdf_path.exists():
+        page_sizes = _page_sizes(pdf_path, _page_total(pdf_path))
+
+    raw_lines = work_dir / mathpix.RAW_DIR / "document.lines.json"
+    lines = _read_lines(raw_lines.read_bytes() if raw_lines.exists() else None)
+
+    document, fit = docx_fit.fit_docx(
+        source.read_bytes(),
+        page_sizes=page_sizes,
+        lines=lines,
+        max_image_fraction=settings.fit_max_image_fraction,
+        wrap_indent_twips=settings.fit_wrap_indent,
+        multi_column=multi_column,
+    )
+    if multi_column and fit.columns < 2:
+        raise ValueError(
+            "The source page's column layout could not be read from this job's "
+            "stored geometry, so the document was left single-column."
+        )
+
+    (work_dir / "document.docx").write_bytes(document)
+    _write_fit_record(work_dir, fit)
+    return fit
+
+
 def convert_pdf_mathpix(
     pdf_path: Path,
     work_dir: Path,
     on_progress: ProgressHook = _noop,
     on_usage: UsageHook = _noop_usage,
     formats: tuple[str, ...] | None = None,
+    multi_column: bool = False,
 ) -> ConversionResult:
     """Hand the whole PDF to the Mathpix Files API and write back what it returns.
 
@@ -352,6 +467,7 @@ def convert_pdf_mathpix(
             requested=requested,
             on_progress=on_progress,
             on_usage=on_usage,
+            multi_column=multi_column,
         )
     finally:
         if settings.mathpix_delete:

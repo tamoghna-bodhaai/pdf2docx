@@ -124,6 +124,22 @@ class Settings:
     # estimate from the page count and is flagged as one.
     mathpix_page_rate: float = _float("PDF2DOCX_MATHPIX_PAGE_RATE", 0.0015)
 
+    # Fitting Mathpix's .docx to the measure it is laid out in. Mathpix sizes
+    # every image at its crop's pixel count over 96 DPI rather than at the size
+    # the figure occupied on the page, pins each table to an absolute grid, and
+    # leaves long equations no place to wrap — all of which hold together at the
+    # six-inch measure it assumes and come apart at any other. On by default,
+    # because the alternative is a document whose figures are half again too
+    # large; `off` leaves the download exactly as Mathpix returned it.
+    fit_docx: bool = os.environ.get("PDF2DOCX_FIT_DOCX", "on").strip().lower() != "off"
+    # The most of the measure one image may occupy. 1.0 lets a genuinely
+    # full-width figure stay full width; lower it to keep a margin of text
+    # around every figure.
+    fit_max_image_fraction: float = _float("PDF2DOCX_FIT_MAX_IMAGE_WIDTH", 1.0)
+    # How far a wrapped line of a broken equation is indented. Mathpix writes a
+    # full inch, which is affordable across six inches and not across a column.
+    fit_wrap_indent: int = _int("PDF2DOCX_FIT_WRAP_INDENT", 360)
+
     # Source-page rendering, for the side-by-side viewer. `dpi` is capped by
     # `max_edge` so a poster-sized page cannot ask for an enormous PNG.
     dpi: int = _int("PDF2DOCX_DPI", 180)

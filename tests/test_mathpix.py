@@ -140,6 +140,9 @@ def settings(**overrides):
         "mathpix_delete": True,
         "mathpix_poll_timeout": 30.0,
         "mathpix_page_rate": 0.0015,
+        "fit_docx": True,
+        "fit_max_image_fraction": 1.0,
+        "fit_wrap_indent": 360,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -172,10 +175,27 @@ def convert(tmp_path, monkeypatch, **overrides):
 
 
 def test_the_docx_is_mathpix_own_file_byte_for_byte(tmp_path, monkeypatch):
-    """The deliverable is not built here. It is copied."""
+    """The document is not built here. Mathpix's own file is kept as it arrived."""
     result, work = convert(tmp_path, monkeypatch)
-    assert result.docx_path.read_bytes() == DOCX_BYTES
     assert (work / mathpix_client.RAW_DIR / "document.docx").read_bytes() == DOCX_BYTES
+    # These bytes are not a readable .docx, so there is nothing to fit and the
+    # downloadable copy is Mathpix's file unchanged.
+    assert result.docx_path.read_bytes() == DOCX_BYTES
+
+
+def test_a_document_that_cannot_be_read_is_still_delivered(tmp_path, monkeypatch):
+    """A .docx this codebase cannot parse is passed on, not withheld."""
+    _, work = convert(tmp_path, monkeypatch)
+    record = json.loads((work / mathpix_client.RAW_DIR / "metadata.json").read_text())
+    assert record["fit"]["applied"] is False
+    assert record["fit"]["reason"]
+    assert record["document_docx"] == "mathpix, unedited"
+
+
+def test_fitting_can_be_turned_off_entirely(tmp_path, monkeypatch):
+    _, work = convert(tmp_path, monkeypatch, fit_docx=False)
+    record = json.loads((work / mathpix_client.RAW_DIR / "metadata.json").read_text())
+    assert record["fit"]["reason"] == "fitting disabled"
 
 
 def test_every_format_is_written_untouched(tmp_path, monkeypatch):
@@ -480,3 +500,69 @@ def test_a_blank_page_is_reported_per_page(tmp_path, monkeypatch):
     reasons = {item.page: item.fallback_reason for item in result.diagnostics}
     assert reasons == {1: None, 2: "empty_output"}
     assert all(item.extractor == "mathpix" for item in result.diagnostics)
+
+
+# -- the columns the source page was set in --------------------------------------
+
+
+def test_the_column_choice_reaches_the_fitting(tmp_path, monkeypatch):
+    """`convert_pdf` is the seam; the option has to survive all three hops."""
+    prepare(monkeypatch)
+    seen = {}
+    real = pipeline.docx_fit.fit_docx
+
+    def watch(data, **kwargs):
+        seen.update(kwargs)
+        return real(data, **kwargs)
+
+    monkeypatch.setattr(pipeline.docx_fit, "fit_docx", watch)
+    pipeline.convert_pdf(
+        pdf_path=source_pdf(tmp_path),
+        work_dir=tmp_path / "job",
+        multi_column=True,
+    )
+    assert seen["multi_column"] is True
+
+
+def test_a_conversion_is_single_column_unless_asked(tmp_path, monkeypatch):
+    prepare(monkeypatch)
+    seen = {}
+    real = pipeline.docx_fit.fit_docx
+
+    def watch(data, **kwargs):
+        seen.update(kwargs)
+        return real(data, **kwargs)
+
+    monkeypatch.setattr(pipeline.docx_fit, "fit_docx", watch)
+    pipeline.convert_pdf(pdf_path=source_pdf(tmp_path), work_dir=tmp_path / "job")
+    assert seen["multi_column"] is False
+
+
+def test_re_fitting_reads_mathpix_own_export_and_never_writes_it(tmp_path, monkeypatch):
+    """No submit, no poll, no charge — only the delivered copy is rebuilt."""
+    prepare(monkeypatch)
+    _, work = convert(tmp_path, monkeypatch)
+    raw = work / mathpix_client.RAW_DIR / "document.docx"
+    before = raw.read_bytes()
+
+    def fail(*args, **kwargs):  # pragma: no cover - the failure is the assertion
+        raise AssertionError("re-fitting must not submit anything")
+
+    monkeypatch.setattr(pipeline.mathpix, "MathpixClient", fail)
+    fit = pipeline.refit_docx(work)
+
+    assert raw.read_bytes() == before
+    record = json.loads((work / mathpix_client.RAW_DIR / "metadata.json").read_text())
+    assert record["fit"] == fit.as_dict()
+    # These fixture bytes are not a readable .docx, so the delivered copy is
+    # Mathpix's file unchanged — and the record says so rather than claiming a fit.
+    assert (work / "document.docx").read_bytes() == before
+    assert record["document_docx"] == "mathpix, unedited"
+
+
+def test_re_fitting_a_job_that_has_no_export_refuses(tmp_path, monkeypatch):
+    prepare(monkeypatch)
+    work = tmp_path / "empty"
+    (work / mathpix_client.RAW_DIR).mkdir(parents=True)
+    with pytest.raises(FileNotFoundError):
+        pipeline.refit_docx(work)

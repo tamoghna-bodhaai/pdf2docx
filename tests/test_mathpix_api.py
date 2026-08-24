@@ -478,3 +478,221 @@ def test_a_job_is_not_reported_done_before_its_outputs_are_in_place(
     assert finished["has_md"] is True
     assert finished["has_detection"] is True
     assert "docx" in finished["mathpix_formats"]
+
+
+# -- laying the document out in the source's columns ------------------------------
+
+
+def test_the_column_toggle_reaches_the_pipeline(client, user, monkeypatch, tmp_path):
+    _settings(monkeypatch, mathpix_app_key="a-key", data_dir=tmp_path)
+    directory = tmp_path / "columns"
+    directory.mkdir()
+    (directory / "source.pdf").write_bytes(_one_page_pdf())
+    job = main.Job(
+        id="columnsjob", user_id=user.id, filename="paper.pdf", pages=1,
+        directory=directory,
+    )
+    monkeypatch.setitem(main.JOBS, job.id, job)
+    called = {}
+
+    def fake_convert_pdf(**kwargs):
+        called.update(kwargs)
+        raise RuntimeError("stop after observing the public interface")
+
+    monkeypatch.setattr(main, "convert_pdf", fake_convert_pdf)
+
+    reply = client.post(f"/api/jobs/{job.id}/start", data={"multi_column": "true"})
+
+    assert reply.status_code == 200
+    assert reply.json()["multi_column"] is True
+    assert called["multi_column"] is True
+
+
+def test_a_conversion_is_single_column_unless_it_is_asked_not_to_be(
+    client, user, monkeypatch, tmp_path
+):
+    _settings(monkeypatch, mathpix_app_key="a-key", data_dir=tmp_path)
+    directory = tmp_path / "one-column"
+    directory.mkdir()
+    (directory / "source.pdf").write_bytes(_one_page_pdf())
+    job = main.Job(
+        id="onecolumnjob", user_id=user.id, filename="paper.pdf", pages=1,
+        directory=directory,
+    )
+    monkeypatch.setitem(main.JOBS, job.id, job)
+    called = {}
+
+    def fake_convert_pdf(**kwargs):
+        called.update(kwargs)
+        raise RuntimeError("stop after observing the public interface")
+
+    monkeypatch.setattr(main, "convert_pdf", fake_convert_pdf)
+
+    reply = client.post(f"/api/jobs/{job.id}/start")
+
+    assert reply.json()["multi_column"] is False
+    assert called["multi_column"] is False
+
+
+def test_the_column_choice_survives_the_job_record_round_trip(job):
+    job.multi_column = True
+
+    restored = main.Job.from_record(job.to_record())
+
+    assert restored.multi_column is True
+    assert restored.as_dict()["multi_column"] is True
+
+
+def test_a_record_written_before_the_toggle_existed_reads_as_single_column(job):
+    record = job.to_record()
+    record.pop("multi_column")
+
+    assert main.Job.from_record(record).multi_column is False
+
+
+# -- re-fitting, which costs nothing ---------------------------------------------
+
+
+def test_refitting_rebuilds_the_document_without_converting_it_again(
+    client, user, monkeypatch, tmp_path
+):
+    """The whole point of the route: no upload, no poll, no charge."""
+    _settings(monkeypatch, data_dir=tmp_path)
+    directory = tmp_path / "refit"
+    (directory / MATHPIX_RAW_DIR).mkdir(parents=True)
+    (directory / "source.pdf").write_bytes(_one_page_pdf())
+    (directory / MATHPIX_RAW_DIR / "document.docx").write_bytes(b"mathpix bytes")
+    (directory / "document.docx").write_bytes(b"stale")
+    record = main.Job(
+        id="refitjob", user_id=user.id, filename="paper.pdf", pages=1,
+        directory=directory, status="done",
+    )
+    monkeypatch.setitem(main.JOBS, record.id, record)
+
+    def fail(*args, **kwargs):  # pragma: no cover - the failure is the assertion
+        raise AssertionError("re-fitting must not reach Mathpix")
+
+    monkeypatch.setattr(main, "convert_pdf", fail)
+
+    reply = client.post(f"/api/jobs/{record.id}/refit")
+
+    assert reply.status_code == 200
+    assert reply.json()["fit"]["applied"] is False
+    # Not a .docx at all, so it is passed through rather than withheld.
+    assert (directory / "document.docx").read_bytes() == b"mathpix bytes"
+    # And Mathpix's own export is what it always was.
+    assert (directory / MATHPIX_RAW_DIR / "document.docx").read_bytes() == b"mathpix bytes"
+
+
+def test_refitting_refuses_a_job_whose_export_is_gone(client, user, monkeypatch, tmp_path):
+    _settings(monkeypatch, data_dir=tmp_path)
+    directory = tmp_path / "no-export"
+    (directory / MATHPIX_RAW_DIR).mkdir(parents=True)
+    record = main.Job(
+        id="noexportjob", user_id=user.id, filename="paper.pdf", pages=1,
+        directory=directory, status="done",
+    )
+    monkeypatch.setitem(main.JOBS, record.id, record)
+
+    reply = client.post(f"/api/jobs/{record.id}/refit")
+
+    assert reply.status_code == 409
+    assert "Mathpix" in reply.json()["detail"]
+
+
+def test_refitting_refuses_columns_it_could_not_derive(client, user, monkeypatch, tmp_path):
+    """Answering "two columns" with a single-column document would be a lie."""
+    _settings(monkeypatch, data_dir=tmp_path)
+    directory = tmp_path / "no-geometry"
+    (directory / MATHPIX_RAW_DIR).mkdir(parents=True)
+    (directory / "source.pdf").write_bytes(_one_page_pdf())
+    (directory / MATHPIX_RAW_DIR / "document.docx").write_bytes(b"mathpix bytes")
+    (directory / "document.docx").write_bytes(b"already delivered")
+    record = main.Job(
+        id="nogeometryjob", user_id=user.id, filename="paper.pdf", pages=1,
+        directory=directory, status="done",
+    )
+    monkeypatch.setitem(main.JOBS, record.id, record)
+
+    reply = client.post(f"/api/jobs/{record.id}/refit", data={"multi_column": "true"})
+
+    assert reply.status_code == 409
+    assert "column" in reply.json()["detail"].lower()
+    # And the document that was already delivered is still the one on disk.
+    assert (directory / "document.docx").read_bytes() == b"already delivered"
+
+
+def test_another_account_cannot_refit_this_ones_job(client, job, monkeypatch):
+    monkeypatch.setattr(main, "_get_job", _refuse)
+
+    assert client.post(f"/api/jobs/{job.id}/refit").status_code == 404
+
+
+def _refuse(job_id, user):
+    from fastapi import HTTPException
+
+    raise HTTPException(status_code=404, detail="Unknown job id")
+
+
+def _tiny_docx(section: str) -> bytes:
+    """The smallest archive `docx_fit` will treat as a document."""
+    import io
+    import zipfile
+
+    namespaces = (
+        'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"'
+    )
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<Types/>")
+        archive.writestr(
+            "word/document.xml",
+            f"<w:document {namespaces}><w:body>"
+            '<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="8640"/></w:tblGrid>'
+            "<w:tr><w:tc><w:tcPr/><w:p/></w:tc></w:tr></w:tbl>"
+            f"{section}</w:body></w:document>",
+        )
+    return buffer.getvalue()
+
+
+def test_a_re_fit_rewrites_the_delivered_document_and_says_what_it_did(
+    client, user, monkeypatch, tmp_path
+):
+    _settings(monkeypatch, data_dir=tmp_path)
+    directory = tmp_path / "real-refit"
+    (directory / MATHPIX_RAW_DIR).mkdir(parents=True)
+    (directory / "source.pdf").write_bytes(_one_page_pdf())
+    section = (
+        '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/>'
+        '<w:pgMar w:top="1440" w:right="1800" w:bottom="1440" w:left="1800"/>'
+        '<w:cols w:num="2" w:space="360"/></w:sectPr>'
+    )
+    (directory / MATHPIX_RAW_DIR / "document.docx").write_bytes(_tiny_docx(section))
+    (directory / MATHPIX_RAW_DIR / "metadata.json").write_text(
+        json.dumps({"file_id": "abc", "fit": {"applied": False}})
+    )
+    record = main.Job(
+        id="realrefitjob", user_id=user.id, filename="paper.pdf", pages=1,
+        directory=directory, status="done",
+    )
+    monkeypatch.setitem(main.JOBS, record.id, record)
+
+    reply = client.post(f"/api/jobs/{record.id}/refit")
+
+    assert reply.status_code == 200
+    assert reply.json()["fit"]["applied"] is True
+    assert reply.json()["fit"]["tables_fitted"] == 1
+
+    import zipfile
+
+    with zipfile.ZipFile(directory / "document.docx") as archive:
+        xml = archive.read("word/document.xml").decode()
+    # The two-column section's measure, not the six inches the grid arrived at.
+    assert '<w:gridCol w:w="4140"/>' in xml
+    assert '<w:tblLayout w:type="fixed"/>' in xml
+
+    stored = json.loads((directory / MATHPIX_RAW_DIR / "metadata.json").read_text())
+    assert stored["fit"]["applied"] is True
+    assert stored["document_docx"] == "mathpix, fitted to measure"
+    # Everything the record already said is still there.
+    assert stored["file_id"] == "abc"

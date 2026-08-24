@@ -368,6 +368,12 @@ input[type="file"] { display: none; }
 .format-option > span { display: grid; }
 .format-option strong { color: var(--text-strong); font-size: 11.5px; }
 .format-option small { color: var(--text-muted); font-size: 10.5px; }
+/* Its own full-width row under the format menu and the buttons, so neither has
+   to give up any of the width it already had. */
+.layout-field { grid-column: 1 / -1; min-width: 0; }
+.layout-option { width: min(100%, 370px); min-height: 0; padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
+.layout-option:hover { border-color: var(--brand); }
+
 .included-formats { display: flex; flex-wrap: wrap; gap: 5px 8px; margin-top: 8px; color: var(--text-faint); font-size: 10.5px; }
 .included-formats strong { color: var(--text-muted); font-family: var(--font-mono); font-size: 10px; }
 .job-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
@@ -602,6 +608,7 @@ button.auth-submit { width: 100%; }
   .dashboard-content { width: min(100% - 32px, 640px); padding: 45px 0 62px; }
   .dashboard-hero h1 { font-size: 34px; }
   .conversion-controls { grid-template-columns: 1fr; align-items: stretch; }
+  .layout-option { width: 100%; }
   .format-menu { width: 100%; }
   .job-buttons { justify-content: stretch; }
   .job-buttons button { flex: 1 1 150px; }
