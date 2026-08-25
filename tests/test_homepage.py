@@ -8,6 +8,7 @@ from pathlib import Path
 
 INDEX = Path(__file__).parents[1] / "app" / "static" / "index.html"
 SCRIPT = INDEX.with_name("app.js")
+STYLESHEET = INDEX.with_name("app.css")
 LOGIN = INDEX.with_name("login.html")
 LOGIN_SCRIPT = INDEX.with_name("login.js")
 
@@ -19,6 +20,7 @@ class PageContract(HTMLParser):
         self.duplicates: set[str] = set()
         self.workspace_cards: list[str] = []
         self.labels: set[str] = set()
+        self.stylesheets: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = dict(attrs)
@@ -33,6 +35,8 @@ class PageContract(HTMLParser):
             self.workspace_cards.append(element_id)
         if tag == "label" and values.get("for"):
             self.labels.add(values["for"])
+        if tag == "link" and values.get("rel") == "stylesheet" and values.get("href"):
+            self.stylesheets.append(values["href"])
 
 
 def page_contract(path: Path = INDEX) -> PageContract:
@@ -166,6 +170,24 @@ def test_the_sign_in_page_loads_nothing_the_workspace_needs() -> None:
     assert "app.js" not in html
     assert "katex" not in html
     assert "marked" not in html
+
+
+def test_both_pages_load_the_same_bundled_inter_stylesheet() -> None:
+    workspace = page_contract()
+    sign_in = page_contract(LOGIN)
+    versioned_stylesheet = "/static/app.css?v=20260825-inter"
+
+    assert versioned_stylesheet in workspace.stylesheets
+    assert sign_in.stylesheets == [versioned_stylesheet]
+
+    css = STYLESHEET.read_text(encoding="utf-8")
+    assert css.count('font-family: "Inter";') == 2
+    assert css.count("font-weight: 100 900;") == 2
+    assert css.count("font-display: swap;") == 2
+    assert 'url("vendor/inter/InterVariable.woff2")' in css
+    assert 'url("vendor/inter/InterVariable-Italic.woff2")' in css
+    assert "--font-sans: Inter, ui-sans-serif, system-ui" in css
+    assert '--font-mono: "JetBrains Mono", ui-monospace' in css
 
 
 def test_the_workspace_bounces_an_expired_session() -> None:

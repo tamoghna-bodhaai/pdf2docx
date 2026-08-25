@@ -139,6 +139,12 @@ class Settings:
     # How far a wrapped line of a broken equation is indented. Mathpix writes a
     # full inch, which is affordable across six inches and not across a column.
     fit_wrap_indent: int = _int("PDF2DOCX_FIT_WRAP_INDENT", 360)
+    # The one type size the fitted document states, headings included. Mathpix
+    # names a size in `docDefaults` and none at all on its maths runs, which
+    # Word resolves and LibreOffice does not — so the equations read larger than
+    # the text beside them. Stating one size everywhere leaves no reader
+    # anything to guess. 0 keeps whatever sizes Mathpix wrote.
+    fit_font_points: float = _float("PDF2DOCX_FIT_FONT_POINTS", 10.0)
 
     # Source-page rendering, for the side-by-side viewer. `dpi` is capped by
     # `max_edge` so a poster-sized page cannot ask for an enormous PNG.

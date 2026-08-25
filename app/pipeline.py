@@ -284,6 +284,7 @@ def _collect_mathpix_result(
                 lines=_read_lines(fetched.get("lines.json")),
                 max_image_fraction=settings.fit_max_image_fraction,
                 wrap_indent_twips=settings.fit_wrap_indent,
+                font_points=settings.fit_font_points,
                 multi_column=multi_column,
             )
         else:
@@ -408,6 +409,7 @@ def refit_docx(work_dir: Path, *, multi_column: bool = False) -> docx_fit.Fit:
         lines=lines,
         max_image_fraction=settings.fit_max_image_fraction,
         wrap_indent_twips=settings.fit_wrap_indent,
+        font_points=settings.fit_font_points,
         multi_column=multi_column,
     )
     if multi_column and fit.columns < 2:

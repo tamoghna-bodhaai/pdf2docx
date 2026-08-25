@@ -98,6 +98,7 @@ def package(
     media: dict[str, bytes] | None = None,
     settings: str = "",
     section: str = SECTION,
+    styles: str = "",
 ) -> bytes:
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -106,6 +107,8 @@ def package(
         archive.writestr("word/_rels/document.xml.rels", RELS)
         if settings:
             archive.writestr("word/settings.xml", settings)
+        if styles:
+            archive.writestr("word/styles.xml", styles)
         for name, data in (media or {}).items():
             archive.writestr(f"word/media/{name}", data)
     return buffer.getvalue()
@@ -521,7 +524,7 @@ def test_the_wrap_indent_is_relaxed_only_once_an_equation_can_actually_wrap():
 
 def test_an_untouched_document_leaves_the_wrap_indent_alone():
     body = equation(run("x"), run("="), run("y"))
-    data, _ = fit_docx(package(body, settings=MATH_SETTINGS), lines=None)
+    data, _ = fit_docx(package(body, settings=MATH_SETTINGS), lines=None, font_points=0)
     assert data == package(body, settings=MATH_SETTINGS)
 
 
@@ -583,6 +586,7 @@ def test_each_selector_can_be_turned_off_on_its_own():
         fit_images=False,
         fit_tables=False,
         fit_equations=False,
+        font_points=0,
     )
     assert not fit.applied
     assert fit.reason == "nothing to fit"
@@ -887,7 +891,7 @@ def matrix(*rows: tuple[str, ...]) -> str:
 
 
 def test_an_empty_argument_is_given_something_to_be():
-    data, fit = fit_docx(package(matrix((run("x"), ""))), lines=None)
+    data, fit = fit_docx(package(matrix((run("x"), ""))), lines=None, font_points=0)
     xml = read(data)
     assert "<m:e/>" not in xml
     assert f"<m:e>{OPERAND}</m:e>" in xml
@@ -902,7 +906,7 @@ def test_the_filler_is_marked_to_survive_being_read_back():
 
 def test_a_row_continuing_a_derivation_is_given_its_missing_left_hand_side():
     body = matrix((run("y"), run("=") + run("2")), (run("z"), run("=") + run("3")))
-    data, fit = fit_docx(package(body), lines=None)
+    data, fit = fit_docx(package(body), lines=None, font_points=0)
     xml = read(data)
     assert xml.count(f"<m:e>{OPERAND}<m:r>") == 2
     assert fit.math_gaps_filled == 2
@@ -910,14 +914,14 @@ def test_a_row_continuing_a_derivation_is_given_its_missing_left_hand_side():
 
 def test_a_cell_of_nothing_but_padding_counts_as_empty():
     padding = '<m:r><m:t xml:space="preserve">    </m:t></m:r>'
-    data, fit = fit_docx(package(matrix((padding, run("x")))), lines=None)
+    data, fit = fit_docx(package(matrix((padding, run("x")))), lines=None, font_points=0)
     assert read(data).count(OPERAND) == 1
     assert fit.math_gaps_filled == 1
 
 
 def test_a_row_that_starts_with_a_value_is_left_alone():
     body = matrix((run("y"), run("2") + run("=") + run("x")))
-    data, fit = fit_docx(package(body), lines=None)
+    data, fit = fit_docx(package(body), lines=None, font_points=0)
     assert fit.math_gaps_filled == 0
     assert read(data) == document(body)
 
@@ -939,7 +943,7 @@ def test_a_square_roots_hidden_degree_is_not_a_gap():
 
 def test_a_whole_equation_that_opens_on_a_relation_is_given_one_too():
     body = f"<m:oMathPara><m:oMath>{run('=')}{run('0')}</m:oMath></m:oMathPara>"
-    data, fit = fit_docx(package(body), lines=None)
+    data, fit = fit_docx(package(body), lines=None, font_points=0)
     assert f"<m:oMath>{OPERAND}<m:r>" in read(data)
     assert fit.math_gaps_filled == 1
 
@@ -953,6 +957,233 @@ def test_running_over_an_already_repaired_document_changes_nothing_more():
 
 def test_filling_the_gaps_can_be_turned_off():
     body = matrix((run("y"), run("=") + run("2")))
-    _, fit = fit_docx(package(body), lines=None, fill_math_gaps=False)
+    _, fit = fit_docx(package(body), lines=None, fill_math_gaps=False, font_points=0)
     assert fit.math_gaps_filled == 0
     assert fit.reason == "nothing to fit"
+
+
+# --- one type size, stated rather than inherited -------------------------------
+
+# Mathpix's own `styles.xml`, cut to what carries a size: the defaults every run
+# inherits from, the `Normal` style that restates them, and the verbatim style.
+STYLES = (
+    f'<w:styles {NAMESPACES}><w:docDefaults><w:rPrDefault><w:rPr>'
+    '<w:rFonts w:ascii="Georgia" w:hAnsi="Georgia"/><w:sz w:val="22"/>'
+    '<w:szCs w:val="22"/></w:rPr></w:rPrDefault></w:docDefaults>'
+    '<w:style w:type="paragraph" w:styleId="Normal"><w:rPr><w:sz w:val="22"/>'
+    '</w:rPr></w:style></w:styles>'
+)
+
+# A heading, the way this document writes one: no `w:pStyle` anywhere in the
+# file, so 21pt is direct formatting on the run itself.
+HEADING = (
+    '<w:p><w:r><w:rPr><w:b/><w:sz w:val="42"/></w:rPr>'
+    "<w:t>Conic Sections</w:t></w:r></w:p>"
+)
+
+
+def sizes(xml: str, attribute: str = "sz") -> list[str]:
+    return re.findall(rf'<w:{attribute} w:val="(\d+)"/>', xml)
+
+
+def test_the_size_every_run_inherits_is_the_one_the_document_is_set_in():
+    data, fit = fit_docx(package(HEADING, styles=STYLES), lines=None)
+    styles = read(data, "word/styles.xml")
+    assert sizes(styles) == ["20", "20"]
+    assert fit.font_points == 10.0
+    assert fit.sizes_restated
+
+
+def test_a_heading_stops_being_twenty_one_point_and_stays_a_heading():
+    xml = read(fit_docx(package(HEADING, styles=STYLES), lines=None)[0])
+    assert '<w:sz w:val="42"/>' not in xml
+    assert '<w:b/><w:sz w:val="20"/>' in xml
+
+
+def test_a_size_with_no_complex_script_twin_is_given_one():
+    # `w:sz` alone leaves complex-script text on whatever it inherited, which is
+    # the size this pass exists to stop being a question.
+    xml = read(fit_docx(package(HEADING, styles=STYLES), lines=None)[0])
+    assert '<w:sz w:val="20"/><w:szCs w:val="20"/>' in xml
+    styles = read(fit_docx(package(HEADING, styles=STYLES), lines=None)[0],
+                  "word/styles.xml")
+    assert sizes(styles, "szCs") == ["20", "20"]
+
+
+def test_a_maths_run_with_no_properties_at_all_is_given_the_size():
+    body = "<m:oMathPara><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></m:oMathPara>"
+    xml = read(fit_docx(package(body), lines=None)[0])
+    assert '<m:r><w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><m:t>x</m:t>' in xml
+
+
+def test_a_maths_run_keeps_its_own_properties_and_takes_the_size_after_them():
+    # `CT_R` sequences `m:rPr` before `w:rPr`; the other way round Word refuses
+    # to open the part at all.
+    xml = read(fit_docx(package(equation(run("x"))), lines=None)[0])
+    assert '<m:rPr><m:sty/></m:rPr><w:rPr><w:sz w:val="20"/>' in xml
+    assert '<w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><m:rPr>' not in xml
+
+
+def test_the_glyphs_a_fraction_is_drawn_with_are_sized_too():
+    body = (
+        "<m:oMathPara><m:oMath><m:f><m:fPr><m:ctrlPr><w:rPr>"
+        '<w:rFonts w:ascii="Cambria Math"/></w:rPr></m:ctrlPr></m:fPr>'
+        f"<m:num>{run('a')}</m:num><m:den>{run('b')}</m:den>"
+        "</m:f></m:oMath></m:oMathPara>"
+    )
+    xml = read(fit_docx(package(body), lines=None)[0])
+    assert '<w:rFonts w:ascii="Cambria Math"/><w:sz w:val="20"/>' in xml
+
+
+def test_a_run_that_already_states_the_size_is_not_given_a_second_one():
+    body = (
+        '<m:oMathPara><m:oMath><m:r><w:rPr><w:sz w:val="28"/></w:rPr>'
+        "<m:t>x</m:t></m:r></m:oMath></m:oMathPara>"
+    )
+    xml = read(fit_docx(package(body), lines=None)[0])
+    assert xml.count('<w:sz w:val="20"/>') == 1
+
+
+def test_turning_the_size_off_leaves_every_one_of_them_alone():
+    data, fit = fit_docx(package(HEADING, styles=STYLES), lines=None, font_points=0)
+    assert data == package(HEADING, styles=STYLES)
+    assert fit.font_points == 0.0
+    assert fit.reason == "nothing to fit"
+
+
+def test_a_package_with_no_styles_part_is_fitted_without_complaint():
+    data, fit = fit_docx(package(HEADING), lines=None)
+    assert "word/styles.xml" not in zipfile.ZipFile(BytesIO(data)).namelist()
+    assert '<w:sz w:val="20"/>' in read(data)
+
+
+def test_stating_the_size_twice_states_it_once():
+    once, _ = fit_docx(package(equation(run("x")) + HEADING, styles=STYLES), lines=None)
+    twice, fit = fit_docx(once, lines=None)
+    assert twice == once
+    assert fit.reason == "nothing to fit"
+
+
+# --- a step's connective, joined to the equation it introduces ------------------
+
+
+def connective_paragraph(token: str) -> str:
+    return (
+        '<w:p><w:pPr><w:spacing w:after="220"/></w:pPr><w:r>'
+        f'<w:rPr><w:rFonts w:ascii="Georgia"/></w:rPr>'
+        f'<w:t xml:space="preserve">{token}</w:t></w:r></w:p>'
+    )
+
+
+def math_paragraph(*parts: str) -> str:
+    return (
+        '<w:p><w:pPr><w:spacing w:after="220"/></w:pPr>'
+        "<m:oMathPara><m:oMath>" + "".join(parts) + "</m:oMath></m:oMathPara></w:p>"
+    )
+
+
+def broken_paragraph(token: str, lead: str = "from the figure") -> str:
+    return (
+        "<w:p><w:pPr><w:numPr><w:ilvl w:val=\"0\"/><w:numId w:val=\"3\"/></w:numPr>"
+        f'</w:pPr><w:r><w:rPr/><w:t xml:space="preserve">{lead}</w:t></w:r>'
+        '<w:r><w:rPr/><w:br w:type="textWrapping"/></w:r>'
+        f'<w:r><w:rPr/><w:t xml:space="preserve">{token}</w:t></w:r></w:p>'
+    )
+
+
+def test_a_connective_on_its_own_line_moves_into_the_equation_below_it():
+    body = connective_paragraph("⇒") + math_paragraph(run("x"), run("="), run("y"))
+    data, fit = fit_docx(package(body), lines=None, font_points=0)
+    xml = read(data)
+    assert fit.steps_joined == 1
+    # The paragraph that held it is gone, and the connective is inside the maths.
+    assert '<w:t xml:space="preserve">⇒</w:t>' not in xml
+    assert '<m:rPr><m:nor/></m:rPr><m:t xml:space="preserve">⇒&#32;&#32;</m:t>' in xml
+
+
+def test_the_connective_is_kept_upright_and_keeps_its_gap():
+    body = connective_paragraph("or") + math_paragraph(run("x"))
+    xml = read(fit_docx(package(body), lines=None, font_points=0)[0])
+    # Without `m:nor` this is set as the product of two variables, and without
+    # `xml:space` LibreOffice trims the gap the source's narrow column stood in.
+    assert '<m:nor/>' in xml
+    assert 'xml:space="preserve">or&#32;&#32;</m:t>' in xml
+
+
+def test_the_joined_equation_says_where_it_sits_rather_than_inheriting_it():
+    body = connective_paragraph("∴") + math_paragraph(run("x"))
+    xml = read(fit_docx(package(body), lines=None, font_points=0)[0])
+    assert '<m:oMathPara><m:oMathParaPr><m:jc m:val="left"/></m:oMathParaPr>' in xml
+
+
+def test_an_equation_that_already_says_where_it_sits_is_not_told_twice():
+    body = connective_paragraph("⇒") + (
+        '<w:p><m:oMathPara><m:oMathParaPr><m:jc m:val="center"/></m:oMathParaPr>'
+        f"<m:oMath>{run('x')}</m:oMath></m:oMathPara></w:p>"
+    )
+    xml = read(fit_docx(package(body), lines=None, font_points=0)[0])
+    assert xml.count("<m:oMathParaPr>") == 1
+    assert '<m:jc m:val="center"/>' in xml
+
+
+def test_a_connective_hanging_off_a_line_of_prose_is_trimmed_not_swallowed():
+    body = broken_paragraph("⇒") + math_paragraph(run("x"))
+    data, fit = fit_docx(package(body), lines=None, font_points=0)
+    xml = read(data)
+    assert fit.steps_joined == 1
+    # The host paragraph survives, numbering and lead text and all; only the
+    # soft break and what hung off it are gone.
+    assert '<w:numId w:val="3"/>' in xml
+    assert "from the figure" in xml
+    assert '<w:br w:type="textWrapping"/>' not in xml
+    assert '<m:t xml:space="preserve">⇒&#32;&#32;</m:t>' in xml
+
+
+def test_a_connective_paragraph_that_also_carries_maths_is_left_alone():
+    body = (
+        f'<w:p><w:r><w:t xml:space="preserve">⇒</w:t></w:r>'
+        f"<m:oMath>{run('x')}</m:oMath></w:p>"
+    ) + math_paragraph(run("y"))
+    _, fit = fit_docx(package(body), lines=None, font_points=0)
+    assert fit.steps_joined == 0
+
+
+def test_a_connective_with_no_equation_under_it_stays_where_it_is():
+    body = connective_paragraph("⇒") + "<w:p><w:r><w:t>Example 41</w:t></w:r></w:p>"
+    data, fit = fit_docx(package(body), lines=None, font_points=0)
+    assert fit.steps_joined == 0
+    assert read(data) == document(body)
+
+
+def test_a_line_of_prose_above_an_equation_is_not_a_connective():
+    body = (
+        '<w:p><w:r><w:t xml:space="preserve">Substituting for x we get</w:t></w:r></w:p>'
+        + math_paragraph(run("x"))
+    )
+    _, fit = fit_docx(package(body), lines=None, font_points=0)
+    assert fit.steps_joined == 0
+
+
+def test_a_paragraph_holding_a_figure_is_never_eaten_for_its_caption():
+    body = (
+        f'<w:p><w:r>{drawing(1371600, 685800)}</w:r>'
+        '<w:r><w:t xml:space="preserve">⇒</w:t></w:r></w:p>'
+        + math_paragraph(run("x"))
+    )
+    _, fit = fit_docx(package(body), lines=None, font_points=0, fit_images=False)
+    assert fit.steps_joined == 0
+
+
+def test_joining_can_be_turned_off():
+    body = connective_paragraph("⇒") + math_paragraph(run("x"))
+    data, fit = fit_docx(package(body), lines=None, font_points=0, join_steps=False)
+    assert fit.steps_joined == 0
+    assert read(data) == document(body)
+
+
+def test_a_joined_equation_gets_the_operand_its_new_leading_relation_needs():
+    """The join runs first precisely so this falls out of `_fill_math_gaps`."""
+    body = connective_paragraph("⇒") + math_paragraph(run("x"), run("="), run("y"))
+    data, fit = fit_docx(package(body), lines=None, font_points=0)
+    assert fit.math_gaps_filled == 1
+    assert f"<m:oMath>{OPERAND}<m:r><m:rPr><m:nor/>" in read(data)

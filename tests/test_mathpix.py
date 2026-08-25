@@ -143,6 +143,7 @@ def settings(**overrides):
         "fit_docx": True,
         "fit_max_image_fraction": 1.0,
         "fit_wrap_indent": 360,
+        "fit_font_points": 10.0,
     }
     values.update(overrides)
     return SimpleNamespace(**values)

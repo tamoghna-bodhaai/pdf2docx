@@ -62,7 +62,7 @@ percentages, and long top-level relations in flat equations are given break
 points; equations Mathpix encodes as OMML matrices are left alone, because a
 matrix is an unbreakable box in Word and a break inside one would do nothing.
 
-Two further repairs have nothing to do with the measure. Every maths argument
+Three further repairs have nothing to do with the measure. Every maths argument
 Mathpix leaves without a left-hand side — an empty `<m:e/>`, the unused half of a
 one-sided script, a matrix row of padding, or a row opening on `=` because its
 left side is on the row above — is given a zero-width space. Word supplies that
@@ -71,6 +71,33 @@ placeholder instead, which is why a chapter of worked examples reads with an
 inverted question mark on every other line. On a 41-page textbook that removes
 225 of 269 such marks; the rest are LibreOffice's own rendering of `|…|`
 delimiters and are correct in Word either way.
+
+The document is also **set at one stated size** — 10pt by default, headings
+included, which keep their bold and lose their 21pt of direct formatting. Mathpix
+names a size in `docDefaults`, names none at all on its 20 000 maths runs, and
+hard-codes 21pt on its headings because `styles.xml` defines no heading style to
+carry it. Every one of those is restated, and every maths run and control
+property is given the size explicitly, so nothing is left to be inherited.
+
+In Word that is the whole repair: text, headings and maths all come out at one
+size. **LibreOffice is not reachable this way.** Measured against 24.2, its OMML
+importer builds each `m:oMath` into a Formula object and draws it at the Math
+module's own fixed base size — 12pt — ignoring `w:sz` on the maths run, on the
+paragraph mark and in `docDefaults` alike; no .docx states that size. So in
+LibreOffice the only lever is the size the rest of the document is set at, and
+`PDF2DOCX_FIT_FONT_POINTS=12` is what makes text and maths agree there.
+`PDF2DOCX_FIT_FONT_POINTS=0` keeps whatever sizes Mathpix wrote.
+
+And a **worked step's connective is joined to its equation**. Mathpix writes a
+lone `⇒`, `∴` or `or` as a paragraph of its own above the display equation it
+introduces — 148 paragraphs of one 41-page textbook consist of nothing else —
+and then writes the same connective *inside* the equation elsewhere in the same
+file. The second is what a derivation looks like on paper, so the connective is
+moved into the equation, upright and followed by the gap the source's narrow
+left column stood in. A paragraph is only ever taken when it holds the
+connective and nothing else, and only ever into a paragraph that is one display
+equation and nothing else; anything carrying a figure, a bookmark or a second
+line of maths is left as Mathpix wrote it.
 
 ### Matching the source page's columns
 

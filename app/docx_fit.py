@@ -38,12 +38,27 @@ find themselves in. Long equations are given the break points Word is already
 configured to use. Nothing here invents a layout; it re-expresses Mathpix's own
 one in units that survive being resized.
 
-Two further repairs are not about the measure at all. Every empty maths
+Three further repairs are not about the measure at all. Every empty maths
 argument Mathpix writes — the alignment cells of a matrix, the missing half of a
 one-sided script — is filled with a zero-width space, because Word draws nothing
 for an empty ``<m:e/>`` while LibreOffice draws its missing-operand placeholder
-and the same file reads with an inverted question mark in every matrix row. And
-when the document is asked for in columns, the section is restated as the page
+and the same file reads with an inverted question mark in every matrix row. Every
+type size the document states is restated as one size, because Mathpix names a
+size in ``docDefaults``, names none at all on its 20 000 maths runs, and then
+hard-codes 21pt on 124 heading runs since ``styles.xml`` defines no heading
+style to carry it. Stated everywhere, the size stops being an inheritance a
+reader has to resolve — which is the whole repair in Word, where text, headings
+and maths then come out at one size. It is not the repair in LibreOffice, whose
+importer builds each equation into a Formula object and draws it at the Math
+module's own fixed base size, ignoring ``w:sz`` on the run, on the paragraph
+mark and in ``docDefaults`` alike; no .docx states that size, so there the only
+lever is which size the rest of the document is set at. And a worked step's
+connective — a lone ``⇒`` or ``∴`` sitting on its own line above the equation it
+introduces — is joined to that equation, because Mathpix groups it as a line of
+its own in some places and inside the equation in others, and the second of
+those is what a derivation looks like.
+
+And when the document is asked for in columns, the section is restated as the page
 the source was laid out on, read out of ``lines.json``: at the source book's own
 column width essentially nothing overflows, because nothing overflowed in the
 book. That is the difference between a document narrowed by hand and one laid
@@ -70,6 +85,7 @@ POINTS_PER_INCH = 72.0
 DOCUMENT = "word/document.xml"
 DOCUMENT_RELS = "word/_rels/document.xml.rels"
 SETTINGS = "word/settings.xml"
+STYLES = "word/styles.xml"
 
 # A US Letter page with Mathpix's own margins, used only when a document has no
 # readable section properties. Better than refusing to fit at all, and the value
@@ -110,6 +126,20 @@ MATH_LEADING_OPERATORS = (
     "±", "∓", "+", "−", "-", "×", "÷", "·", "∝",
 )
 ZERO_WIDTH_SPACE = "\u200b"
+
+# The tokens a worked step is introduced by. Mathpix sometimes writes one of
+# these as a paragraph of its own, immediately above the display equation it
+# introduces, and sometimes writes it inside the equation — ``\therefore \quad
+# CA = a`` lands as one ``m:oMathPara`` in the same file. The second is what a
+# derivation looks like on paper, so the first is joined to it. Kept short and
+# closed deliberately: anything longer is a sentence, and a sentence introducing
+# an equation is prose that belongs on its own line.
+STEP_CONNECTIVES = (
+    "⇒", "⇔", "⟹", "∴", "∵", "→", "or", "and", "i.e.", "i.e.,",
+)
+# The longest of those, so a paragraph is measured before it is read.
+MAX_CONNECTIVE_CHARS = max(len(token) for token in STEP_CONNECTIVES)
+
 
 # The runs a matrix cell opens with, if it opens with runs at all. `m:r` cannot
 # contain another, so the non-greedy close is exact — and anchoring at the start
@@ -155,6 +185,19 @@ TCPR_ORDER = (
     "w:vAlign", "w:hideMark",
 )
 
+# `w:rPr` has the same fixed sequence, and it is the one an inserted size has to
+# respect: `w:sz` sits after `w:position` and before `w:highlight`, and `w:szCs`
+# immediately follows `w:sz`, which is why the pair is inserted as one blob.
+RPR_ORDER = (
+    "w:rStyle", "w:rFonts", "w:b", "w:bCs", "w:i", "w:iCs", "w:caps",
+    "w:smallCaps", "w:strike", "w:dstrike", "w:outline", "w:shadow", "w:emboss",
+    "w:imprint", "w:noProof", "w:snapToGrid", "w:vanish", "w:webHidden",
+    "w:color", "w:spacing", "w:w", "w:kern", "w:position", "w:sz", "w:szCs",
+    "w:highlight", "w:u", "w:effect", "w:bdr", "w:shd", "w:fitText",
+    "w:vertAlign", "w:rtl", "w:cs", "w:em", "w:lang", "w:eastAsianLayout",
+    "w:specVanish", "w:oMath",
+)
+
 SECTPR_ORDER = (
     "w:footnotePr", "w:endnotePr", "w:type", "w:pgSz", "w:pgMar", "w:paperSrc",
     "w:pgBorders", "w:lnNumType", "w:pgNumType", "w:cols", "w:formProt",
@@ -181,6 +224,11 @@ class Fit:
     cells_fitted: int = 0
     equations_broken: int = 0
     math_gaps_filled: int = 0
+    steps_joined: int = 0
+    # Every size the document states, plus every maths run given one.
+    sizes_restated: int = 0
+    # The size it was all stated at; 0 when sizing was turned off.
+    font_points: float = 0.0
     render_dpi: float = 0.0
     measure_inches: float = 0.0
     # 0 when the section was left as Mathpix wrote it; otherwise the column
@@ -199,6 +247,9 @@ class Fit:
             "cells_fitted": self.cells_fitted,
             "equations_broken": self.equations_broken,
             "math_gaps_filled": self.math_gaps_filled,
+            "steps_joined": self.steps_joined,
+            "sizes_restated": self.sizes_restated,
+            "font_points": self.font_points or None,
             "render_dpi": round(self.render_dpi, 1) or None,
             "measure_inches": round(self.measure_inches, 2) or None,
             "columns": self.columns or None,
@@ -826,6 +877,322 @@ def _set_default_justification(settings: bytes, value: str = "left") -> bytes:
     return settings[:offset] + markup + settings[offset:]
 
 
+# --- one stated type size, everywhere ------------------------------------------
+
+SIZE_RE = re.compile(rb"<w:(sz|szCs)\b((?:[^>\"']|\"[^\"]*\"|'[^']*')*?)/>")
+# A `w:sz` with nothing following it is a size for Latin text and no size for
+# complex-script text, which then keeps whatever it inherited. The two travel
+# together or the repair is half done.
+UNPAIRED_SIZE_RE = re.compile(rb"(<w:sz\b[^>]*/>)(?!\s*<w:szCs\b)")
+
+
+def _size_markup(half_points: int) -> bytes:
+    """The pair, as one blob: `w:szCs` immediately follows `w:sz` in the schema."""
+    return (
+        f'<w:sz w:val="{half_points}"/><w:szCs w:val="{half_points}"/>'
+    ).encode()
+
+
+def _restate_sizes(part: bytes, half_points: int) -> tuple[bytes, int]:
+    """Rewrite every type size a part states to the one size the document is set in.
+
+    This is not a shrink. The document already resolves to one size for its body
+    text; what it does not do is *say* so anywhere a reader might look, and the
+    124 heading runs that do say something say 21pt as direct formatting because
+    ``styles.xml`` defines no heading styles to say it for them. Restating both
+    the defaults and those runs leaves a document whose size is a fact rather
+    than an inheritance, and headings keep their ``w:b`` to remain headings.
+    """
+    changed = 0
+
+    def restate(match: "re.Match[bytes]") -> bytes:
+        nonlocal changed
+        if _int_attr(match.group(2), "w:val") == half_points:
+            return match.group(0)
+        changed += 1
+        return f'<w:{match.group(1).decode()} w:val="{half_points}"/>'.encode()
+
+    part = SIZE_RE.sub(restate, part)
+    part, paired = UNPAIRED_SIZE_RE.subn(
+        rb"\1" + f'<w:szCs w:val="{half_points}"/>'.encode(), part
+    )
+    return part, changed + paired
+
+
+def _rpr_size_edit(offset: int, body: bytes, half_points: int) -> tuple[int, int, bytes]:
+    """Where a size goes inside a `w:rPr` that has none, and what goes there."""
+    return (
+        _insert_offset(offset, body, "w:sz", RPR_ORDER),
+        0,
+        _size_markup(half_points),
+    )
+
+
+def _size_math_runs(document: bytes, half_points: int) -> tuple[bytes, int]:
+    """State the size on every maths run, which is the size Word already uses.
+
+    Not one of the document's ``<m:r>`` carries a ``w:sz``. Word reads the size
+    off ``docDefaults`` and draws the equation at the size of the text around it.
+    LibreOffice imports each ``m:oMath`` as an embedded Formula object, which has
+    no ``docDefaults`` to read, finds the runs silent, and falls back to the Math
+    module's own base size — so the equation sits in a visibly larger box than
+    the sentence that introduces it.
+
+    Saying the size on the run itself is what makes Word draw the maths at the
+    size the sentence around it is set in rather than at whatever ``docDefaults``
+    happened to say. LibreOffice is not reachable this way: measured against
+    24.2, its importer ignores ``w:sz`` on the maths run, on the paragraph mark
+    and in ``docDefaults``, and draws every formula at the Math module's fixed
+    base size — so there the document's own size is the only thing that can be
+    made to agree with it. ``m:ctrlPr`` — the properties of a fraction bar, a
+    bracket, a radical — is sized too, because it is what those glyphs are drawn
+    at.
+
+    The insertion is ordered, not prepended: ``CT_R`` sequences ``m:rPr`` before
+    ``w:rPr`` before ``m:t``, and a ``w:rPr`` written ahead of the ``m:rPr`` that
+    is already there makes the part invalid and Word refuses to open it.
+    """
+    edits: list[tuple[int, int, bytes]] = []
+    stack: list[tuple[str, int]] = []
+
+    for match in TAG_RE.finditer(document):
+        name = match.group(2).decode("ascii", "replace")
+        # As in `_fill_math_gaps`: only the maths vocabulary is tracked, so the
+        # `w:` properties nested inside it cannot unbalance the stack.
+        if not name.startswith("m:"):
+            continue
+
+        if match.group(4) == b"/":
+            if name in ("m:r", "m:ctrlPr"):
+                edits.append((
+                    match.start(),
+                    match.end() - match.start(),
+                    f"<{name}>".encode()
+                    + b"<w:rPr>" + _size_markup(half_points) + b"</w:rPr>"
+                    + f"</{name}>".encode(),
+                ))
+            continue
+
+        if match.group(1) == b"/":
+            if not stack or stack[-1][0] != name:
+                continue
+            _, opened = stack.pop()
+            if name in ("m:r", "m:ctrlPr"):
+                edits += _math_run_size_edits(
+                    opened, document[opened:match.start()], half_points
+                )
+            continue
+
+        stack.append((name, match.end()))
+
+    return _apply(document, edits), len(edits)
+
+
+def _math_run_size_edits(
+    offset: int, body: bytes, half_points: int
+) -> list[tuple[int, int, bytes]]:
+    """Size one `m:r` or `m:ctrlPr`, whatever properties it already carries.
+
+    Neither element nests inside itself and neither holds anything that could
+    contain a second ``w:rPr``, so the first one found in the body is the run's
+    own.
+    """
+    found = re.search(rb"<w:rPr\b[^>]*(/)?>", body)
+    if found is not None:
+        if found.group(1) == b"/":
+            # `<w:rPr/>` states nothing and cannot be inserted into.
+            return [(
+                offset + found.start(),
+                found.end() - found.start(),
+                b"<w:rPr>" + _size_markup(half_points) + b"</w:rPr>",
+            )]
+        closing = body.find(b"</w:rPr>", found.end())
+        if closing == -1:
+            return []
+        inner = body[found.end():closing]
+        if b"<w:sz" in inner:
+            return []
+        return [_rpr_size_edit(offset + found.end(), inner, half_points)]
+
+    # No properties at all: the whole element goes in, after any `m:rPr`.
+    at = 0
+    props = re.match(rb"<m:rPr\b[^>]*(/)?>", body)
+    if props is not None:
+        at = props.end()
+        if props.group(1) != b"/":
+            closing = body.find(b"</m:rPr>", props.end())
+            if closing == -1:
+                return []
+            at = closing + len(b"</m:rPr>")
+    return [(offset + at, 0, b"<w:rPr>" + _size_markup(half_points) + b"</w:rPr>")]
+
+
+# --- a step's connective, on the line of the equation it introduces -------------
+
+MATH_PARA_RE = re.compile(rb"<m:oMathPara\b[^>]*>.*?</m:oMathPara>", re.S)
+PARAGRAPH_RE = re.compile(rb"<w:p\b[^>]*?>.*?</w:p>|<w:p\b[^>]*?/>", re.S)
+SOFT_BREAK = b'<w:br w:type="textWrapping"/>'
+MATH_PARA_JC = b'<m:oMathParaPr><m:jc m:val="left"/></m:oMathParaPr>'
+
+
+def _paragraph_text(body: bytes) -> str:
+    found = re.findall(rb"<w:t[^>]*>(.*?)</w:t>", body, re.S)
+    return b"".join(found).decode("utf-8", "replace")
+
+
+def _is_connective(text: str) -> bool:
+    """Whether a fragment is one of the step tokens and nothing else.
+
+    Length is checked before membership so a paragraph of prose is rejected on
+    sight rather than compared against ten tokens.
+    """
+    stripped = text.strip()
+    return len(stripped) <= MAX_CONNECTIVE_CHARS and stripped in STEP_CONNECTIVES
+
+
+def _has_content(body: bytes) -> bool:
+    """Whether a fragment holds anything a reader would miss if it went."""
+    return b"<m:oMath" in body or b"<w:drawing" in body or b"<w:pict" in body
+
+
+def _lone_math_paragraph(body: bytes) -> re.Match[bytes] | None:
+    """The one display equation a paragraph consists of, if that is all it is."""
+    found = MATH_PARA_RE.search(body)
+    if found is None or MATH_PARA_RE.search(body, found.end()) is not None:
+        return None
+    rest = body[:found.start()] + body[found.end():]
+    if b"<w:t" in rest or b"<w:drawing" in rest or b"<m:oMath" in rest:
+        return None
+    return found
+
+
+def _math_para_jc_edits(offset: int, body: bytes) -> list[tuple[int, int, bytes]]:
+    """Say where one `m:oMathPara` sits, rather than leaving it to `m:defJc`."""
+    if b"<m:oMathParaPr" in body:
+        return []
+    opening = re.match(rb"<m:oMathPara\b[^>]*>", body)
+    if opening is None:
+        return []
+    return [(offset + opening.end(), 0, MATH_PARA_JC)]
+
+
+def _connective_markup(token: str) -> bytes:
+    """The connective, upright, and the gap the source's narrow column stood in.
+
+    ``m:nor`` is what keeps ``or`` from being set as the product of two
+    variables, and ``xml:space="preserve"`` is what keeps the gap: LibreOffice
+    trims unmarked whitespace out of a maths run, which is the same trap
+    ``MATH_OPERAND`` had to be fixed for.
+    """
+    text = token.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        '<m:r><m:rPr><m:nor/></m:rPr>'
+        f'<m:t xml:space="preserve">{text}&#32;&#32;</m:t></m:r>'
+    ).encode()
+
+
+def _shape_a(body: bytes) -> str | None:
+    """A whole paragraph that is nothing but a connective."""
+    if _has_content(body) or b"<w:bookmarkStart" in body:
+        return None
+    text = _paragraph_text(body)
+    return text.strip() if _is_connective(text) else None
+
+
+def _shape_b(body: bytes) -> tuple[int, str] | None:
+    """A connective hanging off the end of a text paragraph, after a soft break.
+
+    The break is the last one in the paragraph, and the run holding it must hold
+    only it — a run carrying text as well is a line of prose that happens to end
+    where the break does, and cutting it would take the prose with it.
+    """
+    at = body.rfind(SOFT_BREAK)
+    if at == -1:
+        return None
+    start = body.rfind(b"<w:r>", 0, at)
+    spaced = body.rfind(b"<w:r ", 0, at)
+    start = max(start, spaced)
+    if start == -1:
+        return None
+    closing = body.find(b"</w:r>", at)
+    if closing == -1 or b"<w:t" in body[start:closing]:
+        return None
+    tail = body[start:]
+    if _has_content(tail):
+        return None
+    text = _paragraph_text(tail)
+    return (start, text.strip()) if _is_connective(text) else None
+
+
+def _join_steps(document: bytes) -> tuple[bytes, int]:
+    """Put a worked step's connective on the line of the equation it introduces.
+
+    Mathpix writes ``⇒``, ``∴`` or ``or`` as a line of its own above the display
+    equation it leads into — 148 paragraphs of one delivered document consist of
+    nothing else — and then writes the same connective *inside* the equation
+    elsewhere in the same file. The second is what a derivation looks like set on
+    paper, and it is the one this leaves behind.
+
+    The connective is only ever taken from a paragraph that holds nothing but
+    it, and is only ever moved into a paragraph that is one display equation and
+    nothing else. Anything with a figure, a bookmark or a second line of maths in
+    it is left exactly as Mathpix wrote it: joining is a repair to a line break,
+    not licence to eat a paragraph.
+
+    This must run before ``_fill_math_gaps``. An equation that now opens on a
+    relation is precisely the case ``_needs_an_operand`` detects, so the operand
+    that stops LibreOffice drawing its placeholder is supplied for free.
+    """
+    paragraphs = [(m.start(), m.end(), m.group(0)) for m in PARAGRAPH_RE.finditer(document)]
+    edits: list[tuple[int, int, bytes]] = []
+    joined = 0
+
+    for index in range(1, len(paragraphs)):
+        start, _, body = paragraphs[index]
+        math = _lone_math_paragraph(body)
+        if math is None:
+            continue
+
+        previous_start, previous_end, previous = paragraphs[index - 1]
+        token = _shape_a(previous)
+        if token is not None:
+            cut = (previous_start, previous_end - previous_start, b"")
+        else:
+            tail = _shape_b(previous)
+            if tail is None:
+                continue
+            at, token = tail
+            closing = previous.rfind(b"</w:p>")
+            cut = (previous_start + at, closing - at, b"")
+
+        # `<m:oMathPara>` and `<m:oMath>` both open with `<m:oMath`, so the
+        # equation's own opening tag is the second match, not the first.
+        inner = re.search(rb"<m:oMath\b(?![A-Za-z])[^>]*>", math.group(0))
+        if inner is None:
+            continue
+        edits.append(cut)
+        edits += _math_para_jc_edits(start + math.start(), math.group(0))
+        edits.append((start + math.start() + inner.end(), 0, _connective_markup(token)))
+        joined += 1
+
+    return _apply(document, edits), joined
+
+
+def _left_align_math(document: bytes) -> tuple[bytes, int]:
+    """Say where every display equation sits, one paragraph at a time.
+
+    ``_set_default_justification`` already writes ``m:defJc="left"`` into
+    ``settings.xml``, and the delivered file carries it — yet the equations still
+    render centred, so at least one reader is not reading the document default.
+    An ``m:jc`` on the paragraph itself is not open to that: the default stays
+    where it is, and stops being the only instruction in the file.
+    """
+    edits: list[tuple[int, int, bytes]] = []
+    for found in MATH_PARA_RE.finditer(document):
+        edits += _math_para_jc_edits(found.start(), found.group(0))
+    return _apply(document, edits), len(edits)
+
+
 @dataclass
 class _Cell:
     """One table cell's share of the measure, while the walk is inside it.
@@ -1377,12 +1744,15 @@ def fit_docx(
     fit_equations: bool = True,
     multi_column: bool = False,
     fill_math_gaps: bool = True,
+    font_points: float = 10.0,
+    join_steps: bool = True,
 ) -> tuple[bytes, Fit]:
     """Return Mathpix's document restated in units that survive being resized.
 
     Every part of the original archive is copied through; only
-    ``word/document.xml`` and ``word/settings.xml`` are rewritten, and only in
-    the specific places described at the top of this module. A file that cannot
+    ``word/document.xml``, ``word/settings.xml`` and ``word/styles.xml`` are
+    rewritten, and only in the specific places described at the top of this
+    module. A file that cannot
     be read as a .docx is returned exactly as it arrived with the reason
     recorded, because a job that has a slightly wrong document is in better
     shape than one that has none.
@@ -1396,6 +1766,11 @@ def fit_docx(
     wrong at any measure are repaired. The section is rewritten only when the
     source geometry could actually be read; otherwise the document is left
     single-column rather than laid out on a guess.
+
+    ``font_points`` is the one size the whole document is stated at, headings
+    included; 0 leaves every size exactly as Mathpix wrote it. ``join_steps``
+    puts a lone ``⇒`` on the line of the equation it introduces. Neither is
+    gated on ``multi_column``: both are wrong at any measure.
     """
     try:
         with zipfile.ZipFile(BytesIO(data)) as archive:
@@ -1436,13 +1811,33 @@ def fit_docx(
 
     document = _apply(document, edits)
 
-    # Both of these are whole-document rewrites rather than positioned edits, so
-    # they run after the offsets collected above have been spent.
+    # Everything from here is a whole-document rewrite rather than a positioned
+    # edit, so it runs after the offsets collected above have been spent — and
+    # in this order. Joining comes before the gap filling, so an equation that
+    # now opens on a relation picks up its zero-width operand; sizing comes
+    # last, so the runs those two passes inserted are sized like the rest.
     if layout is not None:
         document, _ = _left_align(document)
+    joined = 0
+    if join_steps:
+        document, joined = _join_steps(document)
+    if layout is not None:
+        document, _ = _left_align_math(document)
     gaps = 0
     if fill_math_gaps:
         document, gaps = _fill_math_gaps(document)
+
+    half_points = int(round(font_points * 2))
+    restated = 0
+    styles_part = parts.get(STYLES)
+    styled = styles_part
+    if half_points > 0:
+        document, restated = _restate_sizes(document, half_points)
+        document, sized = _size_math_runs(document, half_points)
+        restated += sized
+        if styled is not None:
+            styled, in_styles = _restate_sizes(styled, half_points)
+            restated += in_styles
 
     settings_part = parts.get(SETTINGS)
     updated = settings_part
@@ -1455,7 +1850,7 @@ def fit_docx(
     columns = layout.columns if layout is not None else 0
     page_inches = (layout.page_width, layout.page_height) if layout is not None else None
 
-    if document == original and updated == settings_part:
+    if document == original and updated == settings_part and styled == styles_part:
         return data, Fit(
             render_dpi=dpi,
             measure_inches=measure / TWIPS_PER_INCH,
@@ -1467,6 +1862,8 @@ def fit_docx(
     parts[DOCUMENT] = document
     if updated is not None:
         parts[SETTINGS] = updated
+    if styled is not None:
+        parts[STYLES] = styled
 
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as out:
@@ -1487,6 +1884,9 @@ def fit_docx(
         cells_fitted=walk.cells_fitted,
         equations_broken=broken,
         math_gaps_filled=gaps,
+        steps_joined=joined,
+        sizes_restated=restated,
+        font_points=font_points if half_points > 0 else 0.0,
         render_dpi=dpi,
         measure_inches=measure / TWIPS_PER_INCH,
         columns=columns,
