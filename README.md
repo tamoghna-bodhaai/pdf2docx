@@ -110,6 +110,16 @@ actually laid out on — size, margins, column count and gutter, all read out of
 measure is read back out of the section rather than passed around. Display
 equations and paragraphs are left-aligned so the narrower column is used.
 
+The one number in that geometry that is chosen rather than measured is the side
+margin, which every section is given at half an inch — with or without columns,
+and over Mathpix's own margins as readily as over the source page's. A scanned
+book's left and right margins are a binding allowance, and reproducing them on a
+screen spends measure on white space that the figures and equations overflowing
+the column would rather have; on the same textbook it buys each column back a
+quarter of an inch, and one equation that LibreOffice had been clipping now
+renders whole. It is set before the measure is read, so everything else fits to
+it. `PDF2DOCX_FIT_SIDE_MARGIN=0` keeps whatever margins the document states.
+
 At the source's own column width essentially nothing overflows, because nothing
 overflowed in the book: on the same textbook, 53 of 53 figures fit a column and 2
 of 559 equations exceed it. Wide tables are fitted *to* the column rather than

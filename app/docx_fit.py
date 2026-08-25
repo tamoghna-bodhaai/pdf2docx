@@ -64,6 +64,13 @@ column width essentially nothing overflows, because nothing overflowed in the
 book. That is the difference between a document narrowed by hand and one laid
 out where its content already fitted.
 
+The one number in that geometry that is chosen rather than measured is the side
+margin, which every section is given at half an inch. A scanned book's own left
+and right margins are a binding allowance, and reproducing them on a screen
+spends an inch and a half of measure on white space that the figures and
+equations overflowing the column would rather have. It is set before the measure
+is read, so everything else in this module fits to it.
+
 Mathpix's file is never modified in place. ``mathpix/document.docx`` remains the
 bytes Mathpix returned, and the fitted document is written beside it, so any
 defect can still be attributed to whichever of the two produced it.
@@ -229,6 +236,8 @@ class Fit:
     sizes_restated: int = 0
     # The size it was all stated at; 0 when sizing was turned off.
     font_points: float = 0.0
+    # The side margin every section was given; 0 when they were left alone.
+    side_margin_inches: float = 0.0
     render_dpi: float = 0.0
     measure_inches: float = 0.0
     # 0 when the section was left as Mathpix wrote it; otherwise the column
@@ -250,6 +259,7 @@ class Fit:
             "steps_joined": self.steps_joined,
             "sizes_restated": self.sizes_restated,
             "font_points": self.font_points or None,
+            "side_margin_inches": round(self.side_margin_inches, 2) or None,
             "render_dpi": round(self.render_dpi, 1) or None,
             "measure_inches": round(self.measure_inches, 2) or None,
             "columns": self.columns or None,
@@ -739,6 +749,72 @@ def _set_section(document: bytes, layout: SourceLayout) -> bytes:
     for found in re.finditer(rb"<w:sectPr[ >].*?</w:sectPr>", document, re.S):
         edits += _set_one_section(document, found.start(), found.end(), layout)
     return _apply(document, edits)
+
+
+def _set_margin_attr(markup: bytes, name: bytes, twips: int) -> bytes:
+    """Restate one attribute of a ``w:pgMar``, adding it if it is not there."""
+    pattern = re.compile(rb"\b" + re.escape(name) + rb'="[^"]*"')
+    stated = f'{name.decode()}="{twips}"'.encode()
+    restated, found = pattern.subn(stated, markup)
+    if found:
+        return restated
+    return markup[: -len(b"/>")] + b" " + stated + b"/>"
+
+
+def _set_side_margins(document: bytes, inches: float) -> tuple[bytes, int]:
+    """Give every section the same left and right margin.
+
+    The side margins are the one part of the geometry that is a decision rather
+    than a measurement. Everything else this module writes is recovered from the
+    source — the page it was printed on, the columns it was set in, the size its
+    figures occupied — but how much white space to leave beside the text is a
+    property of the document being made, not of the book it came from, and a
+    scanned page's own margins are usually the printer's binding allowance
+    rather than anything worth reproducing on screen.
+
+    So this runs last of the geometry passes and has the final word, over
+    Mathpix's margins and over the ones ``_set_section`` derived alike. It runs
+    before the measure is read, so the width it leaves is the width every image,
+    table and equation is then fitted to.
+
+    The gutter goes to zero with it. Word adds the gutter to the binding edge on
+    top of the margin, so a section that states one does not have the margin it
+    was just given.
+    """
+    twips = _twips(inches)
+    edits: list[tuple[int, int, bytes]] = []
+    changed = 0
+    for section in re.finditer(rb"<w:sectPr[ >].*?</w:sectPr>", document, re.S):
+        body = section.group(0)
+        inner_start = body.find(b">") + 1
+        inner_end = body.rfind(b"</w:sectPr>")
+        if inner_start <= 0 or inner_end < inner_start:
+            continue
+        inner = body[inner_start:inner_end]
+        base = section.start() + inner_start
+
+        margin = re.search(rb"<w:pgMar\b[^>]*?/>", inner)
+        if margin is None:
+            # A section stating no margins at all is read at the importer's own
+            # default, which is not this one. Top and bottom are left at the
+            # inch that default already is, because only the sides were asked
+            # for.
+            markup = (
+                f'<w:pgMar w:top="{TWIPS_PER_INCH}" w:right="{twips}"'
+                f' w:bottom="{TWIPS_PER_INCH}" w:left="{twips}"'
+                f' w:header="720" w:footer="720" w:gutter="0"/>'
+            ).encode()
+            edits.append((_insert_offset(base, inner, "w:pgMar", SECTPR_ORDER), 0, markup))
+            changed += 1
+            continue
+
+        restated = margin.group(0)
+        for name, value in ((b"w:left", twips), (b"w:right", twips), (b"w:gutter", 0)):
+            restated = _set_margin_attr(restated, name, value)
+        if restated != margin.group(0):
+            edits.append((base + margin.start(), len(margin.group(0)), restated))
+            changed += 1
+    return _apply(document, edits), changed
 
 
 # `xml:space="preserve"` is not decoration. Without it LibreOffice's importer
@@ -1746,6 +1822,7 @@ def fit_docx(
     fill_math_gaps: bool = True,
     font_points: float = 10.0,
     join_steps: bool = True,
+    side_margin_inches: float = 0.5,
 ) -> tuple[bytes, Fit]:
     """Return Mathpix's document restated in units that survive being resized.
 
@@ -1771,6 +1848,11 @@ def fit_docx(
     included; 0 leaves every size exactly as Mathpix wrote it. ``join_steps``
     puts a lone ``⇒`` on the line of the equation it introduces. Neither is
     gated on ``multi_column``: both are wrong at any measure.
+
+    ``side_margin_inches`` is the left and right margin every section is given,
+    overriding both Mathpix's margins and the ones read off the source page; 0
+    leaves whatever the document already states. It is set before the measure is
+    read, so the rest of the fitting follows it rather than working around it.
     """
     try:
         with zipfile.ZipFile(BytesIO(data)) as archive:
@@ -1788,6 +1870,10 @@ def fit_docx(
     layout = source_layout(lines, page_sizes or []) if multi_column else None
     if layout is not None:
         document = _set_section(document, layout)
+
+    margined = 0
+    if side_margin_inches > 0:
+        document, margined = _set_side_margins(document, side_margin_inches)
 
     measure = measure_twips(document)
     dpi = render_dpi(lines, page_sizes or []) if fit_images else 0.0
@@ -1887,6 +1973,7 @@ def fit_docx(
         steps_joined=joined,
         sizes_restated=restated,
         font_points=font_points if half_points > 0 else 0.0,
+        side_margin_inches=side_margin_inches if margined else 0.0,
         render_dpi=dpi,
         measure_inches=measure / TWIPS_PER_INCH,
         columns=columns,

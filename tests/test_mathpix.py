@@ -144,6 +144,7 @@ def settings(**overrides):
         "fit_max_image_fraction": 1.0,
         "fit_wrap_indent": 360,
         "fit_font_points": 10.0,
+        "fit_side_margin_inches": 0.5,
     }
     values.update(overrides)
     return SimpleNamespace(**values)

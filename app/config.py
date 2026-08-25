@@ -145,6 +145,12 @@ class Settings:
     # the text beside them. Stating one size everywhere leaves no reader
     # anything to guess. 0 keeps whatever sizes Mathpix wrote.
     fit_font_points: float = _float("PDF2DOCX_FIT_FONT_POINTS", 10.0)
+    # The left and right margin every section of the exported document is given.
+    # Mathpix reproduces the source page's own margins, which on a scanned book
+    # are a binding allowance rather than a reading one, and half an inch buys
+    # back an inch and a half of measure for the figures and equations that were
+    # overflowing. 0 keeps whatever margins the document already states.
+    fit_side_margin_inches: float = _float("PDF2DOCX_FIT_SIDE_MARGIN", 0.5)
 
     # Source-page rendering, for the side-by-side viewer. `dpi` is capped by
     # `max_edge` so a poster-sized page cannot ask for an enormous PNG.

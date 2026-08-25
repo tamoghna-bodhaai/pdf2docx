@@ -687,8 +687,11 @@ def test_a_re_fit_rewrites_the_delivered_document_and_says_what_it_did(
 
     with zipfile.ZipFile(directory / "document.docx") as archive:
         xml = archive.read("word/document.xml").decode()
-    # The two-column section's measure, not the six inches the grid arrived at.
-    assert '<w:gridCol w:w="4140"/>' in xml
+    # The two-column section's measure at the half-inch margins the export is
+    # given — (12240 - 720 - 720 - 360) / 2 — not the six inches the grid
+    # arrived at.
+    assert '<w:pgMar w:top="1440" w:right="720" w:bottom="1440" w:left="720"' in xml
+    assert '<w:gridCol w:w="5220"/>' in xml
     assert '<w:tblLayout w:type="fixed"/>' in xml
 
     stored = json.loads((directory / MATHPIX_RAW_DIR / "metadata.json").read_text())

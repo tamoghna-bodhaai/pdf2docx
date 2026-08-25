@@ -245,7 +245,8 @@ def test_an_image_is_never_left_wider_than_the_measure():
     # A genuinely huge crop: 1800px at 150 DPI is 12in, and the measure is 6.
     body = drawing(int(18.75 * EMU_PER_INCH), int(9.375 * EMU_PER_INCH))
     data, fit = fit_docx(
-        package(body, {"image1.png": png(1800, 900)}), page_sizes=LETTER, lines=LINES_150
+        package(body, {"image1.png": png(1800, 900)}), page_sizes=LETTER, lines=LINES_150,
+        side_margin_inches=0,
     )
     (cx, _), = extents(read(data))
     assert cx == 6 * EMU_PER_INCH
@@ -254,7 +255,9 @@ def test_an_image_is_never_left_wider_than_the_measure():
 
 def test_without_geometry_an_oversized_image_is_capped_rather_than_restored():
     body = drawing(int(9.0 * EMU_PER_INCH), int(4.5 * EMU_PER_INCH))
-    data, fit = fit_docx(package(body, {"image1.png": png(864, 432)}), lines=None)
+    data, fit = fit_docx(
+        package(body, {"image1.png": png(864, 432)}), lines=None, side_margin_inches=0
+    )
     (cx, cy), = extents(read(data))
     assert cx == 6 * EMU_PER_INCH
     assert cy == 3 * EMU_PER_INCH  # the aspect ratio survives the cap
@@ -265,7 +268,7 @@ def test_without_geometry_an_oversized_image_is_capped_rather_than_restored():
 def test_without_geometry_an_image_that_already_fits_is_left_exactly_alone():
     body = drawing(int(3.0 * EMU_PER_INCH), int(1.5 * EMU_PER_INCH))
     original = package(body, {"image1.png": png(288, 144)})
-    data, fit = fit_docx(original, lines=None)
+    data, fit = fit_docx(original, lines=None, side_margin_inches=0)
     assert extents(read(data)) == [(int(3.0 * EMU_PER_INCH), int(1.5 * EMU_PER_INCH))]
     assert fit.images_resized == 0
     assert data == original  # nothing to do means the file is not rewritten
@@ -282,7 +285,9 @@ def test_an_image_inside_a_table_is_fitted_to_its_cell_and_not_the_page():
         '<w:tblGrid><w:gridCol w:w="2160"/><w:gridCol w:w="6480"/></w:tblGrid>'
         "<w:tr>" + cell + "<w:tc><w:tcPr/><w:p/></w:tc></w:tr></w:tbl>"
     )
-    data, _ = fit_docx(package(body, {"image1.png": png(2000, 1000)}), lines=None)
+    data, _ = fit_docx(
+        package(body, {"image1.png": png(2000, 1000)}), lines=None, side_margin_inches=0
+    )
     (cx, _), = extents(read(data))
     # The first column is a quarter of a six inch measure.
     assert cx == pytest.approx(1.5 * EMU_PER_INCH, rel=1e-3)
@@ -524,7 +529,10 @@ def test_the_wrap_indent_is_relaxed_only_once_an_equation_can_actually_wrap():
 
 def test_an_untouched_document_leaves_the_wrap_indent_alone():
     body = equation(run("x"), run("="), run("y"))
-    data, _ = fit_docx(package(body, settings=MATH_SETTINGS), lines=None, font_points=0)
+    data, _ = fit_docx(
+        package(body, settings=MATH_SETTINGS), lines=None, font_points=0,
+        side_margin_inches=0,
+    )
     assert data == package(body, settings=MATH_SETTINGS)
 
 
@@ -587,6 +595,7 @@ def test_each_selector_can_be_turned_off_on_its_own():
         fit_tables=False,
         fit_equations=False,
         font_points=0,
+        side_margin_inches=0,
     )
     assert not fit.applied
     assert fit.reason == "nothing to fit"
@@ -734,6 +743,7 @@ def test_the_section_is_restated_as_the_source_page():
         page_sizes=COLUMN_SIZES,
         lines=column_lines(),
         multi_column=True,
+        side_margin_inches=0,
     )
     section = section_of(read(data))
     assert '<w:cols w:num="2"' in section
@@ -751,6 +761,7 @@ def test_everything_else_is_fitted_to_the_column_the_section_now_has():
         page_sizes=COLUMN_SIZES,
         lines=column_lines(),
         multi_column=True,
+        side_margin_inches=0,
     )
     assert measure_twips(read(data).encode()) == pytest.approx(5183, abs=2)
     assert fit.measure_inches == pytest.approx(3.6, abs=0.01)
@@ -758,7 +769,8 @@ def test_everything_else_is_fitted_to_the_column_the_section_now_has():
 
 def test_the_section_is_left_alone_unless_columns_were_asked_for():
     data, fit = fit_docx(
-        package(TABLE), page_sizes=COLUMN_SIZES, lines=column_lines()
+        package(TABLE), page_sizes=COLUMN_SIZES, lines=column_lines(),
+        side_margin_inches=0,
     )
     assert "<w:cols" not in read(data)
     assert fit.columns == 0
@@ -783,6 +795,7 @@ def test_an_image_is_fitted_to_the_column_rather_than_the_page():
         page_sizes=COLUMN_SIZES,
         lines=column_lines(),
         multi_column=True,
+        side_margin_inches=0,
     )
     width = extents(read(data))[0][0]
     assert width / EMU_PER_INCH == pytest.approx(3.6, abs=0.01)
@@ -818,7 +831,9 @@ def test_centring_is_left_as_it_is_in_a_single_column_document():
 
 def test_the_grid_is_brought_to_the_measure_instead_of_staying_absolute():
     """The regression: `tblLayout="fixed"` makes an absolute grid binding."""
-    data, fit = fit_docx(package(TABLE, section=COLUMN_SECTION), lines=None)
+    data, fit = fit_docx(
+        package(TABLE, section=COLUMN_SECTION), lines=None, side_margin_inches=0
+    )
     xml = read(data)
     total = sum(int(width) for width in re.findall(r'<w:gridCol w:w="(\d+)"', xml))
     # A two-column section of Mathpix's own page: (8640 - 360) / 2.
@@ -834,14 +849,16 @@ def test_the_columns_keep_the_proportions_mathpix_gave_them():
         "</w:tblGrid><w:tr><w:tc><w:tcPr/><w:p/></w:tc>"
         "<w:tc><w:tcPr/><w:p/></w:tc></w:tr></w:tbl>"
     )
-    xml = read(fit_docx(package(body, section=COLUMN_SECTION), lines=None)[0])
+    xml = read(
+        fit_docx(package(body, section=COLUMN_SECTION), lines=None, side_margin_inches=0)[0]
+    )
     widths = [int(width) for width in re.findall(r'<w:gridCol w:w="(\d+)"', xml)]
     assert sum(widths) == 4140
     assert widths[1] == 3 * widths[0]
 
 
 def test_a_grid_already_at_the_measure_is_not_rewritten():
-    xml = read(fit_docx(package(TABLE), lines=None)[0])
+    xml = read(fit_docx(package(TABLE), lines=None, side_margin_inches=0)[0])
     assert xml.count('<w:gridCol w:w="2160"/>') == 4
 
 
@@ -864,7 +881,9 @@ def test_a_nested_grid_is_brought_to_its_cell_rather_than_the_page():
         "</w:tblGrid><w:tr><w:tc><w:tcPr/>" + inner + "</w:tc>"
         "<w:tc><w:tcPr/><w:p/></w:tc></w:tr></w:tbl>"
     )
-    xml = read(fit_docx(package(body, section=COLUMN_SECTION), lines=None)[0])
+    xml = read(
+        fit_docx(package(body, section=COLUMN_SECTION), lines=None, side_margin_inches=0)[0]
+    )
     grids = re.findall(r"<w:tblGrid>(.*?)</w:tblGrid>", xml, re.S)
     totals = [
         sum(int(width) for width in re.findall(r'<w:gridCol w:w="(\d+)"', grid))
@@ -921,7 +940,7 @@ def test_a_cell_of_nothing_but_padding_counts_as_empty():
 
 def test_a_row_that_starts_with_a_value_is_left_alone():
     body = matrix((run("y"), run("2") + run("=") + run("x")))
-    data, fit = fit_docx(package(body), lines=None, font_points=0)
+    data, fit = fit_docx(package(body), lines=None, font_points=0, side_margin_inches=0)
     assert fit.math_gaps_filled == 0
     assert read(data) == document(body)
 
@@ -957,7 +976,10 @@ def test_running_over_an_already_repaired_document_changes_nothing_more():
 
 def test_filling_the_gaps_can_be_turned_off():
     body = matrix((run("y"), run("=") + run("2")))
-    _, fit = fit_docx(package(body), lines=None, fill_math_gaps=False, font_points=0)
+    _, fit = fit_docx(
+        package(body), lines=None, fill_math_gaps=False, font_points=0,
+        side_margin_inches=0,
+    )
     assert fit.math_gaps_filled == 0
     assert fit.reason == "nothing to fit"
 
@@ -1045,7 +1067,9 @@ def test_a_run_that_already_states_the_size_is_not_given_a_second_one():
 
 
 def test_turning_the_size_off_leaves_every_one_of_them_alone():
-    data, fit = fit_docx(package(HEADING, styles=STYLES), lines=None, font_points=0)
+    data, fit = fit_docx(
+        package(HEADING, styles=STYLES), lines=None, font_points=0, side_margin_inches=0
+    )
     assert data == package(HEADING, styles=STYLES)
     assert fit.font_points == 0.0
     assert fit.reason == "nothing to fit"
@@ -1150,7 +1174,7 @@ def test_a_connective_paragraph_that_also_carries_maths_is_left_alone():
 
 def test_a_connective_with_no_equation_under_it_stays_where_it_is():
     body = connective_paragraph("⇒") + "<w:p><w:r><w:t>Example 41</w:t></w:r></w:p>"
-    data, fit = fit_docx(package(body), lines=None, font_points=0)
+    data, fit = fit_docx(package(body), lines=None, font_points=0, side_margin_inches=0)
     assert fit.steps_joined == 0
     assert read(data) == document(body)
 
@@ -1176,7 +1200,10 @@ def test_a_paragraph_holding_a_figure_is_never_eaten_for_its_caption():
 
 def test_joining_can_be_turned_off():
     body = connective_paragraph("⇒") + math_paragraph(run("x"))
-    data, fit = fit_docx(package(body), lines=None, font_points=0, join_steps=False)
+    data, fit = fit_docx(
+        package(body), lines=None, font_points=0, join_steps=False,
+        side_margin_inches=0,
+    )
     assert fit.steps_joined == 0
     assert read(data) == document(body)
 
@@ -1187,3 +1214,105 @@ def test_a_joined_equation_gets_the_operand_its_new_leading_relation_needs():
     data, fit = fit_docx(package(body), lines=None, font_points=0)
     assert fit.math_gaps_filled == 1
     assert f"<m:oMath>{OPERAND}<m:r><m:rPr><m:nor/>" in read(data)
+
+
+# --- half an inch of margin, whatever the source had ---------------------------
+
+
+def test_every_section_is_given_the_same_half_inch_of_side_margin():
+    data, fit = fit_docx(package("<w:p/>"), lines=None)
+    section = section_of(read(data))
+    assert 'w:left="720"' in section and 'w:right="720"' in section
+    # Only the sides were asked for.
+    assert 'w:top="1440"' in section and 'w:bottom="1440"' in section
+    assert fit.side_margin_inches == 0.5
+
+
+def test_the_measure_follows_the_margin_it_was_just_given():
+    """Nothing is told the measure changed; it is read back out of the section."""
+    data, fit = fit_docx(package("<w:p/>"), lines=None)
+    assert measure_twips(read(data).encode()) == 12240 - 720 - 720
+    assert fit.measure_inches == pytest.approx(7.5, abs=0.01)
+
+
+def test_a_table_is_fitted_to_the_measure_the_wider_margin_leaves():
+    data, _ = fit_docx(package(TABLE), lines=None)
+    xml = read(data)
+    total = sum(int(width) for width in re.findall(r'<w:gridCol w:w="(\d+)"', xml))
+    assert total == 10800
+
+
+def test_the_margin_read_off_the_source_page_is_overridden_too():
+    """The page and the columns are the source's; the side margins are not."""
+    data, fit = fit_docx(
+        package("<w:p/>"),
+        page_sizes=COLUMN_SIZES,
+        lines=column_lines(),
+        multi_column=True,
+    )
+    section = section_of(read(data))
+    assert 'w:w="12960"' in section  # still the source's own page
+    assert '<w:cols w:num="2"' in section
+    assert 'w:left="720"' in section and 'w:right="720"' in section
+    assert "1210" not in section  # and not the 0.84in it was read at
+    assert fit.columns == 2
+
+
+def test_a_column_widens_by_what_the_margins_gave_back():
+    data, fit = fit_docx(
+        package("<w:p/>"),
+        page_sizes=COLUMN_SIZES,
+        lines=column_lines(),
+        multi_column=True,
+    )
+    # (12960 - 720 - 720 - 174) / 2, against the 5183 the source's own margins
+    # left. Half an inch of margin is a quarter inch of column.
+    assert measure_twips(read(data).encode()) == pytest.approx(5673, abs=2)
+
+
+def test_the_gutter_goes_with_it():
+    """Word adds the gutter to the binding edge on top of the margin."""
+    section = SECTION.replace('w:gutter="0"', 'w:gutter="720"')
+    data, _ = fit_docx(package("<w:p/>", section=section), lines=None)
+    assert 'w:gutter="0"' in section_of(read(data))
+
+
+def test_a_section_stating_no_margins_at_all_is_given_them():
+    section = '<w:sectPr><w:pgSz w:w="12240" w:h="15840"/></w:sectPr>'
+    data, fit = fit_docx(package("<w:p/>", section=section), lines=None)
+    restated = section_of(read(data))
+    assert 'w:left="720"' in restated and 'w:right="720"' in restated
+    # `w:pgMar` sits after `w:pgSz`, where the schema puts it.
+    assert restated.index("w:pgSz") < restated.index("w:pgMar")
+    assert fit.side_margin_inches == 0.5
+
+
+def test_every_section_gets_it_and_not_only_the_last():
+    body = (
+        '<w:p><w:pPr>' + SECTION + '</w:pPr></w:p>'
+    )
+    data, _ = fit_docx(package(body), lines=None)
+    xml = read(data)
+    assert xml.count('w:left="720"') == 2
+    assert 'w:left="1800"' not in xml
+
+
+def test_a_margin_already_at_the_measure_is_not_restated():
+    section = SECTION.replace('w:right="1800"', 'w:right="720"').replace(
+        'w:left="1800"', 'w:left="720"'
+    )
+    data, fit = fit_docx(package("<w:p/>", section=section), lines=None, font_points=0)
+    assert fit.side_margin_inches == 0.0
+    assert fit.reason == "nothing to fit"
+    assert data == package("<w:p/>", section=section)
+
+
+def test_turning_the_margin_off_leaves_the_ones_mathpix_wrote():
+    data, fit = fit_docx(package("<w:p/>"), lines=None, font_points=0, side_margin_inches=0)
+    assert fit.side_margin_inches == 0.0
+    assert data == package("<w:p/>")
+
+
+def test_the_margin_is_stated_in_the_record():
+    _, fit = fit_docx(package("<w:p/>"), lines=None)
+    assert fit.as_dict()["side_margin_inches"] == 0.5
