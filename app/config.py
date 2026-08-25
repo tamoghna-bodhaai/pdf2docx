@@ -152,6 +152,14 @@ class Settings:
     # overflowing. 0 keeps whatever margins the document already states.
     fit_side_margin_inches: float = _float("PDF2DOCX_FIT_SIDE_MARGIN", 0.5)
 
+    # The one typeface the exported document is set in, prose and equations
+    # alike. Mathpix writes Georgia for text and Cambria Math for maths, which
+    # leaves the same variable looking like two different letters depending on
+    # whether it is in a sentence or in a display equation. Cambria Math is a
+    # text face carrying an OpenType MATH table, so it can be both. Empty keeps
+    # whatever faces the document already names.
+    fit_font_name: str = os.environ.get("PDF2DOCX_FIT_FONT_NAME", "Cambria Math").strip()
+
     # Source-page rendering, for the side-by-side viewer. `dpi` is capped by
     # `max_edge` so a poster-sized page cannot ask for an enormous PNG.
     dpi: int = _int("PDF2DOCX_DPI", 180)

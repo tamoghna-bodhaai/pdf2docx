@@ -71,6 +71,22 @@ spends an inch and a half of measure on white space that the figures and
 equations overflowing the column would rather have. It is set before the measure
 is read, so everything else in this module fits to it.
 
+The typeface is chosen the same way. Mathpix sets the prose in Georgia and the
+2 400 runs inside the equations in Cambria Math, so a variable named in a
+sentence is not the same letter as the variable in the display equation two
+lines below it. Every face the document names is restated as one — Cambria Math,
+which is a text face with an OpenType MATH table rather than a symbol font, so
+the algebra keeps the metrics Word lays it out with and the prose is set in it
+too. It is restated in the runs, in ``docDefaults``, in the styles and in
+``numbering.xml``, where a list names the face it counts up in and nowhere else.
+The theme names go with the faces: Word reads ``w:hAnsiTheme`` instead of the
+attribute beside it, and Mathpix's package ships no theme part for it to
+resolve. Two things are left: a Symbol or Wingdings run, whose character is a
+glyph picked out of that font's own encoding rather than a letter wearing a
+face, and ``m:mathFont``, which selects the MATH table rather than a face. And
+as with the size, LibreOffice draws each equation with the Math module's own
+font whatever the file says; in Word the document is one face throughout.
+
 Mathpix's file is never modified in place. ``mathpix/document.docx`` remains the
 bytes Mathpix returned, and the fitted document is written beside it, so any
 defect can still be attributed to whichever of the two produced it.
@@ -93,6 +109,7 @@ DOCUMENT = "word/document.xml"
 DOCUMENT_RELS = "word/_rels/document.xml.rels"
 SETTINGS = "word/settings.xml"
 STYLES = "word/styles.xml"
+NUMBERING = "word/numbering.xml"
 
 # A US Letter page with Mathpix's own margins, used only when a document has no
 # readable section properties. Better than refusing to fit at all, and the value
@@ -236,6 +253,10 @@ class Fit:
     sizes_restated: int = 0
     # The size it was all stated at; 0 when sizing was turned off.
     font_points: float = 0.0
+    # Every typeface the document named, restated as one.
+    fonts_restated: int = 0
+    # The face it was all stated in; "" when the fonts were left alone.
+    font_name: str = ""
     # The side margin every section was given; 0 when they were left alone.
     side_margin_inches: float = 0.0
     render_dpi: float = 0.0
@@ -259,6 +280,8 @@ class Fit:
             "steps_joined": self.steps_joined,
             "sizes_restated": self.sizes_restated,
             "font_points": self.font_points or None,
+            "fonts_restated": self.fonts_restated,
+            "font_name": self.font_name or None,
             "side_margin_inches": round(self.side_margin_inches, 2) or None,
             "render_dpi": round(self.render_dpi, 1) or None,
             "measure_inches": round(self.measure_inches, 2) or None,
@@ -1103,6 +1126,90 @@ def _math_run_size_edits(
     return [(offset + at, 0, b"<w:rPr>" + _size_markup(half_points) + b"</w:rPr>")]
 
 
+# --- one typeface, stated everywhere the document names one --------------------
+
+# The four scripts a run can name a face for. Word picks between them per
+# character, so a document that states only `w:ascii` changes face at the first
+# character that is not one.
+FONT_ATTRS = ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs")
+# The whole element is replaced rather than its attributes rewritten, which is
+# what takes `w:asciiTheme` and its siblings out with it. A theme name is read
+# *instead of* the explicit attribute beside it, so a font restated around one is
+# overruled by whatever that theme resolves to — in a package with no theme part,
+# as Mathpix's is, the importer's own default rather than anything the document
+# asked for.
+RFONTS_RE = re.compile(rb"<w:rFonts\b[^>]*/>")
+# The faces that are not typefaces. A run naming one of these is holding a glyph
+# picked out of that font's own encoding — a list's bullet is U+F0B7 in Symbol
+# and nothing at all anywhere else — so restating it does not change the letter's
+# face, it changes the character.
+SYMBOL_FACES = ("symbol", "wingdings", "webdings", "marlett")
+
+
+def _xml_attr(value: str) -> str:
+    """A font name as it can appear inside a double-quoted attribute."""
+    return (
+        value.replace("&", "&amp;").replace("<", "&lt;")
+        .replace(">", "&gt;").replace('"', "&quot;")
+    )
+
+
+def _fonts_markup(name: str) -> bytes:
+    stated = " ".join(f'{attr}="{_xml_attr(name)}"' for attr in FONT_ATTRS)
+    return f"<w:rFonts {stated}/>".encode()
+
+
+def _restate_fonts(part: bytes, name: str) -> tuple[bytes, int]:
+    """Rewrite every typeface a part names to the one the document is set in.
+
+    Mathpix writes two: Georgia for text and Cambria Math for the 2 400 runs
+    inside the equations. That is a real difference in an exported document —
+    the prose and the algebra in it are set in different faces, and a variable
+    named in a sentence does not look like the same variable in the display
+    equation two lines below it. Stating one face everywhere makes them the same
+    letter.
+
+    The theme names go with it. `w:hAnsiTheme` and its siblings are read
+    *instead of* the explicit attribute beside them, so a run restated without
+    dropping them keeps the face the theme resolves to — and Mathpix's package
+    ships no theme part at all, which is why its `docDefaults` names a face for
+    ASCII and leaves everything else to a theme that is not there.
+
+    Only what the part already names is rewritten; a run that names nothing
+    inherits, and what it inherits is `docDefaults`, which this restates too.
+    A run naming a symbol face is left alone — see `SYMBOL_FACES`.
+    """
+    changed = 0
+    stated = _fonts_markup(name)
+
+    def restate(match: "re.Match[bytes]") -> bytes:
+        nonlocal changed
+        named = _attr(match.group(0), "w:ascii") or _attr(match.group(0), "w:hAnsi")
+        if (named or "").strip().lower().startswith(SYMBOL_FACES):
+            return match.group(0)
+        if match.group(0) == stated:
+            return match.group(0)
+        changed += 1
+        return stated
+
+    return RFONTS_RE.sub(restate, part), changed
+
+
+def _set_default_font(styles: bytes, name: str) -> tuple[bytes, int]:
+    """Restate the styles, and give `docDefaults` a face if it names none.
+
+    Everything a run does not say for itself is resolved here, so a `docDefaults`
+    with no `w:rFonts` leaves the whole document set in whatever the importer
+    defaults to.
+    """
+    styles, changed = _restate_fonts(styles, name)
+    found = re.search(rb"<w:rPrDefault>\s*<w:rPr\b[^>]*?>(.*?)</w:rPr>", styles, re.S)
+    if found is None or b"<w:rFonts" in found.group(1):
+        return styles, changed
+    at = _insert_offset(found.start(1), found.group(1), "w:rFonts", RPR_ORDER)
+    return styles[:at] + _fonts_markup(name) + styles[at:], changed + 1
+
+
 # --- a step's connective, on the line of the equation it introduces -------------
 
 MATH_PARA_RE = re.compile(rb"<m:oMathPara\b[^>]*>.*?</m:oMathPara>", re.S)
@@ -1821,6 +1928,7 @@ def fit_docx(
     multi_column: bool = False,
     fill_math_gaps: bool = True,
     font_points: float = 10.0,
+    font_name: str = "Cambria Math",
     join_steps: bool = True,
     side_margin_inches: float = 0.5,
 ) -> tuple[bytes, Fit]:
@@ -1845,9 +1953,11 @@ def fit_docx(
     single-column rather than laid out on a guess.
 
     ``font_points`` is the one size the whole document is stated at, headings
-    included; 0 leaves every size exactly as Mathpix wrote it. ``join_steps``
-    puts a lone ``⇒`` on the line of the equation it introduces. Neither is
-    gated on ``multi_column``: both are wrong at any measure.
+    included; 0 leaves every size exactly as Mathpix wrote it. ``font_name`` is
+    the one face it is stated in, prose and equations alike; "" leaves every
+    face Mathpix wrote. ``join_steps`` puts a lone ``⇒`` on the line of the
+    equation it introduces. None of the three is gated on ``multi_column``: all
+    are wrong at any measure.
 
     ``side_margin_inches`` is the left and right margin every section is given,
     overriding both Mathpix's margins and the ones read off the source page; 0
@@ -1925,6 +2035,26 @@ def fit_docx(
             styled, in_styles = _restate_sizes(styled, half_points)
             restated += in_styles
 
+    # The face goes on after the size and after every pass that inserted a run,
+    # for the same reason: what those passes wrote inherits it rather than
+    # having to be told. The maths font in `settings.xml` is left alone —
+    # `m:mathFont` selects the OpenType MATH table an equation is laid out
+    # with, not a face for its letters, and only a handful of fonts have one.
+    refonted = 0
+    numbering_part = parts.get(NUMBERING)
+    numbered = numbering_part
+    if font_name:
+        document, refonted = _restate_fonts(document, font_name)
+        if styled is not None:
+            styled, in_styles = _set_default_font(styled, font_name)
+            refonted += in_styles
+        # A numbered list draws its own marker, in a face named here and nowhere
+        # else, so a list left out of this counts up in Georgia beside a
+        # paragraph set in Cambria.
+        if numbered is not None:
+            numbered, in_numbering = _restate_fonts(numbered, font_name)
+            refonted += in_numbering
+
     settings_part = parts.get(SETTINGS)
     updated = settings_part
     if updated is not None:
@@ -1936,7 +2066,12 @@ def fit_docx(
     columns = layout.columns if layout is not None else 0
     page_inches = (layout.page_width, layout.page_height) if layout is not None else None
 
-    if document == original and updated == settings_part and styled == styles_part:
+    if (
+        document == original
+        and updated == settings_part
+        and styled == styles_part
+        and numbered == numbering_part
+    ):
         return data, Fit(
             render_dpi=dpi,
             measure_inches=measure / TWIPS_PER_INCH,
@@ -1950,6 +2085,8 @@ def fit_docx(
         parts[SETTINGS] = updated
     if styled is not None:
         parts[STYLES] = styled
+    if numbered is not None:
+        parts[NUMBERING] = numbered
 
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as out:
@@ -1973,6 +2110,8 @@ def fit_docx(
         steps_joined=joined,
         sizes_restated=restated,
         font_points=font_points if half_points > 0 else 0.0,
+        fonts_restated=refonted,
+        font_name=font_name if refonted else "",
         side_margin_inches=side_margin_inches if margined else 0.0,
         render_dpi=dpi,
         measure_inches=measure / TWIPS_PER_INCH,

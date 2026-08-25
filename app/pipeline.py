@@ -286,6 +286,7 @@ def _collect_mathpix_result(
                 wrap_indent_twips=settings.fit_wrap_indent,
                 font_points=settings.fit_font_points,
                 side_margin_inches=settings.fit_side_margin_inches,
+                font_name=settings.fit_font_name,
                 multi_column=multi_column,
             )
         else:
@@ -412,6 +413,7 @@ def refit_docx(work_dir: Path, *, multi_column: bool = False) -> docx_fit.Fit:
         wrap_indent_twips=settings.fit_wrap_indent,
         font_points=settings.fit_font_points,
         side_margin_inches=settings.fit_side_margin_inches,
+        font_name=settings.fit_font_name,
         multi_column=multi_column,
     )
     if multi_column and fit.columns < 2:

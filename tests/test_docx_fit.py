@@ -99,6 +99,7 @@ def package(
     settings: str = "",
     section: str = SECTION,
     styles: str = "",
+    numbering: str = "",
 ) -> bytes:
     buffer = BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
@@ -109,6 +110,8 @@ def package(
             archive.writestr("word/settings.xml", settings)
         if styles:
             archive.writestr("word/styles.xml", styles)
+        if numbering:
+            archive.writestr("word/numbering.xml", numbering)
         for name, data in (media or {}).items():
             archive.writestr(f"word/media/{name}", data)
     return buffer.getvalue()
@@ -1053,7 +1056,7 @@ def test_the_glyphs_a_fraction_is_drawn_with_are_sized_too():
         f"<m:num>{run('a')}</m:num><m:den>{run('b')}</m:den>"
         "</m:f></m:oMath></m:oMathPara>"
     )
-    xml = read(fit_docx(package(body), lines=None)[0])
+    xml = read(fit_docx(package(body), lines=None, font_name="")[0])
     assert '<w:rFonts w:ascii="Cambria Math"/><w:sz w:val="20"/>' in xml
 
 
@@ -1068,7 +1071,8 @@ def test_a_run_that_already_states_the_size_is_not_given_a_second_one():
 
 def test_turning_the_size_off_leaves_every_one_of_them_alone():
     data, fit = fit_docx(
-        package(HEADING, styles=STYLES), lines=None, font_points=0, side_margin_inches=0
+        package(HEADING, styles=STYLES), lines=None, font_points=0,
+        side_margin_inches=0, font_name="",
     )
     assert data == package(HEADING, styles=STYLES)
     assert fit.font_points == 0.0
@@ -1174,7 +1178,9 @@ def test_a_connective_paragraph_that_also_carries_maths_is_left_alone():
 
 def test_a_connective_with_no_equation_under_it_stays_where_it_is():
     body = connective_paragraph("⇒") + "<w:p><w:r><w:t>Example 41</w:t></w:r></w:p>"
-    data, fit = fit_docx(package(body), lines=None, font_points=0, side_margin_inches=0)
+    data, fit = fit_docx(
+        package(body), lines=None, font_points=0, side_margin_inches=0, font_name="",
+    )
     assert fit.steps_joined == 0
     assert read(data) == document(body)
 
@@ -1202,7 +1208,7 @@ def test_joining_can_be_turned_off():
     body = connective_paragraph("⇒") + math_paragraph(run("x"))
     data, fit = fit_docx(
         package(body), lines=None, font_points=0, join_steps=False,
-        side_margin_inches=0,
+        side_margin_inches=0, font_name="",
     )
     assert fit.steps_joined == 0
     assert read(data) == document(body)
@@ -1316,3 +1322,138 @@ def test_turning_the_margin_off_leaves_the_ones_mathpix_wrote():
 def test_the_margin_is_stated_in_the_record():
     _, fit = fit_docx(package("<w:p/>"), lines=None)
     assert fit.as_dict()["side_margin_inches"] == 0.5
+
+
+# --- one typeface, prose and algebra alike --------------------------------------
+
+GEORGIA = (
+    '<w:rFonts w:ascii="Georgia" w:eastAsiaTheme="minorHAnsi"'
+    ' w:hAnsiTheme="minorHAnsi"/>'
+)
+RUN = f'<w:p><w:r><w:rPr>{GEORGIA}</w:rPr></w:r></w:p>'
+CAMBRIA = (
+    '<w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math"'
+    ' w:eastAsia="Cambria Math" w:cs="Cambria Math"/>'
+)
+
+
+def test_the_prose_and_the_equation_come_out_in_the_same_face():
+    body = (
+        f'<w:p><w:r><w:rPr>{GEORGIA}</w:rPr><w:t>where x is</w:t></w:r></w:p>'
+        '<m:oMathPara><m:oMath><m:r>'
+        '<w:rPr><w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math"/></w:rPr>'
+        "<m:t>x</m:t></m:r></m:oMath></m:oMathPara>"
+    )
+    data, fit = fit_docx(package(body), lines=None)
+    xml = read(data)
+    assert "Georgia" not in xml
+    assert xml.count(CAMBRIA) == 2
+    assert fit.font_name == "Cambria Math"
+
+
+def test_every_script_is_named_and_not_only_the_ascii_one():
+    """Word picks a face per character, so a run naming one script changes face."""
+    xml = read(fit_docx(package(RUN), lines=None)[0])
+    for attr in ("w:ascii", "w:hAnsi", "w:eastAsia", "w:cs"):
+        assert f'{attr}="Cambria Math"' in xml
+
+
+def test_the_theme_names_go_with_the_faces_they_would_override():
+    xml = read(fit_docx(package(RUN), lines=None)[0])
+    assert "Theme" not in xml
+
+
+def test_the_faces_the_styles_name_are_restated_too():
+    data, fit = fit_docx(package(HEADING, styles=STYLES), lines=None)
+    styles = read(data, "word/styles.xml")
+    assert "Georgia" not in styles
+    assert CAMBRIA in styles
+
+
+def test_doc_defaults_naming_no_face_at_all_is_given_one():
+    """What a run does not say for itself is resolved here, or by the importer."""
+    styles = STYLES.replace('<w:rFonts w:ascii="Georgia" w:hAnsi="Georgia"/>', "")
+    data, _ = fit_docx(package(HEADING, styles=styles), lines=None)
+    restated = read(data, "word/styles.xml")
+    # `w:rFonts` opens `w:rPr`; a size before it is the part Word rejects.
+    assert restated.index(CAMBRIA) < restated.index('<w:sz w:val="20"/>')
+
+
+def test_a_package_with_no_styles_part_still_gets_its_own_faces_restated():
+    body = f'<w:p><w:r><w:rPr>{GEORGIA}</w:rPr><w:t>x</w:t></w:r></w:p>'
+    data, fit = fit_docx(package(body), lines=None)
+    assert CAMBRIA in read(data)
+    assert fit.fonts_restated == 1
+
+
+def test_the_maths_font_is_left_alone():
+    """`m:mathFont` picks the OpenType MATH table, not a face for the letters."""
+    settings = (
+        f"<w:settings {NAMESPACES}><m:mathPr>"
+        '<m:mathFont m:val="Cambria Math"/><m:wrapIndent m:val="1440"/>'
+        "</m:mathPr></w:settings>"
+    )
+    data, _ = fit_docx(
+        package("<w:p/>", settings=settings), lines=None, font_name="Georgia"
+    )
+    assert '<m:mathFont m:val="Cambria Math"/>' in read(data, "word/settings.xml")
+
+
+def test_a_face_already_the_one_asked_for_is_not_restated():
+    data, fit = fit_docx(
+        package(f'<w:p><w:r><w:rPr>{CAMBRIA}</w:rPr></w:r></w:p>'),
+        lines=None, font_points=0, side_margin_inches=0,
+    )
+    assert fit.fonts_restated == 0
+    assert fit.reason == "nothing to fit"
+
+
+def test_turning_the_face_off_leaves_the_ones_mathpix_wrote():
+    data, fit = fit_docx(
+        package(RUN), lines=None, font_points=0, side_margin_inches=0, font_name="",
+    )
+    assert fit.font_name == ""
+    assert data == package(RUN)
+
+
+def test_the_face_is_stated_in_the_record():
+    _, fit = fit_docx(package(RUN), lines=None)
+    assert fit.as_dict()["font_name"] == "Cambria Math"
+    assert fit.as_dict()["fonts_restated"] == 1
+
+
+def numbering(*levels: str) -> str:
+    return (
+        f"<w:numbering {NAMESPACES}><w:abstractNum w:abstractNumId=\"0\">"
+        + "".join(f'<w:lvl w:ilvl="{n}"><w:rPr>{lvl}</w:rPr></w:lvl>'
+                  for n, lvl in enumerate(levels))
+        + "</w:abstractNum></w:numbering>"
+    )
+
+
+def test_a_list_counts_up_in_the_face_its_paragraphs_are_set_in():
+    """The marker's face is named in `numbering.xml` and nowhere else."""
+    data, fit = fit_docx(package("<w:p/>", numbering=numbering(GEORGIA)), lines=None)
+    restated = read(data, "word/numbering.xml")
+    assert "Georgia" not in restated
+    assert CAMBRIA in restated
+    assert fit.fonts_restated == 1
+
+
+def test_a_bullet_keeps_the_font_its_glyph_was_picked_out_of():
+    """U+F0B7 is a bullet in Symbol and nothing at all in Cambria Math."""
+    bullet = '<w:rFonts w:ascii="Symbol" w:hAnsi="Symbol"/>'
+    data, fit = fit_docx(
+        package("<w:p/>", numbering=numbering(bullet, GEORGIA)), lines=None
+    )
+    restated = read(data, "word/numbering.xml")
+    assert bullet in restated
+    assert fit.fonts_restated == 1
+
+
+def test_a_symbol_run_in_the_body_is_left_alone_too():
+    wingdings = '<w:rFonts w:ascii="Wingdings" w:hAnsi="Wingdings"/>'
+    body = f'<w:p><w:r><w:rPr>{wingdings}</w:rPr></w:r></w:p>'
+    data, fit = fit_docx(package(body), lines=None, font_points=0, side_margin_inches=0)
+    assert fit.fonts_restated == 0
+    assert data == package(body)

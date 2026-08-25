@@ -88,6 +88,24 @@ LibreOffice the only lever is the size the rest of the document is set at, and
 `PDF2DOCX_FIT_FONT_POINTS=12` is what makes text and maths agree there.
 `PDF2DOCX_FIT_FONT_POINTS=0` keeps whatever sizes Mathpix wrote.
 
+It is also **set in one stated typeface** — Cambria Math by default, prose and
+algebra alike. Mathpix writes two: Georgia for text and Cambria Math for the
+2 400 runs inside the equations, so a variable named in a sentence is not the
+same letter as the variable in the display equation two lines below it. Cambria
+Math is a text face carrying an OpenType MATH table rather than a symbol font,
+so it can be both, and the algebra keeps the metrics Word lays it out with.
+Every face the document names is restated — in the runs, in `docDefaults`, in
+the styles, and in `numbering.xml`, where a numbered list names the face it
+counts up in and nowhere else. Two things are deliberately left alone: a run in
+Symbol or Wingdings, whose character is a glyph picked out of that font's own
+encoding rather than a letter with a face; and `m:mathFont` in `settings.xml`,
+which selects the MATH table an equation is laid out with, not a face for its
+letters. The theme names go with the faces, because Word reads `w:hAnsiTheme`
+*instead of* the explicit attribute beside it and Mathpix's package ships no
+theme part to resolve. As with the size, LibreOffice draws each equation with
+the Math module's own font whatever the file says; in Word the whole document is
+one face. `PDF2DOCX_FIT_FONT_NAME=` keeps whatever faces Mathpix wrote.
+
 And a **worked step's connective is joined to its equation**. Mathpix writes a
 lone `⇒`, `∴` or `or` as a paragraph of its own above the display equation it
 introduces — 148 paragraphs of one 41-page textbook consist of nothing else —
