@@ -487,18 +487,23 @@ MATH_SETTINGS = (
 )
 
 
-def test_a_long_equation_is_given_somewhere_to_wrap():
+def test_a_long_equation_becomes_one_editable_aligned_equation_array():
     data, fit = fit_docx(package(LONG, settings=MATH_SETTINGS), lines=None)
-    assert read(data).count("<m:brk/>") == 2
+    xml = read(data)
+    array = re.search(r"<m:eqArr>.*?</m:eqArr>", xml, re.S).group(0)
+    assert array.count("<m:e>") == 3
+    assert array.count("<m:aln/>") == 3
+    assert "<m:brk/>" not in array
     assert fit.equations_broken == 1
 
 
-def test_the_leading_relation_is_not_a_place_to_wrap():
+def test_the_leading_relation_is_not_a_place_to_start_a_new_row():
     # Breaking before the first `=` would put the whole equation on a line of
     # its own under a lone `x`.
     xml = read(fit_docx(package(LONG, settings=MATH_SETTINGS), lines=None)[0])
-    first = xml.index("<m:t>=</m:t>")
-    assert "<m:brk/>" not in xml[:first]
+    rows = re.findall(r"<m:e>(.*?)</m:e>", xml, re.S)
+    assert "<m:t>x</m:t>" in rows[0]
+    assert "<m:t>=</m:t>" in rows[0]
 
 
 def test_a_relation_inside_a_fraction_is_never_broken():
@@ -525,6 +530,256 @@ def test_an_equation_that_already_wraps_is_not_broken_again():
     assert fit.equations_broken == 0
 
 
+def test_an_existing_equation_array_extends_only_its_oversized_row():
+    long_row = "".join((
+        run("x"), run("="), run("a" * 60), run("="), run("b" * 60),
+        run("⇒"), run("c" * 40),
+    ))
+    body = (
+        "<m:oMathPara><m:oMath><m:eqArr>"
+        '<m:eqArrPr><m:maxDist m:val="1"/></m:eqArrPr>'
+        f"<m:e>{run('short')}</m:e><m:e>{long_row}</m:e>"
+        "</m:eqArr></m:oMath></m:oMathPara>"
+    )
+    data, fit = fit_docx(package(body), lines=None)
+    xml = read(data)
+    assert xml.count("<m:eqArr>") == 1
+    assert xml.count("<m:e>") == 4
+    assert '<m:eqArrPr><m:maxDist m:val="1"/></m:eqArrPr>' in xml
+    assert "<m:t>short</m:t>" in xml
+    assert fit.equations_broken == 1
+
+
+def test_a_nested_array_row_does_not_block_an_oversized_direct_sibling():
+    nested = f"<m:eqArr><m:e>{run('nested')}</m:e></m:eqArr>"
+    long_row = "".join((
+        run("x"), run("="), run("a" * 60), run("="), run("b" * 60),
+        run("⇒"), run("c" * 40),
+    ))
+    body = (
+        "<m:oMathPara><m:oMath><m:eqArr>"
+        f"<m:e>{nested}</m:e><m:e>{long_row}</m:e>"
+        "</m:eqArr></m:oMath></m:oMathPara>"
+    )
+    data, fit = fit_docx(package(body), lines=None)
+    xml = read(data)
+    assert xml.count("<m:eqArr>") == 2
+    assert "<m:t>nested</m:t>" in xml
+    assert xml.count("<m:e>") == 5
+    assert fit.equations_broken == 1
+
+
+def test_fitting_equation_array_rows_are_left_structurally_unchanged():
+    body = (
+        "<m:oMathPara><m:oMath><m:eqArr>"
+        f"<m:e>{run('x') + run('=') + run('y')}</m:e>"
+        f"<m:e>{run('=') + run('z')}</m:e>"
+        "</m:eqArr></m:oMath></m:oMathPara>"
+    )
+    data, fit = fit_docx(package(body), lines=None)
+    assert read(data).count("<m:e>") == 2
+    assert fit.equations_broken == 0
+
+
+def test_an_eligible_two_column_derivation_matrix_gains_complete_rows():
+    long_cell = "".join((
+        run("x"), run("="), run("a" * 60), run("="), run("b" * 60),
+        run("⇒"), run("c" * 40),
+    ))
+    matrix_body = (
+        '<m:m><m:mPr><m:mcs><m:mc><m:mcPr/></m:mc>'
+        '<m:mc><m:mcPr/></m:mc></m:mcs></m:mPr>'
+        f"<m:mr><m:e>{run('step')}</m:e><m:e>{long_cell}</m:e></m:mr>"
+        f"<m:mr><m:e>{run('next')}</m:e><m:e>{run('=') + run('done' * 10)}</m:e></m:mr>"
+        "</m:m>"
+    )
+    body = f"<m:oMathPara><m:oMath>{matrix_body}</m:oMath></m:oMathPara>"
+    data, fit = fit_docx(package(body), lines=None)
+    xml = read(data)
+    matrix_xml = re.search(r"<m:m>.*?</m:m>", xml, re.S).group(0)
+    rows = re.findall(r"<m:mr>(.*?)</m:mr>", matrix_xml, re.S)
+    assert len(rows) == 4
+    assert all(row.count("<m:e>") == 2 for row in rows)
+    assert "<m:mcs>" in matrix_xml
+    assert fit.equations_broken == 1
+
+
+def test_a_sparse_ragged_four_column_layout_matrix_becomes_an_equation_array():
+    rows = (
+        ("", "", "", run("|z+iw|")),
+        ("", "", run("≤") + run("a" * 35) + run("=") + run("b" * 20)),
+        (run("∴"), "", run("|z+iw|≤2")),
+        (run("⇒"), "", run("arg z/iw=0") + run("c" * 20)),
+    )
+    matrix_rows = "".join(
+        "<m:mr>" + "".join(
+            f"<m:e>{cell}</m:e>" if cell else "<m:e/>" for cell in row
+        ) + "</m:mr>"
+        for row in rows
+    )
+    body = (
+        "<m:oMathPara><m:oMath><m:m><m:mPr/>"
+        + matrix_rows
+        + "</m:m></m:oMath></m:oMathPara>"
+    )
+    data, fit = fit_docx(package(body), lines=None)
+    xml = read(data)
+    array = re.search(r"<m:eqArr>.*?</m:eqArr>", xml, re.S).group(0)
+    assert "<m:m>" not in xml
+    assert array.count("<m:e>") == 4
+    assert "<m:t>|z+iw|</m:t>" in array
+    assert "<m:t>∴</m:t>" in array
+    assert fit.equations_broken == 1
+
+
+def test_a_nested_derivation_matrix_is_flattened_in_source_row_order():
+    inner = (
+        "<m:m><m:mPr/>"
+        f"<m:mr><m:e/><m:e>{run('x') + run('=') + run('a' * 40)}</m:e></m:mr>"
+        f"<m:mr><m:e/><m:e>{run('=') + run('b' * 40)}</m:e></m:mr>"
+        f"<m:mr><m:e/><m:e>{run('∴') + run('c' * 20)}</m:e></m:mr>"
+        "</m:m>"
+    )
+    outer = (
+        "<m:m><m:mPr/>"
+        f"<m:mr><m:e/><m:e>{inner}</m:e></m:mr>"
+        f"<m:mr><m:e/><m:e>{run('⇒') + run('result' * 8)}</m:e></m:mr>"
+        "</m:m>"
+    )
+    body = f"<m:oMathPara><m:oMath>{outer}</m:oMath></m:oMathPara>"
+    data, fit = fit_docx(package(body), lines=None)
+    xml = read(data)
+    array = re.search(r"<m:eqArr>.*?</m:eqArr>", xml, re.S).group(0)
+    assert "<m:m>" not in xml
+    assert array.count("<m:e>") == 4
+    texts = [
+        "".join(re.findall(r"<m:t[^>]*>(.*?)</m:t>", row)).lstrip(ZWSP)
+        for row in re.findall(r"<m:e>(.*?)</m:e>", array, re.S)
+    ]
+    assert texts[0].startswith("x=")
+    assert texts[1].startswith("=")
+    assert texts[2].startswith("∴")
+    assert texts[3].startswith("⇒")
+    assert fit.equations_broken == 1
+
+
+def test_semantic_and_ambiguous_matrices_are_not_reflowed():
+    semantic = matrix(
+        (run("a" * 100), run("=") + run("b" * 40)),
+        (run("c"), run("d")),
+    )
+    three_columns = (
+        "<m:oMathPara><m:oMath><m:m><m:mPr/>"
+        f"<m:mr><m:e>{run('x' * 100)}</m:e><m:e>{run('=') + run('y' * 40)}</m:e><m:e>{run('z')}</m:e></m:mr>"
+        f"<m:mr><m:e>{run('=') + run('q')}</m:e><m:e>{run('r')}</m:e><m:e>{run('s')}</m:e></m:mr>"
+        "</m:m></m:oMath></m:oMathPara>"
+    )
+    data, fit = fit_docx(package(semantic + three_columns), lines=None)
+    xml = read(data)
+    assert xml.count("<m:mr>") == 4
+    assert "<m:eqArr>" not in xml
+    assert fit.equations_broken == 0
+
+
+def test_mixed_content_nested_arrays_and_manual_breaks_remain_unchanged():
+    mixed = (
+        "<m:oMathPara><w:r><w:t>label</w:t></w:r><m:oMath>"
+        + "".join((run("x"), run("="), run("a" * 100), run("="), run("b" * 40)))
+        + "</m:oMath></m:oMathPara>"
+    )
+    nested = (
+        "<m:oMathPara><m:oMath><m:eqArr><m:e><m:eqArr>"
+        f"<m:e>{run('x' * 100) + run('=') + run('y' * 40)}</m:e>"
+        "</m:eqArr></m:e></m:eqArr></m:oMath></m:oMathPara>"
+    )
+    manual = LONG.replace(
+        "<m:rPr><m:sty/></m:rPr>", "<m:rPr><m:brk/><m:sty/></m:rPr>", 1
+    )
+    data, fit = fit_docx(package(mixed + nested + manual), lines=None)
+    xml = read(data)
+    assert xml.count("<m:eqArr>") == 2
+    assert xml.count("<m:brk/>") == 1
+    assert fit.equations_broken == 0
+
+
+def test_a_short_trailing_fragment_is_merged_into_the_preceding_row():
+    body = equation(
+        run("x"), run("="), run("a" * 100), run("="), run("tail")
+    )
+    data, fit = fit_docx(package(body), lines=None)
+    assert "<m:eqArr>" not in read(data)
+    assert fit.equations_broken == 0
+
+
+def test_the_equation_break_limit_is_six():
+    parts = [run("x"), run("="), run("a" * 35)]
+    for index in range(7):
+        parts.extend((run("="), run(chr(ord("b") + index) * 35)))
+    data, fit = fit_docx(package(equation(*parts)), lines=None)
+    xml = read(data)
+    array = re.search(r"<m:eqArr>.*?</m:eqArr>", xml, re.S).group(0)
+    assert array.count("<m:e>") == 7
+    assert fit.equations_broken == 1
+
+
+def test_existing_rows_share_one_six_break_budget():
+    def oversized(prefix: str) -> str:
+        parts = [run(prefix), run("="), run("a" * 35)]
+        for character in "bcde":
+            parts.extend((run("="), run(character * 35)))
+        return "".join(parts)
+
+    body = (
+        "<m:oMathPara><m:oMath><m:eqArr>"
+        f"<m:e>{oversized('x')}</m:e><m:e>{oversized('y')}</m:e>"
+        "</m:eqArr></m:oMath></m:oMathPara>"
+    )
+    data, fit = fit_docx(package(body), lines=None)
+    array = re.search(r"<m:eqArr>.*?</m:eqArr>", read(data), re.S).group(0)
+    # Two source rows plus no more than six new continuation rows.
+    assert array.count("<m:e>") == 8
+    assert fit.equations_broken == 1
+
+
+def test_structural_continuations_receive_invisible_operands_and_one_size():
+    conflicting = LONG.replace(
+        "<m:rPr><m:sty/></m:rPr>",
+        '<m:rPr><m:sty/></m:rPr><w:rPr><w:sz w:val="34"/></w:rPr>',
+        1,
+    )
+    data, fit = fit_docx(package(conflicting), lines=None)
+    xml = read(data)
+    array = re.search(r"<m:eqArr>.*?</m:eqArr>", xml, re.S).group(0)
+    assert array.count(f'<m:t xml:space="preserve">{ZWSP}</m:t>') == 2
+    assert 'w:val="34"' not in array
+    assert set(re.findall(r'<w:sz w:val="(\d+)"/>', array)) == {"18"}
+    assert fit.math_gaps_filled == 2
+
+
+def test_refitting_a_structurally_split_equation_is_idempotent():
+    once, first = fit_docx(package(LONG, settings=MATH_SETTINGS), lines=None)
+    twice, second = fit_docx(once, lines=None)
+    assert once == twice
+    assert first.equations_broken == 1
+    assert second.equations_broken == 0
+
+
+def test_a_safe_unknown_flat_atom_uses_the_ordered_soft_break_fallback():
+    aligned_relation = (
+        '<m:r><m:rPr><m:aln/><m:sty/></m:rPr><m:t>=</m:t></m:r>'
+    )
+    body = equation(
+        run("x"), run("="), run("a" * 60),
+        f"<m:extension>{run('q' * 40)}</m:extension>",
+        aligned_relation, run("b" * 40),
+    )
+    data, fit = fit_docx(package(body, settings=MATH_SETTINGS), lines=None)
+    xml = read(data)
+    assert "<m:eqArr>" not in xml
+    assert "<m:aln/><m:brk/><m:sty/>" in xml
+    assert fit.equations_broken == 1
+
+
 def test_the_wrap_indent_is_relaxed_only_once_an_equation_can_actually_wrap():
     data, _ = fit_docx(package(LONG, settings=MATH_SETTINGS), lines=None)
     assert '<m:wrapIndent m:val="360"/>' in read(data, "word/settings.xml")
@@ -536,7 +791,9 @@ def test_an_untouched_document_leaves_the_wrap_indent_alone():
         package(body, settings=MATH_SETTINGS), lines=None, font_points=0,
         side_margin_inches=0,
     )
-    assert data == package(body, settings=MATH_SETTINGS)
+    settings = read(data, "word/settings.xml")
+    assert '<m:wrapIndent m:val="1440"/>' in settings
+    assert '<m:defJc m:val="left"/>' in settings
 
 
 # --- the archive itself --------------------------------------------------------
@@ -823,10 +1080,62 @@ def test_display_equations_are_left_aligned_once_they_have_a_column():
     assert '<m:defJc m:val="left"/>' in read(data, "word/settings.xml")
 
 
-def test_centring_is_left_as_it_is_in_a_single_column_document():
+def test_centered_prose_is_left_aligned_in_a_single_column_document():
     body = '<w:p><w:pPr><w:jc w:val="center"/></w:pPr></w:p>' + TABLE
     data, _ = fit_docx(package(body), lines=None)
-    assert '<w:jc w:val="center"/>' in read(data)
+    assert '<w:jc w:val="center"/>' not in read(data)
+    assert '<w:jc w:val="left"/>' in read(data)
+
+
+def test_explicit_and_inherited_display_equation_centring_are_overridden():
+    settings = (
+        f"<w:settings {NAMESPACES}><m:mathPr>"
+        '<m:defJc m:val="centerGroup"/></m:mathPr></w:settings>'
+    )
+    inherited = equation(run("x"))
+    explicit = (
+        '<m:oMathPara><m:oMathParaPr><m:jc m:val="center"/><m:ctrlPr/>'
+        f"</m:oMathParaPr><m:oMath>{run('y')}</m:oMath></m:oMathPara>"
+    )
+    data, _ = fit_docx(package(inherited + explicit, settings=settings), lines=None)
+    xml = read(data)
+    assert xml.count('<m:jc m:val="left"/>') == 2
+    assert '<m:jc m:val="center"/>' not in xml
+    assert '<m:oMathParaPr><m:jc m:val="left"/><m:ctrlPr>' in xml
+    assert '<m:defJc m:val="left"/>' in read(data, "word/settings.xml")
+
+
+def test_alignment_normalization_preserves_first_line_and_hanging_indents():
+    first = (
+        '<w:p><w:pPr><w:jc w:val="center"/>'
+        '<w:ind w:left="360" w:firstLine="240"/>'
+        '</w:pPr><w:r><w:t>First line</w:t></w:r></w:p>'
+    )
+    hanging = (
+        '<w:p><w:pPr><w:jc w:val="center"/>'
+        '<w:ind w:left="720" w:hanging="360"/>'
+        '</w:pPr><w:r><w:t>Nested solution</w:t></w:r></w:p>'
+    )
+    data, _ = fit_docx(package(first + hanging), lines=None)
+    xml = read(data)
+    assert '<w:ind w:left="360" w:firstLine="240"/>' in xml
+    assert '<w:ind w:left="720" w:hanging="360"/>' in xml
+    assert '<w:jc w:val="center"/>' not in xml
+
+
+def test_standalone_figures_and_centered_tables_remain_centered():
+    figure = (
+        '<w:p><w:pPr><w:jc w:val="center"/></w:pPr>'
+        f"<w:r>{drawing(1371600, 685800)}</w:r></w:p>"
+    )
+    table = (
+        '<w:tbl><w:tblPr><w:jc w:val="center"/></w:tblPr>'
+        '<w:tblGrid><w:gridCol w:w="8640"/></w:tblGrid>'
+        '<w:tr><w:tc><w:tcPr/><w:p/></w:tc></w:tr></w:tbl>'
+    )
+    data, _ = fit_docx(package(figure + table), lines=None, fit_images=False)
+    xml = read(data)
+    assert xml.count('<w:jc w:val="center"/>') == 2
 
 
 # --- the grid, which a fixed layout reads in preference to any percentage ------
@@ -945,7 +1254,7 @@ def test_a_row_that_starts_with_a_value_is_left_alone():
     body = matrix((run("y"), run("2") + run("=") + run("x")))
     data, fit = fit_docx(package(body), lines=None, font_points=0, side_margin_inches=0)
     assert fit.math_gaps_filled == 0
-    assert read(data) == document(body)
+    assert '<m:jc m:val="left"/>' in read(data)
 
 
 def test_a_leading_sign_inside_a_bracket_belongs_to_what_follows_it():
@@ -980,12 +1289,161 @@ def test_running_over_an_already_repaired_document_changes_nothing_more():
 def test_filling_the_gaps_can_be_turned_off():
     body = matrix((run("y"), run("=") + run("2")))
     _, fit = fit_docx(
-        package(body), lines=None, fill_math_gaps=False, font_points=0,
-        side_margin_inches=0,
+        package(body), lines=None, fill_math_gaps=False, fit_equations=False,
+        font_points=0, side_margin_inches=0,
     )
     assert fit.math_gaps_filled == 0
     assert fit.reason == "nothing to fit"
 
+
+# --- literal LaTeX headings ----------------------------------------------------
+
+
+def heading_repair(body: str) -> tuple[bytes, Fit]:
+    """Run only the always-on heading pass, keeping assertions easy to read."""
+    return fit_docx(
+        package(body), lines=None, fit_images=False, fit_tables=False,
+        fit_equations=False, fill_math_gaps=False, font_points=0,
+        font_name="", join_steps=False, side_margin_inches=0,
+    )
+
+
+def test_a_heading_only_numbered_paragraph_loses_its_false_list_marker():
+    body = (
+        "<w:p><w:pPr><w:numPr><w:ilvl w:val=\"0\"/>"
+        "<w:numId w:val=\"3\"/></w:numPr><w:ind w:left=\"720\"/>"
+        "</w:pPr><w:r><w:t>\\section*{Fill in the Blanks}</w:t></w:r></w:p>"
+    )
+    data, fit = heading_repair(body)
+    xml = read(data)
+    assert "\\section" not in xml
+    assert "<w:t>Fill in the Blanks</w:t>" in xml
+    assert "<w:numPr>" not in xml
+    assert "<w:ind " not in xml
+    assert "<w:b/><w:bCs/>" in xml
+    assert "<w:spacing w:after=\"220\"/><w:jc w:val=\"left\"/>" in xml
+    assert fit.headings_repaired == 1
+    assert fit.as_dict()["headings_repaired"] == 1
+
+
+def test_a_heading_and_following_question_become_separate_unnumbered_paragraphs():
+    body = (
+        "<w:p><w:pPr><w:numPr><w:ilvl w:val=\"0\"/>"
+        "<w:numId w:val=\"3\"/></w:numPr></w:pPr>"
+        "<w:r><w:rPr><w:i/></w:rPr>"
+        "<w:t>\\section{Short Questions}</w:t><w:br/>"
+        "<w:t>1. State the theorem.</w:t></w:r></w:p>"
+    )
+    data, fit = heading_repair(body)
+    xml = read(data)
+    assert xml.count("<w:p>") == 2
+    assert "<w:numPr>" not in xml
+    assert "<w:t>Short Questions</w:t>" in xml
+    assert "<w:t>1. State the theorem.</w:t>" in xml
+    # Splitting a break inside a run retains the following prose formatting.
+    assert "<w:rPr><w:i/></w:rPr><w:t>1. State" in xml
+    assert fit.headings_repaired == 1
+
+
+def test_a_heading_after_numbered_question_content_preserves_only_that_numbering():
+    body = (
+        "<w:p><w:pPr><w:numPr><w:ilvl w:val=\"0\"/>"
+        "<w:numId w:val=\"8\"/></w:numPr></w:pPr>"
+        "<w:r><w:t>Solve x + 2 = 5.</w:t></w:r><w:r><w:br/></w:r>"
+        "<w:r><w:t>\\subsection*{Answers}</w:t></w:r><w:r><w:br/></w:r>"
+        "<w:r><w:t>1. x = 3</w:t></w:r></w:p>"
+    )
+    data, fit = heading_repair(body)
+    xml = read(data)
+    assert xml.count("<w:p>") == 3
+    assert xml.count("<w:numPr>") == 1
+    first, heading, following = re.findall(r"<w:p>.*?</w:p>", xml)
+    assert "<w:numPr>" in first and "Solve x + 2 = 5." in first
+    assert "<w:numPr>" not in heading and "<w:t>Answers</w:t>" in heading
+    assert "<w:numPr>" not in following and "<w:t>1. x = 3</w:t>" in following
+    assert fit.headings_repaired == 1
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (r"\title{Practice Paper}", "Practice Paper"),
+        (r"\section{Part A}", "Part A"),
+        (r"\section*{Part B}", "Part B"),
+        (r"\subsection{Worked Examples}", "Worked Examples"),
+        (r"\subsection*{Review}", "Review"),
+    ],
+)
+def test_title_section_and_subsection_variants_are_repaired(command, expected):
+    data, fit = heading_repair(f"<w:p><w:r><w:t>{command}</w:t></w:r></w:p>")
+    xml = read(data)
+    assert f"<w:t>{expected}</w:t>" in xml
+    assert command not in xml
+    assert fit.headings_repaired == 1
+
+
+def test_latex_escaped_characters_become_plain_heading_text():
+    body = r"<w:p><w:r><w:t>\section*{Angles \&amp; Arcs}</w:t></w:r></w:p>"
+    data, fit = heading_repair(body)
+    xml = read(data)
+    assert "<w:t>Angles &amp; Arcs</w:t>" in xml
+    assert "\\&amp;" not in xml
+    assert fit.headings_repaired == 1
+
+
+def test_native_headings_inline_mentions_bookmarks_and_ambiguous_commands_stay_verbatim():
+    body = (
+        "<w:p><w:pPr><w:pStyle w:val=\"Heading1\"/></w:pPr>"
+        "<w:r><w:t>\\section{Native}</w:t></w:r></w:p>"
+        "<w:p><w:r><w:t>Type \\section{Title} to add one.</w:t></w:r></w:p>"
+        "<w:p><w:r><w:t>\\section{Missing close</w:t></w:r></w:p>"
+        "<w:p><w:bookmarkStart w:id=\"0\" w:name=\"Here\"/>"
+        "<w:r><w:t>\\section{Bookmarked}</w:t></w:r>"
+        "<w:bookmarkEnd w:id=\"0\"/></w:p>"
+    )
+    original = package(body)
+    data, fit = heading_repair(body)
+    assert data == original
+    assert fit.headings_repaired == 0
+    assert fit.reason == "nothing to fit"
+
+
+def test_surrounding_inline_equation_is_preserved_when_the_paragraph_splits():
+    math = "<m:oMath><m:r><m:t>x</m:t></m:r></m:oMath>"
+    body = (
+        "<w:p><w:r><w:t>Find </w:t></w:r>" + math
+        + "<w:r><w:br/></w:r><w:r><w:t>\\section*{Solution}</w:t></w:r></w:p>"
+    )
+    data, fit = heading_repair(body)
+    xml = read(data)
+    assert math in xml
+    assert xml.count("<w:p>") == 2
+    assert "<w:t>Solution</w:t>" in xml
+    assert fit.headings_repaired == 1
+
+
+def test_heading_repair_is_well_formed_schema_ordered_and_idempotent():
+    body = (
+        "<w:p><w:pPr><w:numPr><w:numId w:val=\"2\"/></w:numPr>"
+        "<w:rPr><w:sz w:val=\"42\"/></w:rPr></w:pPr>"
+        "<w:r><w:t>\\section*{Revision}</w:t></w:r></w:p>"
+    )
+    once, first_fit = heading_repair(body)
+    twice, second_fit = fit_docx(
+        once, lines=None, fit_images=False, fit_tables=False,
+        fit_equations=False, fill_math_gaps=False, font_points=0,
+        font_name="", join_steps=False, side_margin_inches=0,
+    )
+    import xml.etree.ElementTree as ET
+
+    ET.fromstring(read(once).encode())
+    properties = re.search(r"<w:pPr>.*?</w:pPr>", read(once)).group(0)
+    assert properties.index("<w:spacing") < properties.index("<w:jc")
+    assert properties.index("<w:jc") < properties.index("<w:rPr")
+    assert once == twice
+    assert first_fit.headings_repaired == 1
+    assert second_fit.headings_repaired == 0
+    assert second_fit.reason == "nothing to fit"
 
 # --- one type size, stated rather than inherited -------------------------------
 
@@ -1038,15 +1496,15 @@ def test_a_size_with_no_complex_script_twin_is_given_one():
 def test_a_maths_run_with_no_properties_at_all_is_given_the_size():
     body = "<m:oMathPara><m:oMath><m:r><m:t>x</m:t></m:r></m:oMath></m:oMathPara>"
     xml = read(fit_docx(package(body), lines=None)[0])
-    assert '<m:r><w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><m:t>x</m:t>' in xml
+    assert '<m:r><w:rPr><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr><m:t>x</m:t>' in xml
 
 
 def test_a_maths_run_keeps_its_own_properties_and_takes_the_size_after_them():
     # `CT_R` sequences `m:rPr` before `w:rPr`; the other way round Word refuses
     # to open the part at all.
     xml = read(fit_docx(package(equation(run("x"))), lines=None)[0])
-    assert '<m:rPr><m:sty/></m:rPr><w:rPr><w:sz w:val="20"/>' in xml
-    assert '<w:rPr><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><m:rPr>' not in xml
+    assert '<m:rPr><m:sty/></m:rPr><w:rPr><w:sz w:val="18"/>' in xml
+    assert '<w:rPr><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr><m:rPr>' not in xml
 
 
 def test_the_glyphs_a_fraction_is_drawn_with_are_sized_too():
@@ -1057,7 +1515,7 @@ def test_the_glyphs_a_fraction_is_drawn_with_are_sized_too():
         "</m:f></m:oMath></m:oMathPara>"
     )
     xml = read(fit_docx(package(body), lines=None, font_name="")[0])
-    assert '<w:rFonts w:ascii="Cambria Math"/><w:sz w:val="20"/>' in xml
+    assert '<w:rFonts w:ascii="Cambria Math"/><w:sz w:val="18"/>' in xml
 
 
 def test_a_run_that_already_states_the_size_is_not_given_a_second_one():
@@ -1066,7 +1524,47 @@ def test_a_run_that_already_states_the_size_is_not_given_a_second_one():
         "<m:t>x</m:t></m:r></m:oMath></m:oMathPara>"
     )
     xml = read(fit_docx(package(body), lines=None)[0])
-    assert xml.count('<w:sz w:val="20"/>') == 1
+    assert xml.count('<w:sz w:val="18"/>') == 1
+
+
+def test_body_text_and_inline_math_stay_ten_point_while_display_math_is_nine():
+    inline = f"<m:oMath>{run('i')}</m:oMath>"
+    body = (
+        '<w:p><w:r><w:rPr><w:sz w:val="42"/></w:rPr><w:t>Body</w:t></w:r>'
+        f"{inline}</w:p>"
+        + equation(run("d"))
+    )
+    data, fit = fit_docx(package(body), lines=None)
+    xml = read(data)
+    assert '<w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><w:t>Body' in xml
+    assert '<m:t>i</m:t>' in xml and '<w:sz w:val="20"/>' in xml
+    assert '<m:t>d</m:t>' in xml and '<w:sz w:val="18"/>' in xml
+    assert fit.display_equation_points == 9.0
+    assert fit.as_dict()["display_equation_points"] == 9.0
+
+
+def test_a_joined_solution_connective_uses_the_display_equation_size():
+    body = connective_paragraph("⇒") + math_paragraph(run("x"))
+    data, _ = fit_docx(package(body), lines=None)
+    xml = read(data)
+    assert '<m:rPr><m:nor/></m:rPr><w:rPr><w:sz w:val="18"/>' in xml
+
+
+def test_the_display_size_has_a_positive_half_point_minimum():
+    _, fit = fit_docx(package("<w:p/>"), lines=None, font_points=0.5)
+    assert fit.display_equation_points == 0.5
+
+
+def test_sizing_opt_out_keeps_mathpix_display_sizes():
+    body = (
+        '<m:oMathPara><m:oMath><m:r><w:rPr><w:sz w:val="28"/></w:rPr>'
+        '<m:t>x</m:t></m:r></m:oMath></m:oMathPara>'
+    )
+    data, fit = fit_docx(package(body), lines=None, font_points=0)
+    xml = read(data)
+    assert '<w:sz w:val="28"/>' in xml
+    assert '<w:sz w:val="18"/>' not in xml
+    assert fit.display_equation_points == 0.0
 
 
 def test_turning_the_size_off_leaves_every_one_of_them_alone():
@@ -1129,6 +1627,21 @@ def test_a_connective_on_its_own_line_moves_into_the_equation_below_it():
     assert '<m:rPr><m:nor/></m:rPr><m:t xml:space="preserve">⇒&#32;&#32;</m:t>' in xml
 
 
+def test_consecutive_connective_lines_join_in_one_idempotent_fit():
+    body = (
+        connective_paragraph("and")
+        + connective_paragraph("⇒")
+        + math_paragraph(run("x"), run("="), run("y"))
+    )
+    once, first = fit_docx(package(body), lines=None, font_points=0)
+    twice, second = fit_docx(once, lines=None, font_points=0)
+    xml = read(once)
+    assert first.steps_joined == 2
+    assert "and&#32;&#32;" in xml and "⇒&#32;&#32;" in xml
+    assert once == twice
+    assert second.steps_joined == 0
+
+
 def test_the_connective_is_kept_upright_and_keeps_its_gap():
     body = connective_paragraph("or") + math_paragraph(run("x"))
     xml = read(fit_docx(package(body), lines=None, font_points=0)[0])
@@ -1151,7 +1664,7 @@ def test_an_equation_that_already_says_where_it_sits_is_not_told_twice():
     )
     xml = read(fit_docx(package(body), lines=None, font_points=0)[0])
     assert xml.count("<m:oMathParaPr>") == 1
-    assert '<m:jc m:val="center"/>' in xml
+    assert '<m:jc m:val="left"/>' in xml
 
 
 def test_a_connective_hanging_off_a_line_of_prose_is_trimmed_not_swallowed():
@@ -1208,7 +1721,7 @@ def test_joining_can_be_turned_off():
     body = connective_paragraph("⇒") + math_paragraph(run("x"))
     data, fit = fit_docx(
         package(body), lines=None, font_points=0, join_steps=False,
-        side_margin_inches=0, font_name="",
+        fit_equations=False, side_margin_inches=0, font_name="",
     )
     assert fit.steps_joined == 0
     assert read(data) == document(body)

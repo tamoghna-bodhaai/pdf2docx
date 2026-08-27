@@ -5,7 +5,9 @@ does not touch it: no text, no maths, no table content, no reading order, and
 not one of its image crops is altered. What is altered is the *geometry* Mathpix
 writes around that content, because Mathpix states it in absolute units that
 stop being true the moment the document is read at any measure other than the
-one it assumed.
+one it assumed. Oversized derivations are the one structural exception: they are
+subdivided only at complete top-level relation runs and remain one editable OMML
+equation with aligned rows.
 
 Three facts about a Mathpix .docx, all of them measurable in the file:
 
@@ -19,10 +21,10 @@ Three facts about a Mathpix .docx, all of them measurable in the file:
     with no ``w:tblW``, no ``w:tcW`` and no ``w:tblLayout``. Word therefore
     ignores the grid, falls back to autofit, and recomputes the columns from
     cell content — which is what it looks like when a table "breaks".
-  * **No display equation carries a break opportunity.** ``m:brkBin`` is set and
-    ``m:wrapIndent`` is a full inch, but there is not one ``m:brk`` in the
-    document, so Word has nowhere to wrap a long equation and runs it off the
-    measure.
+  * **Oversized derivations arrive as one unbroken expression.** ``m:brkBin``
+    is set and ``m:wrapIndent`` is a full inch, but the OMML carries neither
+    structural rows nor usable break opportunities, so a long equation runs off
+    a narrow measure.
 
 Each of those is the same mistake — an absolute number where a relative one
 belongs — and each stops being survivable the instant the document is narrowed,
@@ -34,25 +36,30 @@ occupied on the source page, which is *recoverable rather than guessable*:
 ``lines.json`` reports the pixel dimensions of each rendered page, the PDF
 reports the same page in points, and the ratio of the two is the resolution
 Mathpix cropped at. Tables are restated in percentages of whatever measure they
-find themselves in. Long equations are given the break points Word is already
-configured to use. Nothing here invents a layout; it re-expresses Mathpix's own
-one in units that survive being resized.
+find themselves in. Genuinely oversized derivations become aligned equation-array
+rows without splitting nested mathematical objects; a soft break is retained as
+a fallback for safe flat expressions that cannot be represented structurally.
+Nothing here invents a layout; it re-expresses Mathpix's own one in units that
+survive being resized.
 
 Three further repairs are not about the measure at all. Every empty maths
 argument Mathpix writes — the alignment cells of a matrix, the missing half of a
 one-sided script — is filled with a zero-width space, because Word draws nothing
 for an empty ``<m:e/>`` while LibreOffice draws its missing-operand placeholder
-and the same file reads with an inverted question mark in every matrix row. Every
-type size the document states is restated as one size, because Mathpix names a
-size in ``docDefaults``, names none at all on its 20 000 maths runs, and then
-hard-codes 21pt on 124 heading runs since ``styles.xml`` defines no heading
-style to carry it. Stated everywhere, the size stops being an inheritance a
-reader has to resolve — which is the whole repair in Word, where text, headings
-and maths then come out at one size. It is not the repair in LibreOffice, whose
-importer builds each equation into a Formula object and draws it at the Math
-module's own fixed base size, ignoring ``w:sz`` on the run, on the paragraph
-mark and in ``docDefaults`` alike; no .docx states that size, so there the only
-lever is which size the rest of the document is set at. And a worked step's
+and the same file reads with an inverted question mark in every matrix row. The
+body size is restated everywhere, because Mathpix names a size in
+``docDefaults``, names none at all on its 20 000 maths runs, and then hard-codes
+21pt on 124 heading runs since ``styles.xml`` defines no heading style to carry
+it. Inline maths keeps that body size; display maths and its controls are stated
+one point smaller. Explicit sizes stop being an inheritance a reader has to
+resolve. This works in Word, but not in LibreOffice, whose importer builds each
+equation into a Formula object and draws it at the Math module's own fixed base
+size, ignoring ``w:sz`` on the run, on the paragraph mark and in
+``docDefaults`` alike; no .docx states that size, so there the only lever is
+which size the rest of the document is set at. Centered reading matter and
+display equations are also normalized to the left while standalone diagrams,
+tables and existing paragraph indents retain their visual structure. A worked
+step's
 connective — a lone ``⇒`` or ``∴`` sitting on its own line above the equation it
 introduces — is joined to that equation, because Mathpix groups it as a line of
 its own in some places and inside the equation in others, and the second of
@@ -94,6 +101,7 @@ defect can still be attributed to whichever of the two produced it.
 
 from __future__ import annotations
 
+import html
 import re
 import struct
 import zipfile
@@ -127,6 +135,13 @@ MIN_IMAGE_INCHES = 0.18
 # fires on a document that was never too wide.
 MATH_BREAK_CHARS = 90
 
+# A structural row has to carry enough expression on both sides of a break to
+# remain a line rather than an orphaned operator or tail. This is deliberately
+# independent of the overall threshold above: the former asks whether an
+# equation is oversized, while this asks whether a proposed subdivision is
+# readable.
+MIN_MATH_ROW_CHARS = 30
+
 # Where a long equation may be broken. These are relations and the top-level
 # connectives that read as relations; breaking before one is what a typesetter
 # would do and what `m:brkBin w:val="before"` already tells Word to expect.
@@ -135,6 +150,15 @@ MATH_BREAK_CHARS = 90
 MAX_MATH_BREAKS = 6
 
 MATH_BREAK_TOKENS = ("=", "≠", "≤", "≥", "<", ">", "≈", "≡", "⇒", "⇔", "→", "∴", "±")
+MATH_RPR_ORDER = ("m:aln", "m:brk", "m:lit", "m:nor", "m:scr", "m:sty")
+# Direct children the OMML schema permits in an equation argument. An unknown
+# extension is safe to leave in place and soft-break around, but not to move into
+# a newly constructed equation-array row whose content model is known.
+MATH_ARG_ELEMENTS = {
+    "m:argPr", "m:acc", "m:bar", "m:borderBox", "m:box", "m:d", "m:f",
+    "m:func", "m:groupChr", "m:limLow", "m:limUpp", "m:nary", "m:phant",
+    "m:rad", "m:r", "m:sPre", "m:sSub", "m:sSubSup", "m:sSup",
+}
 
 # Arguments a Mathpix export leaves with nothing on their left. An empty
 # `<m:e/>`, or the missing half of a one-sided script written as `<m:sub/>` or
@@ -222,6 +246,17 @@ RPR_ORDER = (
     "w:specVanish", "w:oMath",
 )
 
+PPR_ORDER = (
+    "w:pStyle", "w:keepNext", "w:keepLines", "w:pageBreakBefore", "w:framePr",
+    "w:widowControl", "w:numPr", "w:suppressLineNumbers", "w:pBdr", "w:shd",
+    "w:tabs", "w:suppressAutoHyphens", "w:kinsoku", "w:wordWrap",
+    "w:overflowPunct", "w:topLinePunct", "w:autoSpaceDE", "w:autoSpaceDN",
+    "w:bidi", "w:adjustRightInd", "w:snapToGrid", "w:spacing", "w:ind",
+    "w:contextualSpacing", "w:mirrorIndents", "w:suppressOverlap", "w:jc",
+    "w:textDirection", "w:textAlignment", "w:textboxTightWrap", "w:outlineLvl",
+    "w:divId", "w:cnfStyle", "w:rPr", "w:sectPr", "w:pPrChange",
+)
+
 SECTPR_ORDER = (
     "w:footnotePr", "w:endnotePr", "w:type", "w:pgSz", "w:pgMar", "w:paperSrc",
     "w:pgBorders", "w:lnNumType", "w:pgNumType", "w:cols", "w:formProt",
@@ -233,6 +268,7 @@ MATHPR_ORDER = (
     "m:lMargin", "m:rMargin", "m:defJc", "m:preSp", "m:postSp", "m:wrapIndent",
     "m:wrapRight", "m:intLim", "m:naryLim",
 )
+MATHPARAPR_ORDER = ("m:jc", "m:ctrlPr")
 
 TAG_RE = re.compile(rb"<(/?)([A-Za-z_][\w.:-]*)((?:[^>\"']|\"[^\"]*\"|'[^']*')*?)(/?)>")
 
@@ -249,10 +285,14 @@ class Fit:
     equations_broken: int = 0
     math_gaps_filled: int = 0
     steps_joined: int = 0
+    # Literal Mathpix LaTeX heading commands turned into Word headings.
+    headings_repaired: int = 0
     # Every size the document states, plus every maths run given one.
     sizes_restated: int = 0
     # The size it was all stated at; 0 when sizing was turned off.
     font_points: float = 0.0
+    # The size used for display maths; 0 when sizing was turned off.
+    display_equation_points: float = 0.0
     # Every typeface the document named, restated as one.
     fonts_restated: int = 0
     # The face it was all stated in; "" when the fonts were left alone.
@@ -278,8 +318,10 @@ class Fit:
             "equations_broken": self.equations_broken,
             "math_gaps_filled": self.math_gaps_filled,
             "steps_joined": self.steps_joined,
+            "headings_repaired": self.headings_repaired,
             "sizes_restated": self.sizes_restated,
             "font_points": self.font_points or None,
+            "display_equation_points": self.display_equation_points or None,
             "fonts_restated": self.fonts_restated,
             "font_name": self.font_name or None,
             "side_margin_inches": round(self.side_margin_inches, 2) or None,
@@ -897,9 +939,10 @@ def _fill_math_gaps(document: bytes) -> tuple[bytes, int]:
     accept a zero-width space as the operand, and neither gives it any width, so
     the maths is unchanged in Word and repaired everywhere else.
 
-    Only matrix cells are treated this way. A leading ``−`` inside ``<m:d>`` is
-    the sign of the number it precedes, not a subtraction missing its left-hand
-    side, and giving it an operand would turn ``(−b)`` into ``( − b)``.
+    Only matrix cells, equation-array rows and a whole equation are treated
+    this way. A leading ``−`` inside ``<m:d>`` is the sign of the number it
+    precedes, not a subtraction missing its left-hand side, and giving it an
+    operand would turn ``(−b)`` into ``( − b)``.
 
     ``<m:deg/>`` is deliberately left alone: every one of them belongs to a
     radical carrying ``<m:degHide m:val="1"/>``, where empty is what a square
@@ -931,7 +974,9 @@ def _fill_math_gaps(document: bytes) -> tuple[bytes, int]:
             # A matrix cell and a whole equation are the two places a line of
             # maths starts. Anywhere else — a numerator, a script, the inside of
             # a bracket — a leading sign belongs to what follows it.
-            if (name == "m:e" and parent == "m:mr") or name == "m:oMath":
+            if (
+                name == "m:e" and parent in ("m:mr", "m:eqArr")
+            ) or name == "m:oMath":
                 if _needs_an_operand(document[opened:match.start()]):
                     edits.append((opened, 0, MATH_OPERAND))
             continue
@@ -941,14 +986,44 @@ def _fill_math_gaps(document: bytes) -> tuple[bytes, int]:
     return _apply(document, edits), len(edits)
 
 
-def _left_align(document: bytes) -> tuple[bytes, int]:
-    """Stop centring what now has a column's width rather than a page's.
+def _left_align_paragraphs(document: bytes) -> tuple[bytes, int]:
+    """Left-align centred text paragraphs while retaining visual centring.
 
-    Mathpix centres its display equations, its figures and its one table across
-    a six-inch measure. Centred across three and a half, the same content reads
-    as ragged on both sides and wastes the width it was narrowed to use.
+    A blanket replacement also changes table justification and the paragraph
+    that positions a standalone diagram. This pass only visits a paragraph's
+    own properties, and regards a drawing-only paragraph as visual content
+    whose centring is intentional. Text, headings, captions, solution steps and
+    display equations are ordinary reading matter and normalize to the left.
+    No indentation property is added, removed or rewritten.
     """
-    return re.subn(rb'(<w:jc\b[^>]*?w:val=")center(")', rb"\1left\2", document)
+    edits: list[tuple[int, int, bytes]] = []
+
+    for paragraph in PARAGRAPH_RE.finditer(document):
+        body = paragraph.group(0)
+        has_figure = b"<w:drawing" in body or b"<w:pict" in body
+        has_text = bool(_paragraph_text(body).strip())
+        if has_figure and not has_text and b"<m:oMath" not in body:
+            continue
+
+        properties = re.search(
+            rb"<w:pPr\b[^>]*>.*?</w:pPr>|<w:pPr\b[^>]*/>", body, re.S
+        )
+        if properties is None:
+            continue
+        justification = re.search(rb"<w:jc\b([^>]*)/>", properties.group(0))
+        if justification is None or _attr(justification.group(1), "w:val") != "center":
+            continue
+        tag = justification.group(0)
+        replacement = re.sub(
+            rb'(\bw:val\s*=\s*)(["\x27])center\2',
+            lambda match: match.group(1) + match.group(2) + b"left" + match.group(2),
+            tag,
+            count=1,
+        )
+        at = paragraph.start() + properties.start() + justification.start()
+        edits.append((at, len(tag), replacement))
+
+    return _apply(document, edits), len(edits)
 
 
 def _set_default_justification(settings: bytes, value: str = "left") -> bytes:
@@ -1027,8 +1102,10 @@ def _rpr_size_edit(offset: int, body: bytes, half_points: int) -> tuple[int, int
     )
 
 
-def _size_math_runs(document: bytes, half_points: int) -> tuple[bytes, int]:
-    """State the size on every maths run, which is the size Word already uses.
+def _size_math_runs(
+    document: bytes, body_half_points: int, display_half_points: int
+) -> tuple[bytes, int]:
+    """State body size on inline maths and the reduced size on display maths.
 
     Not one of the document's ``<m:r>`` carries a ``w:sz``. Word reads the size
     off ``docDefaults`` and draws the equation at the size of the text around it.
@@ -1037,15 +1114,15 @@ def _size_math_runs(document: bytes, half_points: int) -> tuple[bytes, int]:
     module's own base size — so the equation sits in a visibly larger box than
     the sentence that introduces it.
 
-    Saying the size on the run itself is what makes Word draw the maths at the
-    size the sentence around it is set in rather than at whatever ``docDefaults``
-    happened to say. LibreOffice is not reachable this way: measured against
-    24.2, its importer ignores ``w:sz`` on the maths run, on the paragraph mark
-    and in ``docDefaults``, and draws every formula at the Math module's fixed
-    base size — so there the document's own size is the only thing that can be
-    made to agree with it. ``m:ctrlPr`` — the properties of a fraction bar, a
-    bracket, a radical — is sized too, because it is what those glyphs are drawn
-    at.
+    Saying the size on the run itself keeps inline maths at the size of the
+    sentence around it. Runs inside ``m:oMathPara`` use the one-point-smaller
+    display size, as do ``m:ctrlPr`` controls for fraction bars, brackets and
+    radicals. LibreOffice is not reachable this way: measured against 24.2, its
+    importer ignores ``w:sz`` on the maths run, on the paragraph mark and in
+    ``docDefaults``, and draws every formula at the Math module's fixed base
+    size — so there the document's own size is the only thing that can be made to
+    agree with it.
+
 
     The insertion is ordered, not prepended: ``CT_R`` sequences ``m:rPr`` before
     ``w:rPr`` before ``m:t``, and a ``w:rPr`` written ahead of the ``m:rPr`` that
@@ -1063,6 +1140,11 @@ def _size_math_runs(document: bytes, half_points: int) -> tuple[bytes, int]:
 
         if match.group(4) == b"/":
             if name in ("m:r", "m:ctrlPr"):
+                half_points = (
+                    display_half_points
+                    if any(parent == "m:oMathPara" for parent, _ in stack)
+                    else body_half_points
+                )
                 edits.append((
                     match.start(),
                     match.end() - match.start(),
@@ -1077,6 +1159,11 @@ def _size_math_runs(document: bytes, half_points: int) -> tuple[bytes, int]:
                 continue
             _, opened = stack.pop()
             if name in ("m:r", "m:ctrlPr"):
+                half_points = (
+                    display_half_points
+                    if any(parent == "m:oMathPara" for parent, _ in stack)
+                    else body_half_points
+                )
                 edits += _math_run_size_edits(
                     opened, document[opened:match.start()], half_points
                 )
@@ -1110,6 +1197,9 @@ def _math_run_size_edits(
             return []
         inner = body[found.end():closing]
         if b"<w:sz" in inner:
+            restated, changed = _restate_sizes(inner, half_points)
+            if changed:
+                return [(offset + found.end(), len(inner), restated)]
             return []
         return [_rpr_size_edit(offset + found.end(), inner, half_points)]
 
@@ -1223,6 +1313,272 @@ def _paragraph_text(body: bytes) -> str:
     return b"".join(found).decode("utf-8", "replace")
 
 
+# --- literal LaTeX headings emitted as prose -----------------------------------
+
+RUN_RE = re.compile(rb"<w:r\b[^>]*>.*?</w:r>", re.S)
+BREAK_RE = re.compile(rb"<w:(?:br|cr)\b[^>]*/>")
+RUN_PROPERTIES_RE = re.compile(
+    rb"\s*(?:<w:rPr\b[^>]*>.*?</w:rPr>|<w:rPr\b[^>]*/>)\s*", re.S
+)
+PARAGRAPH_PROPERTIES_RE = re.compile(
+    rb"\s*(<w:pPr\b[^>]*>.*?</w:pPr>|<w:pPr\b[^>]*/>)", re.S
+)
+HEADING_COMMAND_RE = re.compile(r"\\(title|section|subsection)(\*)?\{")
+HEADING_BREAK = b"<w:r><w:br/></w:r>"
+HEADING_SPACING = b"<w:spacing w:after=\"220\"/>"
+HEADING_JUSTIFICATION = b"<w:jc w:val=\"left\"/>"
+
+
+def _latex_heading(text: str) -> tuple[str, str] | None:
+    """Parse one complete, unambiguous heading command.
+
+    Braces may only occur when escaped, and only LaTeX escapes whose plain-text
+    meaning is certain are accepted. That closed grammar is intentional: an
+    unknown command in a title is still source text, not permission to guess at
+    how it should render.
+    """
+    value = text.strip()
+    opened = HEADING_COMMAND_RE.match(value)
+    if opened is None or (opened.group(1) == "title" and opened.group(2)):
+        return None
+
+    title: list[str] = []
+    index = opened.end()
+    escapes = {char: char for char in "#$%&_{}\\"}
+    while index < len(value):
+        char = value[index]
+        if char == "}":
+            if index != len(value) - 1:
+                return None
+            plain = "".join(title).strip()
+            return (opened.group(1), plain) if plain else None
+        if char == "{":
+            return None
+        if char == "\\":
+            index += 1
+            if index >= len(value) or value[index] not in escapes:
+                return None
+            title.append(escapes[value[index]])
+        else:
+            title.append(char)
+        index += 1
+    return None
+
+
+def _run_fragment(opening: bytes, properties: bytes, body: bytes) -> bytes:
+    """A split run, retaining its run properties and omitting empty shells."""
+    material = body.strip()
+    if not material:
+        return b""
+    return opening + properties + body + b"</w:r>"
+
+
+def _visual_lines(body: bytes) -> list[bytes] | None:
+    """Split paragraph content on Word line breaks without flattening its runs.
+
+    Mathpix normally puts a soft break in a run of its own. The slightly more
+    general run split also handles text on either side of that break and repeats
+    the run properties so both retained fragments keep their formatting. A
+    break outside a run implies a more complicated container; that paragraph is
+    left alone rather than risk unbalancing it.
+    """
+    lines: list[bytes] = []
+    current = bytearray()
+    cursor = 0
+
+    for run in RUN_RE.finditer(body):
+        outside = body[cursor:run.start()]
+        if BREAK_RE.search(outside):
+            return None
+        current += outside
+
+        opening = re.match(rb"<w:r\b[^>]*>", run.group(0))
+        if opening is None:
+            current += run.group(0)
+            cursor = run.end()
+            continue
+        inner = run.group(0)[opening.end(): -len(b"</w:r>")]
+        properties_match = RUN_PROPERTIES_RE.match(inner)
+        properties = properties_match.group(0) if properties_match else b""
+        content_start = properties_match.end() if properties_match else 0
+        content = inner[content_start:]
+        breaks = list(BREAK_RE.finditer(content))
+        if not breaks:
+            current += run.group(0)
+            cursor = run.end()
+            continue
+
+        at = 0
+        for boundary in breaks:
+            current += _run_fragment(
+                opening.group(0), properties, content[at:boundary.start()]
+            )
+            lines.append(bytes(current))
+            current.clear()
+            at = boundary.end()
+        current += _run_fragment(opening.group(0), properties, content[at:])
+        cursor = run.end()
+
+    tail = body[cursor:]
+    if BREAK_RE.search(tail):
+        return None
+    current += tail
+    lines.append(bytes(current))
+    return lines
+
+
+def _heading_line(line: bytes) -> tuple[str, str] | None:
+    """Return a heading only when the visual line contains no other object."""
+    if any(
+        marker in line
+        for marker in (
+            b"<m:", b"<w:drawing", b"<w:pict", b"<w:object", b"<w:tab",
+            b"<w:fldChar", b"<w:instrText", b"<w:bookmark",
+        )
+    ):
+        return None
+    text = b"".join(re.findall(rb"<w:t\b[^>]*>(.*?)</w:t>", line, re.S))
+    return _latex_heading(html.unescape(text.decode("utf-8", "replace")))
+
+
+def _ppr_parts(properties: bytes) -> tuple[bytes, bytes, bytes]:
+    """Opening, inner XML and closing markup for paragraph properties."""
+    opening = re.match(rb"<w:pPr\b[^>]*>", properties)
+    if opening is not None:
+        closing = b"</w:pPr>"
+        return opening.group(0), properties[opening.end(): -len(closing)], closing
+    empty = re.match(rb"<w:pPr\b[^>]*/>", properties)
+    if empty is not None:
+        return empty.group(0)[:-2] + b">", b"", b"</w:pPr>"
+    return b"<w:pPr>", b"", b"</w:pPr>"
+
+
+def _without_ppr_child(properties: bytes, element: str) -> bytes:
+    if not properties:
+        return properties
+    pattern = re.compile(
+        rb"\s*<" + element.encode() + rb"\b[^>]*>.*?</" + element.encode()
+        + rb">|\s*<" + element.encode() + rb"\b[^>]*/>",
+        re.S,
+    )
+    return pattern.sub(b"", properties)
+
+
+def _set_ppr_child(properties: bytes, element: str, markup: bytes) -> bytes:
+    """Set one paragraph property at its schema-valid position."""
+    properties = _without_ppr_child(properties or b"<w:pPr/>", element)
+    opening, inner, closing = _ppr_parts(properties)
+    at = _insert_offset(0, inner, element, PPR_ORDER)
+    return opening + inner[:at] + markup + inner[at:] + closing
+
+
+def _unnumbered_ppr(properties: bytes) -> bytes:
+    return _without_ppr_child(properties, "w:numPr")
+
+
+def _heading_ppr(properties: bytes) -> bytes:
+    """Heading spacing and alignment, without a false list marker or indent."""
+    repaired = _unnumbered_ppr(properties)
+    repaired = _without_ppr_child(repaired, "w:ind")
+    repaired = _set_ppr_child(repaired, "w:spacing", HEADING_SPACING)
+    return _set_ppr_child(repaired, "w:jc", HEADING_JUSTIFICATION)
+
+
+def _text_markup(text: str) -> bytes:
+    escaped = (
+        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+    return escaped.encode("utf-8")
+
+
+def _heading_run(title: str) -> bytes:
+    return (
+        b"<w:r><w:rPr><w:b/><w:bCs/></w:rPr><w:t>"
+        + _text_markup(title)
+        + b"</w:t></w:r>"
+    )
+
+
+def _paragraph_clone(opening: bytes, properties: bytes, body: bytes) -> bytes:
+    return opening + properties + body + b"</w:p>"
+
+
+def _repair_heading_paragraph(paragraph: bytes) -> tuple[bytes, int]:
+    """Split and repair the unambiguous heading lines in one Word paragraph."""
+    if paragraph.endswith(b"/>"):
+        return paragraph, 0
+    # Native Word headings already carry their semantics. Bookmarks and section
+    # boundaries can span paragraph contents, so neither is safe to split.
+    if b"<w:pStyle" in paragraph or b"<w:bookmark" in paragraph or b"<w:sectPr" in paragraph:
+        return paragraph, 0
+    # These containers may span multiple runs. The common Mathpix heading shape
+    # is plain runs; leave richer Word structures byte-for-byte intact.
+    complex_containers = (b"<w:hyperlink", b"<w:smartTag", b"<w:sdt", b"<w:customXml")
+    if any(tag in paragraph for tag in complex_containers):
+        return paragraph, 0
+
+    opening = re.match(rb"<w:p\b[^>]*>", paragraph)
+    if opening is None:
+        return paragraph, 0
+    inner = paragraph[opening.end(): -len(b"</w:p>")]
+    property_match = PARAGRAPH_PROPERTIES_RE.match(inner)
+    properties = property_match.group(1) if property_match else b""
+    content = inner[property_match.end():] if property_match else inner
+    lines = _visual_lines(content)
+    if lines is None:
+        return paragraph, 0
+
+    commands = [_heading_line(line) for line in lines]
+    repaired = sum(command is not None for command in commands)
+    if not repaired:
+        return paragraph, 0
+
+    output: list[bytes] = []
+    retained: list[bytes] = []
+    heading_seen = False
+
+    def flush_retained() -> None:
+        nonlocal retained
+        if not retained:
+            return
+        retained_properties = properties if not heading_seen else _unnumbered_ppr(properties)
+        output.append(
+            _paragraph_clone(
+                opening.group(0), retained_properties, HEADING_BREAK.join(retained)
+            )
+        )
+        retained = []
+
+    for line, command in zip(lines, commands):
+        if command is None:
+            retained.append(line)
+            continue
+        flush_retained()
+        _, title = command
+        output.append(
+            _paragraph_clone(
+                opening.group(0), _heading_ppr(properties), _heading_run(title)
+            )
+        )
+        heading_seen = True
+    flush_retained()
+    return b"".join(output), repaired
+
+
+def _repair_latex_headings(document: bytes) -> tuple[bytes, int]:
+    """Turn literal standalone Mathpix heading commands into Word headings."""
+    edits: list[tuple[int, int, bytes]] = []
+    repaired = 0
+    for paragraph in PARAGRAPH_RE.finditer(document):
+        replacement, changed = _repair_heading_paragraph(paragraph.group(0))
+        if changed:
+            edits.append(
+                (paragraph.start(), paragraph.end() - paragraph.start(), replacement)
+            )
+            repaired += changed
+    return _apply(document, edits), repaired
+
+
 def _is_connective(text: str) -> bool:
     """Whether a fragment is one of the step tokens and nothing else.
 
@@ -1251,12 +1607,42 @@ def _lone_math_paragraph(body: bytes) -> re.Match[bytes] | None:
 
 def _math_para_jc_edits(offset: int, body: bytes) -> list[tuple[int, int, bytes]]:
     """Say where one `m:oMathPara` sits, rather than leaving it to `m:defJc`."""
-    if b"<m:oMathParaPr" in body:
-        return []
     opening = re.match(rb"<m:oMathPara\b[^>]*>", body)
     if opening is None:
         return []
-    return [(offset + opening.end(), 0, MATH_PARA_JC)]
+    properties = re.search(
+        rb"<m:oMathParaPr\b[^>]*>.*?</m:oMathParaPr>|<m:oMathParaPr\b[^>]*/>",
+        body,
+        re.S,
+    )
+    if properties is None:
+        return [(offset + opening.end(), 0, MATH_PARA_JC)]
+    if properties.group(0).endswith(b"/>"):
+        return [(
+            offset + properties.start(),
+            len(properties.group(0)),
+            MATH_PARA_JC,
+        )]
+
+    justification = re.search(rb"<m:jc\b([^>]*)/>", properties.group(0))
+    if justification is not None:
+        if _attr(justification.group(1), "m:val") == "left":
+            return []
+        at = offset + properties.start() + justification.start()
+        return [(at, len(justification.group(0)), b'<m:jc m:val="left"/>')]
+
+    property_opening = re.match(rb"<m:oMathParaPr\b[^>]*>", properties.group(0))
+    if property_opening is None:
+        return []
+    closing = properties.group(0).rfind(b"</m:oMathParaPr>")
+    inner = properties.group(0)[property_opening.end():closing]
+    at = _insert_offset(
+        offset + properties.start() + property_opening.end(),
+        inner,
+        "m:jc",
+        MATHPARAPR_ORDER,
+    )
+    return [(at, 0, b'<m:jc m:val="left"/>')]
 
 
 def _connective_markup(token: str) -> bytes:
@@ -1307,7 +1693,7 @@ def _shape_b(body: bytes) -> tuple[int, str] | None:
     return (start, text.strip()) if _is_connective(text) else None
 
 
-def _join_steps(document: bytes) -> tuple[bytes, int]:
+def _join_steps_once(document: bytes) -> tuple[bytes, int]:
     """Put a worked step's connective on the line of the equation it introduces.
 
     Mathpix writes ``⇒``, ``∴`` or ``or`` as a line of its own above the display
@@ -1359,6 +1745,23 @@ def _join_steps(document: bytes) -> tuple[bytes, int]:
         joined += 1
 
     return _apply(document, edits), joined
+
+
+def _join_steps(document: bytes) -> tuple[bytes, int]:
+    """Join a complete chain of adjacent connective-only paragraphs.
+
+    Mathpix can emit ``and`` and ``⇒`` as two consecutive lines before one
+    equation. One positioned-edit pass can consume only the connective directly
+    adjacent to the equation; repeating until stable folds the whole finite
+    chain in during the same fit and makes refitting idempotent.
+    """
+    joined = 0
+    while True:
+        updated, changed = _join_steps_once(document)
+        if not changed:
+            return document, joined
+        document = updated
+        joined += changed
 
 
 def _left_align_math(document: bytes) -> tuple[bytes, int]:
@@ -1801,81 +2204,598 @@ def _fit_images(
     return edits, resized, capped, skipped
 
 
-def _break_equations(document: bytes, walk: _Walk) -> tuple[list, int]:
-    """Give long display equations somewhere for Word to wrap.
+@dataclass(frozen=True)
+class _XmlChild:
+    """One complete direct child of a small XML fragment."""
 
-    Word is already told how to wrap — ``m:brkBin`` is ``before`` in every file
-    Mathpix produces — but it wraps only where a run says it may, and Mathpix
-    writes no such run. A break is marked before top-level relations only:
-    inside a fraction, script or radical a break would be wrong, and on a short
-    equation it would be gratuitous, so neither gets one. The leading relation is
-    skipped too, because that one is where the equation starts rather than a
-    place it could continue.
+    name: str
+    start: int
+    end: int
+    inner_start: int
+    inner_end: int
+
+
+def _direct_children(body: bytes) -> list[_XmlChild] | None:
+    """Return balanced direct children without normalizing their XML.
+
+    ElementTree is intentionally not used here: parsing and serializing would
+    rename namespace prefixes and rewrite every untouched run. The document
+    walker already has a quote-aware tag scanner, and a small balanced stack is
+    enough to find row boundaries while retaining the source bytes exactly.
+    """
+    children: list[_XmlChild] = []
+    stack: list[tuple[str, int, int]] = []
+    covered = 0
+
+    for match in TAG_RE.finditer(body):
+        name = match.group(2).decode("ascii", "replace")
+        closing = match.group(1) == b"/"
+        empty = match.group(4) == b"/"
+
+        if closing:
+            if not stack or stack[-1][0] != name:
+                return None
+            opened_name, opened_at, opened_end = stack.pop()
+            if not stack:
+                if body[covered:opened_at].strip():
+                    return None
+                children.append(
+                    _XmlChild(
+                        opened_name, opened_at, match.end(), opened_end, match.start()
+                    )
+                )
+                covered = match.end()
+            continue
+
+        if empty:
+            if not stack:
+                if body[covered:match.start()].strip():
+                    return None
+                children.append(
+                    _XmlChild(name, match.start(), match.end(), match.end(), match.end())
+                )
+                covered = match.end()
+            continue
+
+        stack.append((name, match.start(), match.end()))
+
+    if stack or body[covered:].strip():
+        return None
+    return children
+
+
+def _child_body(source: bytes, child: _XmlChild) -> bytes:
+    return source[child.inner_start:child.inner_end]
+
+
+def _with_child_body(source: bytes, child: _XmlChild, body: bytes) -> bytes:
+    """Replace a child's contents while preserving its tag and attributes."""
+    if child.inner_start == child.end:
+        opening = source[child.start:child.end]
+        if not opening.endswith(b"/>"):
+            return source[child.start:child.end]
+        return opening[:-2] + b">" + body + f"</{child.name}>".encode()
+    return (
+        source[child.start:child.inner_start]
+        + body
+        + source[child.inner_end:child.end]
+    )
+
+
+def _visible_math_text(body: bytes) -> str:
+    """Visible run text, with XML entities decoded and repair operands ignored."""
+    return html.unescape(_math_text(body)).replace(ZERO_WIDTH_SPACE, "")
+
+
+def _relation_run(body: bytes) -> bool:
+    text = _visible_math_text(body).strip()
+    return bool(text) and text[0] in MATH_BREAK_TOKENS
+
+
+def _row_breaks(
+    body: bytes, max_breaks: int = MAX_MATH_BREAKS
+) -> tuple[list[_XmlChild], list[int]] | None:
+    """Find conservative break positions between complete direct children."""
+    if (
+        max_breaks <= 0
+        or b"<m:brk" in body
+        or len(_visible_math_text(body)) < MATH_BREAK_CHARS
+    ):
+        return None
+    children = _direct_children(body)
+    if not children:
+        return None
+
+    breaks: list[int] = []
+    seen = 0
+    for index, child in enumerate(children):
+        child_xml = body[child.start:child.end]
+        visible = len(_visible_math_text(child_xml).strip())
+        if (
+            child.name == "m:r"
+            and _relation_run(child_xml)
+            and seen >= MIN_MATH_ROW_CHARS
+            and len(breaks) < max_breaks
+        ):
+            breaks.append(index)
+            seen = 0
+        seen += visible
+
+    # A short final fragment is not promoted to a row of its own. Removing the
+    # final boundary merges it back into its predecessor without changing text.
+    if breaks and seen < MIN_MATH_ROW_CHARS:
+        breaks.pop()
+    return (children, breaks) if breaks else None
+
+
+def _split_row(
+    body: bytes, max_breaks: int = MAX_MATH_BREAKS
+) -> list[bytes] | None:
+    found = _row_breaks(body, max_breaks)
+    if found is None:
+        return None
+    children, breaks = found
+    offsets = [0] + [children[index].start for index in breaks] + [len(body)]
+    return [body[left:right] for left, right in zip(offsets, offsets[1:])]
+
+
+def _mark_run_property(run: bytes, property_markup: bytes) -> bytes | None:
+    """Put one ordered OMML run property on a complete ``m:r``."""
+    children = _direct_children(run)
+    if len(children or []) != 1 or children[0].name != "m:r":
+        return None
+    outer = children[0]
+    body = _child_body(run, outer)
+    direct = _direct_children(body)
+    if direct is None:
+        return None
+    property_name = re.match(rb"<([A-Za-z_][\w.:-]*)", property_markup)
+    if property_name is None:
+        return None
+    name = property_name.group(1)
+
+    for child in direct:
+        if child.name != "m:rPr":
+            continue
+        props = body[child.start:child.end]
+        if re.search(rb"<" + re.escape(name) + rb"\b", props):
+            return run
+        inner = _child_body(body, child)
+        element = name.decode("ascii", "replace")
+        at = _insert_offset(0, inner, element, MATH_RPR_ORDER)
+        replacement = _with_child_body(
+            body, child, inner[:at] + property_markup + inner[at:]
+        )
+        new_body = body[:child.start] + replacement + body[child.end:]
+        return _with_child_body(run, outer, new_body)
+
+    return _with_child_body(
+        run, outer, b"<m:rPr>" + property_markup + b"</m:rPr>" + body
+    )
+
+
+def _align_row(body: bytes) -> bytes:
+    """Mark the first direct relation as this equation row's alignment point."""
+    children = _direct_children(body)
+    if children is None:
+        return body
+    for child in children:
+        run = body[child.start:child.end]
+        if child.name != "m:r" or not _relation_run(run):
+            continue
+        marked = _mark_run_property(run, b"<m:aln/>")
+        if marked is None:
+            return body
+        return body[:child.start] + marked + body[child.end:]
+    return body
+
+
+def _flat_equation(body: bytes) -> bytes | None:
+    """Turn one oversized flat expression into one editable equation array."""
+    direct = _direct_children(body)
+    if direct is None or any(child.name not in MATH_ARG_ELEMENTS for child in direct):
+        return None
+    rows = _split_row(body)
+    if rows is None:
+        return None
+    return b"<m:eqArr>" + b"".join(
+        b"<m:e>" + _align_row(row) + b"</m:e>" for row in rows
+    ) + b"</m:eqArr>"
+
+
+def _equation_array(body: bytes) -> bytes | None:
+    """Subdivide only oversized direct rows of an existing equation array."""
+    direct = _direct_children(body)
+    if direct is None:
+        return None
+    if any(child.name not in ("m:eqArrPr", "m:e") for child in direct):
+        return None
+    properties = [index for index, child in enumerate(direct) if child.name == "m:eqArrPr"]
+    if len(properties) > 1 or (properties and properties[0] != 0):
+        return None
+    rows = [child for child in direct if child.name == "m:e"]
+    if not rows:
+        return None
+
+    pieces: list[bytes] = []
+    cursor = 0
+    changed = False
+    remaining = MAX_MATH_BREAKS
+    for child in direct:
+        pieces.append(body[cursor:child.start])
+        original = body[child.start:child.end]
+        if child.name != "m:e":
+            pieces.append(original)
+        else:
+            row_body = _child_body(body, child)
+            nested = b"<m:eqArr" in row_body or b"<m:m" in row_body
+            subdivisions = None if nested else _split_row(row_body, remaining)
+            if subdivisions is None:
+                pieces.append(original)
+            else:
+                pieces.append(
+                    _with_child_body(body, child, _align_row(subdivisions[0]))
+                )
+                pieces.extend(
+                    b"<m:e>" + _align_row(row) + b"</m:e>"
+                    for row in subdivisions[1:]
+                )
+                remaining -= len(subdivisions) - 1
+                changed = True
+        cursor = child.end
+    pieces.append(body[cursor:])
+    return b"".join(pieces) if changed else None
+
+
+def _matrix_rows(body: bytes) -> tuple[list[_XmlChild], list[list[_XmlChild]]] | None:
+    direct = _direct_children(body)
+    if direct is None or any(child.name not in ("m:mPr", "m:mr") for child in direct):
+        return None
+    properties = [index for index, child in enumerate(direct) if child.name == "m:mPr"]
+    if len(properties) > 1 or (properties and properties[0] != 0):
+        return None
+    rows = [child for child in direct if child.name == "m:mr"]
+    cells: list[list[_XmlChild]] = []
+    for row in rows:
+        found = _direct_children(_child_body(body, row))
+        if not found or any(child.name != "m:e" for child in found):
+            return None
+        cells.append(found)
+    if len(rows) < 2 or not cells or len(cells[0]) not in (1, 2):
+        return None
+    if any(len(row_cells) != len(cells[0]) for row_cells in cells):
+        return None
+    return direct, cells
+
+
+def _layout_matrix_rows(
+    body: bytes, depth: int = 0
+) -> tuple[list[bytes], bool] | None:
+    """Read Mathpix's sparse derivation matrix as logical equation rows.
+
+    Some real exports use four declared alignment columns with only one or two
+    populated cells per row; others put a complete multi-row matrix inside one
+    cell of a two-column outer matrix. Those are layout scaffolds, not semantic
+    matrices. Flattening is safe only while every level is sparse, contains no
+    more than four physical columns, and a nested matrix occupies its cell by
+    itself.
+    """
+    if depth > 3:
+        return None
+    direct = _direct_children(body)
+    if direct is None or any(child.name not in ("m:mPr", "m:mr") for child in direct):
+        return None
+    properties = [
+        index for index, child in enumerate(direct) if child.name == "m:mPr"
+    ]
+    if len(properties) > 1 or (properties and properties[0] != 0):
+        return None
+    matrix_rows = [child for child in direct if child.name == "m:mr"]
+    if len(matrix_rows) < 2:
+        return None
+
+    rows: list[bytes] = []
+    widths: list[int] = []
+    nested_layout = False
+    for matrix_row in matrix_rows:
+        row_body = _child_body(body, matrix_row)
+        cells = _direct_children(row_body)
+        if not cells or any(cell.name != "m:e" for cell in cells):
+            return None
+        if len(cells) > 4:
+            return None
+        widths.append(len(cells))
+        populated = [
+            cell
+            for cell in cells
+            if _visible_math_text(_child_body(row_body, cell)).strip()
+        ]
+        if not populated or len(populated) > 2:
+            return None
+
+        nested: tuple[_XmlChild, _XmlChild] | None = None
+        for cell in populated:
+            cell_body = _child_body(row_body, cell)
+            children = _direct_children(cell_body)
+            if children is None:
+                return None
+            matrices = [child for child in children if child.name == "m:m"]
+            if matrices:
+                if (
+                    len(populated) != 1
+                    or len(children) != 1
+                    or len(matrices) != 1
+                ):
+                    return None
+                nested = (cell, matrices[0])
+                break
+            if any(child.name not in MATH_ARG_ELEMENTS for child in children):
+                return None
+
+        if nested is not None:
+            cell, matrix = nested
+            cell_body = _child_body(row_body, cell)
+            flattened = _layout_matrix_rows(_child_body(cell_body, matrix), depth + 1)
+            if flattened is None:
+                return None
+            nested_rows, _ = flattened
+            rows.extend(nested_rows)
+            nested_layout = True
+        else:
+            rows.append(b"".join(_child_body(row_body, cell) for cell in populated))
+
+    complex_layout = nested_layout or max(widths) > 2 or len(set(widths)) > 1
+    return rows, complex_layout
+
+
+def _derivation_row(body: bytes) -> bool:
+    """Whether one flattened row visibly participates in a derivation."""
+    visible = _visible_math_text(body).strip()
+    if not visible:
+        return False
+    if visible[0] in MATH_LEADING_OPERATORS:
+        return True
+    children = _direct_children(body)
+    return bool(children) and any(
+        child.name == "m:r" and _relation_run(body[child.start:child.end])
+        for child in children
+    )
+
+
+def _complex_matrix_equation(body: bytes) -> bytes | None:
+    """Flatten only long, sparse nested/ragged layout matrices into an eqArr."""
+    flattened = _layout_matrix_rows(body)
+    if flattened is None:
+        return None
+    rows, complex_layout = flattened
+    if (
+        not complex_layout
+        or len(_visible_math_text(b"".join(rows))) < MATH_BREAK_CHARS
+        or sum(_derivation_row(row) for row in rows) < 2
+    ):
+        return None
+
+    output: list[bytes] = []
+    remaining = MAX_MATH_BREAKS
+    for row in rows:
+        subdivisions = _split_row(row, remaining)
+        logical_rows = subdivisions or [row]
+        if subdivisions is not None:
+            remaining -= len(subdivisions) - 1
+        output.extend(
+            b"<m:e>" + _align_row(logical_row) + b"</m:e>"
+            for logical_row in logical_rows
+        )
+    return b"<m:eqArr>" + b"".join(output) + b"</m:eqArr>"
+
+
+def _matrix_equation(body: bytes) -> bytes | None:
+    """Extend an unambiguous one- or two-column derivation matrix."""
+    shape = _matrix_rows(body)
+    if shape is None:
+        return None
+    direct, all_cells = shape
+    rows = [child for child in direct if child.name == "m:mr"]
+
+    targets: list[int] = []
+    relation_rows = 0
+    continuation_rows = 0
+    for row_index, (row, cells) in enumerate(zip(rows, all_cells)):
+        row_body = _child_body(body, row)
+        nonempty = [
+            index
+            for index, cell in enumerate(cells)
+            if _visible_math_text(_child_body(row_body, cell)).strip()
+        ]
+        if not nonempty:
+            return None
+        target = nonempty[-1]
+        targets.append(target)
+        cell_body = _child_body(row_body, cells[target])
+        cell_direct = _direct_children(cell_body)
+        relations = [
+            child
+            for child in cell_direct or []
+            if child.name == "m:r"
+            and _relation_run(cell_body[child.start:child.end])
+        ]
+        relation_rows += bool(relations)
+        visible = _visible_math_text(cell_body).strip()
+        continuation_rows += bool(
+            row_index and visible and visible[0] in MATH_BREAK_TOKENS
+        )
+
+    # A semantic matrix may also contain an equals sign. Requiring relations in
+    # multiple rows and a relation-led continuation is what identifies the
+    # Mathpix shape as a derivation rather than mathematical matrix data.
+    if relation_rows < 2 or continuation_rows == 0:
+        return None
+
+    pieces: list[bytes] = []
+    cursor = 0
+    changed = False
+    remaining = MAX_MATH_BREAKS
+    row_number = 0
+    for child in direct:
+        pieces.append(body[cursor:child.start])
+        if child.name != "m:mr":
+            pieces.append(body[child.start:child.end])
+            cursor = child.end
+            continue
+
+        row_body = _child_body(body, child)
+        cells = all_cells[row_number]
+        target = targets[row_number]
+        target_body = _child_body(row_body, cells[target])
+        subdivisions = _split_row(target_body, remaining)
+        row_number += 1
+        if subdivisions is None:
+            pieces.append(body[child.start:child.end])
+            cursor = child.end
+            continue
+
+        # The original row, including every non-target cell and its properties,
+        # is retained for the first segment.
+        target_cell = cells[target]
+        first_cell = _with_child_body(
+            row_body, target_cell, _align_row(subdivisions[0])
+        )
+        first_row_body = (
+            row_body[:target_cell.start] + first_cell + row_body[target_cell.end:]
+        )
+        pieces.append(_with_child_body(body, child, first_row_body))
+
+        for subdivision in subdivisions[1:]:
+            new_cells = []
+            for index in range(len(cells)):
+                if index == target:
+                    new_cells.append(b"<m:e>" + _align_row(subdivision) + b"</m:e>")
+                else:
+                    new_cells.append(b"<m:e/>")
+            pieces.append(b"<m:mr>" + b"".join(new_cells) + b"</m:mr>")
+        remaining -= len(subdivisions) - 1
+        changed = True
+        cursor = child.end
+
+    pieces.append(body[cursor:])
+    return b"".join(pieces) if changed else None
+
+
+def _structural_equation(block: bytes) -> tuple[bytes | None, bool]:
+    """Split one safe display equation; report whether its shape was flat."""
+    if b"<m:brk" in block:
+        return None, False
+    direct = _direct_children(block)
+    if direct is None:
+        return None, False
+    maths = [child for child in direct if child.name == "m:oMath"]
+    properties = [
+        index for index, child in enumerate(direct) if child.name == "m:oMathParaPr"
+    ]
+    if (
+        len(maths) != 1
+        or len(properties) > 1
+        or (properties and properties[0] != 0)
+        or any(child.name not in ("m:oMathParaPr", "m:oMath") for child in direct)
+    ):
+        # Mixed-content maths paragraphs and multiple equations are ambiguous:
+        # one array cannot replace them without changing their grouping.
+        return None, False
+
+    math = maths[0]
+    body = _child_body(block, math)
+    children = _direct_children(body)
+    if children is None:
+        return None, False
+    replacement: bytes | None
+    flat = not any(child.name in ("m:eqArr", "m:m") for child in children)
+    if flat:
+        replacement = _flat_equation(body)
+    elif len(children) == 1 and children[0].name == "m:eqArr":
+        child = children[0]
+        converted = _equation_array(_child_body(body, child))
+        replacement = (
+            _with_child_body(body, child, converted) if converted is not None else None
+        )
+    elif len(children) == 1 and children[0].name == "m:m":
+        child = children[0]
+        matrix_body = _child_body(body, child)
+        flattened = _complex_matrix_equation(matrix_body)
+        if flattened is not None:
+            replacement = flattened
+        else:
+            converted = _matrix_equation(matrix_body)
+            replacement = (
+                _with_child_body(body, child, converted)
+                if converted is not None
+                else None
+            )
+    else:
+        # Nested arrays/matrices and a structural object mixed with other math
+        # are semantic or ambiguous and intentionally remain untouched.
+        return None, False
+
+    if replacement is None:
+        return None, flat
+    return _with_child_body(block, math, replacement), flat
+
+
+def _soft_break_flat_equation(block: bytes) -> bytes | None:
+    """Fallback for a safe flat equation that could not become an array."""
+    direct = _direct_children(block)
+    maths = [child for child in direct or [] if child.name == "m:oMath"]
+    if len(maths) != 1:
+        return None
+    math = maths[0]
+    body = _child_body(block, math)
+    found = _row_breaks(body)
+    if found is None:
+        return None
+    children, breaks = found
+    pieces: list[bytes] = []
+    cursor = 0
+    for index in breaks:
+        child = children[index]
+        pieces.append(body[cursor:child.start])
+        run = body[child.start:child.end]
+        marked = _mark_run_property(run, b"<m:brk/>")
+        if marked is None:
+            return None
+        pieces.append(marked)
+        cursor = child.end
+    pieces.append(body[cursor:])
+    return _with_child_body(block, math, b"".join(pieces))
+
+
+def _break_equations(document: bytes, walk: _Walk) -> tuple[list, int]:
+    """Structurally subdivide genuinely oversized, unambiguous derivations.
+
+    Each resulting line remains part of one editable OMML equation. Breaks are
+    made only between complete top-level children, so fractions, radicals,
+    scripts, delimiters, functions and other nested expressions stay atomic.
+    Existing arrays are extended row-by-row. Consistent one- or two-column
+    derivation matrices retain their columns, while sparse ragged or nested
+    layout matrices are flattened into equation-array rows; dense semantic
+    matrices are never treated as layout.
+
+    A soft ``m:brk`` remains as a fallback for a safe flat shape if structural
+    construction ever has to decline it. Ambiguous, nested, mixed-content and
+    manually wrapped equations are left byte-for-byte alone.
     """
     edits: list[tuple[int, int, bytes]] = []
     changed = 0
 
     for start, end in walk.math:
         block = document[start:end]
-        text = b"".join(re.findall(rb"<m:t[^>]*>(.*?)</m:t>", block, re.S))
-        if len(text.decode("utf-8", "replace")) < MATH_BREAK_CHARS:
+        replacement, fallback_safe = _structural_equation(block)
+        if replacement is None and fallback_safe:
+            replacement = _soft_break_flat_equation(block)
+        if replacement is None or replacement == block:
             continue
-        if b"<m:brk" in block:
-            continue
-
-        depth = 0
-        run_depth: int | None = None
-        run_start = -1
-        seen = 0
-        marked = 0
-
-        for match in TAG_RE.finditer(block):
-            closing = match.group(1) == b"/"
-            name = match.group(2).decode("ascii", "replace")
-            if match.group(4) == b"/":
-                continue
-
-            if closing:
-                depth -= 1
-                # `m:r` opened at `run_depth`, so returning to that level means the
-                # run has closed and the next one starts somewhere new.
-                if run_depth is not None and depth <= run_depth:
-                    run_depth = None
-                continue
-
-            # A run sitting directly inside `m:oMath` is at the top level of the
-            # equation; one nested in a fraction or a script is not, and is the
-            # case this must not break.
-            if name == "m:r" and run_depth is None and depth == 1:
-                run_depth, run_start = depth, match.end()
-            depth += 1
-
-            if name != "m:t":
-                continue
-            closer = block.find(b"</m:t>", match.end())
-            if closer == -1:
-                continue
-            value = block[match.end():closer].decode("utf-8", "replace")
-            stripped = value.strip()
-            top_level = run_depth is not None and depth == run_depth + 2
-
-            if (
-                top_level
-                and stripped
-                and stripped[0] in MATH_BREAK_TOKENS
-                and seen >= MATH_BREAK_CHARS // 3
-                and marked < MAX_MATH_BREAKS
-            ):
-                edits.append((start + run_start, 0, b"<m:rPr><m:brk/></m:rPr>"))
-                marked += 1
-                seen = 0
-            seen += len(stripped)
-
-        if marked:
-            changed += 1
+        edits.append((start, end - start, replacement))
+        changed += 1
 
     return edits, changed
-
 
 def _relax_wrap_indent(settings: bytes, twips: int) -> bytes:
     """Stop a wrapped equation losing an inch of a measure it has little of.
@@ -1952,12 +2872,15 @@ def fit_docx(
     source geometry could actually be read; otherwise the document is left
     single-column rather than laid out on a guess.
 
-    ``font_points`` is the one size the whole document is stated at, headings
-    included; 0 leaves every size exactly as Mathpix wrote it. ``font_name`` is
-    the one face it is stated in, prose and equations alike; "" leaves every
-    face Mathpix wrote. ``join_steps`` puts a lone ``⇒`` on the line of the
-    equation it introduces. None of the three is gated on ``multi_column``: all
-    are wrong at any measure.
+    ``font_points`` is the body and inline-maths size, headings included;
+    display equations and their controls are one point smaller. A value of 0
+    leaves every size exactly as Mathpix wrote it. ``font_name`` is the one face
+    used for prose and equations; "" leaves every face Mathpix wrote.
+    Standalone literal LaTeX title and section commands are repaired into bold,
+    unnumbered Word paragraphs before those typography passes. ``join_steps``
+    puts a lone ``⇒`` on the line of the equation it introduces.
+    None of the three is gated on ``multi_column``: all are wrong at any
+    measure.
 
     ``side_margin_inches`` is the left and right margin every section is given,
     overriding both Mathpix's margins and the ones read off the source page; 0
@@ -2012,24 +2935,27 @@ def fit_docx(
     # in this order. Joining comes before the gap filling, so an equation that
     # now opens on a relation picks up its zero-width operand; sizing comes
     # last, so the runs those two passes inserted are sized like the rest.
-    if layout is not None:
-        document, _ = _left_align(document)
+    # Literal heading commands are split before typography is restated so the
+    # inserted bold runs inherit the same configured body face and size.
+    document, headings = _repair_latex_headings(document)
+    document, _ = _left_align_paragraphs(document)
     joined = 0
     if join_steps:
         document, joined = _join_steps(document)
-    if layout is not None:
+    if fit_equations:
         document, _ = _left_align_math(document)
     gaps = 0
     if fill_math_gaps:
         document, gaps = _fill_math_gaps(document)
 
-    half_points = int(round(font_points * 2))
+    half_points = max(1, int(round(font_points * 2))) if font_points > 0 else 0
     restated = 0
+    display_half_points = max(1, half_points - 2) if half_points > 0 else 0
     styles_part = parts.get(STYLES)
     styled = styles_part
     if half_points > 0:
         document, restated = _restate_sizes(document, half_points)
-        document, sized = _size_math_runs(document, half_points)
+        document, sized = _size_math_runs(document, half_points, display_half_points)
         restated += sized
         if styled is not None:
             styled, in_styles = _restate_sizes(styled, half_points)
@@ -2060,7 +2986,7 @@ def fit_docx(
     if updated is not None:
         if fit_equations and broken:
             updated = _relax_wrap_indent(updated, wrap_indent_twips)
-        if layout is not None:
+        if fit_equations:
             updated = _set_default_justification(updated, "left")
 
     columns = layout.columns if layout is not None else 0
@@ -2108,8 +3034,10 @@ def fit_docx(
         equations_broken=broken,
         math_gaps_filled=gaps,
         steps_joined=joined,
+        headings_repaired=headings,
         sizes_restated=restated,
         font_points=font_points if half_points > 0 else 0.0,
+        display_equation_points=display_half_points / 2 if half_points > 0 else 0.0,
         fonts_restated=refonted,
         font_name=font_name if refonted else "",
         side_margin_inches=side_margin_inches if margined else 0.0,

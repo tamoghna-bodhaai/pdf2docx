@@ -42,9 +42,10 @@ returned file:
   width, with no `w:tblW`, no `w:tcW` and no `w:tblLayout`. Word therefore has no
   declared width to honour, falls back to autofit, and recomputes the columns
   from cell content — which is what a table "breaking" looks like.
-- **No display equation carries a break opportunity.** `m:brkBin` is set and
-  `m:wrapIndent` is a full inch, but there is not one `m:brk` in the document, so
-  Word has nowhere to wrap a long equation.
+- **Oversized derivations arrive as one unbroken expression.** `m:brkBin` is
+  set and `m:wrapIndent` is a full inch, but the OMML carries neither structural
+  rows nor usable break opportunities, so a long equation overruns a narrow
+  measure.
 
 Each is the same mistake — an absolute number where a relative one belongs — and
 each stops being survivable the moment the document is narrowed, which is why
@@ -58,9 +59,18 @@ rendered page's pixel width, the PDF reports the same page in points, and the
 ratio is the resolution every crop was taken at — so a crop of *n* pixels is
 genuinely `n / dpi` inches wide. A document that arrives without usable geometry
 has oversized images capped at the measure instead. Tables are restated as
-percentages, and long top-level relations in flat equations are given break
-points; equations Mathpix encodes as OMML matrices are left alone, because a
-matrix is an unbreakable box in Word and a break inside one would do nothing.
+percentages. Genuinely oversized derivations are split only between complete
+top-level OMML runs, before relations and derivation connectives, and remain one
+editable equation array with aligned rows. Fractions, radicals, scripts,
+delimiters, functions and other nested expressions are never split. Existing
+equation arrays are extended only where a direct row is oversized. Consistent
+one- or two-column derivation matrices retain their columns; sparse ragged
+matrices of up to four alignment columns, and sparse derivation matrices nested
+as a layout cell, are flattened into the same portable equation-array rows.
+Dense semantic matrices, mixed-content equations, nested equation arrays and
+manually wrapped equations are left structurally unchanged. A soft `m:brk`
+remains as a conservative fallback, and no equation receives more than six new
+breaks or a trailing row shorter than 30 visible characters.
 
 Three further repairs have nothing to do with the measure. Every maths argument
 Mathpix leaves without a left-hand side — an empty `<m:e/>`, the unused half of a
@@ -72,21 +82,32 @@ inverted question mark on every other line. On a 41-page textbook that removes
 225 of 269 such marks; the rest are LibreOffice's own rendering of `|…|`
 delimiters and are correct in Word either way.
 
-The document is also **set at one stated size** — 10pt by default, headings
-included, which keep their bold and lose their 21pt of direct formatting. Mathpix
-names a size in `docDefaults`, names none at all on its 20 000 maths runs, and
-hard-codes 21pt on its headings because `styles.xml` defines no heading style to
-carry it. Every one of those is restated, and every maths run and control
-property is given the size explicitly, so nothing is left to be inherited.
+Mathpix occasionally emits a heading as literal LaTeX — for example,
+`\section*{Fill in the Blanks}` — and may attach a list marker or place nearby
+question text in the same Word paragraph. Fitting repairs unambiguous `title`,
+`section`, and `subsection` commands that occupy a complete visual line. The title
+becomes its own bold, left-aligned, unnumbered paragraph; preceding list content
+keeps its numbering, and following text becomes a separate unnumbered paragraph.
+Native Word headings, inline mentions, equations, bookmarks, and malformed or
+ambiguous commands are left unchanged. The untouched Mathpix DOCX remains beside
+the fitted copy.
 
-In Word that is the whole repair: text, headings and maths all come out at one
-size. **LibreOffice is not reachable this way.** Measured against 24.2, its OMML
-importer builds each `m:oMath` into a Formula object and draws it at the Math
-module's own fixed base size — 12pt — ignoring `w:sz` on the maths run, on the
-paragraph mark and in `docDefaults` alike; no .docx states that size. So in
-LibreOffice the only lever is the size the rest of the document is set at, and
-`PDF2DOCX_FIT_FONT_POINTS=12` is what makes text and maths agree there.
-`PDF2DOCX_FIT_FONT_POINTS=0` keeps whatever sizes Mathpix wrote.
+The document body is also **set at one stated size** — 10pt by default, headings
+included, which keep their bold and lose their 21pt of direct formatting. Inline
+maths stays at that body size, while every display-equation block is one point
+smaller: 9pt at the default setting. Mathpix names a size in `docDefaults`, names
+none at all on its maths runs, and hard-codes 21pt on headings. Every run is
+therefore sized explicitly, including display-math controls such as fractions,
+brackets and radicals.
+
+In Word, prose and inline maths use the body size and display maths uses the
+smaller display size. **LibreOffice is not reachable this way.** Measured against
+24.2, its OMML importer builds each `m:oMath` into a Formula object and draws it
+at the Math module's own fixed base size — 12pt — ignoring `w:sz` on the maths
+run, on the paragraph mark and in `docDefaults` alike. In LibreOffice the only
+lever is the size the rest of the document is set at, and
+`PDF2DOCX_FIT_FONT_POINTS=12` makes text and maths agree there.
+`PDF2DOCX_FIT_FONT_POINTS=0` keeps every size Mathpix wrote.
 
 It is also **set in one stated typeface** — Cambria Math by default, prose and
 algebra alike. Mathpix writes two: Georgia for text and Cambria Math for the
@@ -125,8 +146,14 @@ The **page layout** toggle produces the columns instead of leaving them to be
 added afterwards. With it on, the section is restated as the page the source was
 actually laid out on — size, margins, column count and gutter, all read out of
 `lines.json` — and everything else is then fitted to that column, because the
-measure is read back out of the section rather than passed around. Display
-equations and paragraphs are left-aligned so the narrower column is used.
+measure is read back out of the section rather than passed around.
+
+Independently of that toggle, fitted single- and multi-column output normalizes
+centered prose, headings, captions and solution text to the left. Every display
+equation states left justification explicitly, and the document-level maths
+default is left too. Existing left, first-line and hanging indents are retained,
+so nested worked steps remain nested. Standalone diagrams and table justification
+keep their intentional centering.
 
 The one number in that geometry that is chosen rather than measured is the side
 margin, which every section is given at half an inch — with or without columns,
@@ -147,7 +174,8 @@ that disagree about their column count, overlapping columns — stay single-colu
 rather than being laid out on a guess.
 
 What each job changed is recorded under `fit` in `mathpix/metadata.json`,
-including the column count and page size when one was applied. Set
+including `headings_repaired`, the body and display-equation sizes, and the
+column count and page size when one was applied. Set
 `PDF2DOCX_FIT_DOCX=off` to download exactly what Mathpix returned.
 
 Changing your mind about columns does not mean paying for the document again:
