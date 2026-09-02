@@ -16,8 +16,19 @@ from . import detection
 from . import docx_fit
 from . import mathpix_client as mathpix
 from .config import settings
+from .mathpix_client import ConversionCancelled
+
+__all__ = [
+    "ConversionCancelled",
+    "ConversionResult",
+    "ConversionUsage",
+    "convert_pdf",
+    "convert_pdf_mathpix",
+    "refit_docx",
+]
 
 ProgressHook = Callable[[str, int, int], None]
+CancelHook = Callable[[], bool]
 
 
 @dataclass
@@ -75,12 +86,16 @@ def convert_pdf(
     on_usage: UsageHook = _noop_usage,
     mathpix_formats: tuple[str, ...] | None = None,
     multi_column: bool = False,
+    should_cancel: CancelHook | None = None,
 ) -> ConversionResult:
     """Convert `pdf_path`, writing the results into `work_dir`.
 
     One backend, kept behind this seam rather than called directly: a caller
     should not have to know which service converted the document, and the
     application has already changed backends once.
+
+    ``should_cancel`` is polled at every point this conversion would otherwise
+    wait; when it becomes true the conversion raises ``ConversionCancelled``.
     """
     return convert_pdf_mathpix(
         pdf_path=pdf_path,
@@ -89,6 +104,7 @@ def convert_pdf(
         on_usage=on_usage,
         formats=mathpix_formats,
         multi_column=multi_column,
+        should_cancel=should_cancel,
     )
 
 
@@ -226,6 +242,7 @@ def _collect_mathpix_result(
     on_progress: ProgressHook,
     on_usage: UsageHook,
     multi_column: bool = False,
+    should_cancel: CancelHook | None = None,
 ) -> ConversionResult:
     """Collect and store one submitted Mathpix job while its cleanup is guarded."""
     deadline = time.monotonic() + settings.mathpix_poll_timeout
@@ -236,7 +253,7 @@ def _collect_mathpix_result(
         done = state.num_pages_completed or int(round(state.percent_done / 100.0 * total))
         on_progress("transcribing", min(max(done, 0), total), total)
 
-    status = client.poll(file_id, report, deadline)
+    status = client.poll(file_id, report, deadline, should_cancel=should_cancel)
     on_progress("transcribing", total, total)
 
     # Everything asked for, plus the formats Mathpix produces without being asked.
@@ -249,7 +266,7 @@ def _collect_mathpix_result(
         on_progress("building", len(fetched), len(wanted))
 
     on_progress("building", 0, len(wanted))
-    missing = client.fetch_all(file_id, wanted, keep, deadline)
+    missing = client.fetch_all(file_id, wanted, keep, deadline, should_cancel=should_cancel)
 
     mmd = fetched[mathpix.PREVIEW_REQUIRED].decode("utf-8", "replace")
     markdown, applied = client.download_images(mmd, work_dir)
@@ -434,6 +451,7 @@ def convert_pdf_mathpix(
     on_usage: UsageHook = _noop_usage,
     formats: tuple[str, ...] | None = None,
     multi_column: bool = False,
+    should_cancel: CancelHook | None = None,
 ) -> ConversionResult:
     """Hand the whole PDF to the Mathpix Files API and write back what it returns.
 
@@ -461,6 +479,10 @@ def convert_pdf_mathpix(
 
     on_progress("rendering", total, total)
     on_progress("transcribing", 0, total)
+    # Checked before the upload: nothing has left the machine yet and Mathpix has
+    # not billed, so a cancel here costs nothing.
+    if should_cancel is not None and should_cancel():
+        raise ConversionCancelled("cancelled before the document was submitted")
     file_id = client.submit(pdf_path, options)
     try:
         return _collect_mathpix_result(
@@ -474,7 +496,11 @@ def convert_pdf_mathpix(
             on_progress=on_progress,
             on_usage=on_usage,
             multi_column=multi_column,
+            should_cancel=should_cancel,
         )
     finally:
+        # The upload is removed on the way out whether the job finished, failed,
+        # or was cancelled — a cancelled conversion should not leave the user's
+        # document sitting on Mathpix's storage either.
         if settings.mathpix_delete:
             client.delete(file_id)

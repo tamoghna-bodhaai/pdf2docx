@@ -21,7 +21,13 @@ import fitz
 import pytest
 
 from app import mathpix_client, pipeline
-from app.mathpix_client import Applied, MathpixError, MathpixUnsupported, parse_status_response
+from app.mathpix_client import (
+    Applied,
+    ConversionCancelled,
+    MathpixError,
+    MathpixUnsupported,
+    parse_status_response,
+)
 
 PNG_BYTES = (
     b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00"
@@ -91,7 +97,9 @@ class FakeClient:
         FakeClient.submissions.append((pdf_path, dict(options or {})))
         return "file-abc"
 
-    def poll(self, file_id, on_status=None, deadline=None):
+    def poll(self, file_id, on_status=None, deadline=None, should_cancel=None):
+        if should_cancel is not None and should_cancel():
+            raise ConversionCancelled("cancelled while waiting for the conversion")
         state = parse_status_response(
             {"status": "completed", "percent_done": 100.0,
              "num_pages": 2, "num_pages_completed": 2, "formats": {}},
@@ -106,7 +114,9 @@ class FakeClient:
             return self.available[ext]
         raise MathpixUnsupported(f".{ext} was not produced")
 
-    def fetch_all(self, file_id, wanted, on_ready, deadline=None):
+    def fetch_all(self, file_id, wanted, on_ready, deadline=None, should_cancel=None):
+        if should_cancel is not None and should_cancel():
+            raise ConversionCancelled("cancelled while downloading the results")
         missing = {}
         for ext in dict.fromkeys(wanted):
             try:
@@ -434,7 +444,7 @@ def test_the_uploaded_document_is_deleted_afterwards(tmp_path, monkeypatch):
 
 
 def test_the_uploaded_document_is_deleted_when_collection_fails(tmp_path, monkeypatch):
-    def fail_collection(self, file_id, wanted, on_ready, deadline=None):
+    def fail_collection(self, file_id, wanted, on_ready, deadline=None, should_cancel=None):
         raise MathpixError("network failed while downloading exports")
 
     monkeypatch.setattr(FakeClient, "fetch_all", fail_collection)

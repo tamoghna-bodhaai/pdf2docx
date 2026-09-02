@@ -52,14 +52,16 @@ def test_homepage_keeps_the_major_interaction_hooks() -> None:
         "uploads-nav", "history-nav", "theme-toggle", "user-email", "sign-out",
         "dashboard-view", "dashboard-heading",
         "drop", "picker", "keywarn",
-        "upload-progress", "upload-bar-fill", "upload-status",
-        "job-card", "job-file", "format-menu", "format-summary", "format-options",
+        "upload-progress", "upload-bar-fill", "upload-status", "upload-batch-hint",
+        "format-menu", "format-summary", "format-options",
         "included-formats", "multi-column", "multi-column-field",
-        "job-meta", "start", "discard", "start-actions", "run-area", "bar-fill",
-        "job-status", "cost-box", "retry", "actions", "download-menu", "download-links",
-        "open-comparison", "reset", "history-panel", "history-loading", "history-error",
+        "batch-panel", "batch-title", "batch-summary", "batch-badge", "batch-notice",
+        "batch-controls", "batch-list", "batch-start", "batch-pause", "batch-resume",
+        "batch-cancel", "batch-clear",
+        "history-panel", "history-loading", "history-error",
         "history-retry", "history-table", "history-body", "history-actions",
         "comparison-view", "back-to-uploads", "comparison-file", "comparison-meta",
+        "comparison-download-menu", "comparison-download-links",
         "comparison-tabs", "show-source", "show-converted", "preview-pane", "preview-empty",
         "stage-wrap", "stage", "page-image", "overlay", "legend", "pager",
         "prev-page", "page-number", "page-total", "next-page", "page-note",
@@ -91,6 +93,8 @@ def test_upload_and_theme_controls_are_accessible() -> None:
     assert picker_tag == "input"
     assert picker["type"] == "file"
     assert ".pdf" in (picker["accept"] or "")
+    # Batch upload: the picker takes several files at once.
+    assert "multiple" in picker
     assert "picker" not in page.labels
 
     menu_tag, menu = page.elements["menu-toggle"]
@@ -119,7 +123,7 @@ def test_homepage_exposes_only_the_mathpix_workflow() -> None:
 
     html = INDEX.read_text(encoding="utf-8")
     script = SCRIPT.read_text(encoding="utf-8")
-    assert "Convert PDF" in html
+    assert "Convert all" in html
     # The page never names the conversion provider. Env-var names and vendor
     # branding are for the operator, not for whoever is converting a PDF.
     assert "mathpix" not in html.lower()
@@ -130,12 +134,15 @@ def test_homepage_exposes_only_the_mathpix_workflow() -> None:
     assert "JSON blocks" not in html
     assert "new XMLHttpRequest" in script
     assert "uploadInFlight" in script
-    assert "Resume status updates" in script
     assert "response.status >= 500" in script
     assert "body.append('formats'" in script
     # The column toggle travels the same way the formats do, and under a name
     # the older `columns` field never had.
     assert "body.append('multi_column'" in script
+    # Batch conversion: the whole batch and each file can be started, paused,
+    # and cancelled.
+    assert "/api/convert/batch" in script
+    assert "/api/batches/" in script
     assert "new URLSearchParams" in script
     assert "confirm(" not in script
     assert not (INDEX.parent / "index.html.orig").exists()
@@ -175,7 +182,7 @@ def test_the_sign_in_page_loads_nothing_the_workspace_needs() -> None:
 def test_both_pages_load_the_same_bundled_inter_stylesheet() -> None:
     workspace = page_contract()
     sign_in = page_contract(LOGIN)
-    versioned_stylesheet = "/static/app.css?v=20260825-inter"
+    versioned_stylesheet = "/static/app.css?v=20260901-batch-ui"
 
     assert versioned_stylesheet in workspace.stylesheets
     assert sign_in.stylesheets == [versioned_stylesheet]

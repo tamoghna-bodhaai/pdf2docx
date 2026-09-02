@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import secrets
 import shutil
@@ -118,6 +119,10 @@ class Job:
     # Which account uploaded this. Every route that reaches a job checks it, and
     # it is the only thing separating one teammate's documents from another's.
     user_id: str = ""
+    # Files uploaded together in one batch share this. Empty for a single-file
+    # upload. The browser groups the batch panel by it; the backend uses it to
+    # start / pause / cancel a whole batch at once.
+    batch_id: str = ""
     # Always "mathpix" for a new job; the browser reads it to pick the viewer,
     # and a pre-Mathpix record may still say something else.
     layout: str = "mathpix"
@@ -125,7 +130,13 @@ class Job:
     # Lay the document out in the columns the source page used, instead of
     # delivering it in one column at Mathpix's assumed measure.
     multi_column: bool = False
-    # ready | queued | rendering | transcribing | building | done | error
+    # ready | paused | queued | rendering | transcribing | building
+    #       | done | error | cancelled
+    #
+    # `paused` and `queued` are pre-run: a paused file is held out of the batch
+    # by the user, a queued file is waiting for a free worker slot. `cancelled`
+    # is terminal — the user abandoned it; if it had already reached Mathpix the
+    # page charge may still stand.
     status: str = "ready"
     done: int = 0
     total: int = 0
@@ -159,6 +170,7 @@ class Job:
         return {
             "id": self.id,
             "filename": self.filename,
+            "batch_id": self.batch_id,
             "pages": self.pages,
             "layout": self.layout,
             "requested_formats": list(self.requested_formats),
@@ -211,9 +223,14 @@ class Job:
         directory = record.get("directory")
         status = record.get("status") or "ready"
         error = record.get("error")
-        if status in RUNNING:
+        if status in ("rendering", "transcribing", "building"):
             # The process that owned this job is gone.
             status, error = "error", "Interrupted — the server restarted mid-conversion."
+        elif status in ("queued", "paused"):
+            # Only ever waiting: nothing was mid-conversion, and the worker pool
+            # is empty after a restart, so it comes back re-startable rather than
+            # stuck or reported as failed.
+            status, error = "ready", None
         raw_requested = record.get("requested_formats")
         if isinstance(raw_requested, list):
             selected = tuple(
@@ -235,6 +252,7 @@ class Job:
         return cls(
             id=str(record["id"]),
             user_id=str(record.get("user_id") or ""),
+            batch_id=str(record.get("batch_id") or ""),
             filename=record.get("filename") or "document.pdf",
             pages=int(record.get("pages") or 0),
             layout=record.get("layout") or "mathpix",
@@ -262,6 +280,56 @@ class Job:
 
 JOBS: dict[str, Job] = {}
 JOBS_LOCK = threading.Lock()
+
+# Terminal states: nothing restarts a job in one of these without the user.
+TERMINAL = ("done", "error", "cancelled")
+# Stages a worker owns; a job here can only be cancelled, never paused.
+CONVERTING = ("rendering", "transcribing", "building")
+
+# How many of a batch's files convert at once. Every page is a Mathpix charge,
+# so this is a handful rather than a pool sized to the machine.
+#
+# `_POOL` is what actually gives a batch its parallelism: `_dispatch` submits
+# each job to it, so up to `batch_worker_count` conversions run at the same time.
+# (Starlette runs the tasks added to one request's BackgroundTasks *sequentially*,
+# so dispatching straight to `background.add_task` would convert a batch one file
+# at a time no matter what the semaphore allowed.) `BATCH_SLOTS` is a second,
+# belt-and-braces bound inside `_run_job` — it matches the pool size, so it only
+# ever blocks if the pool is resized larger, and it is the seam the concurrency
+# test drives directly. The pool size is read once at startup;
+# PDF2DOCX_BATCH_WORKERS changes need a restart.
+_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=settings.batch_worker_count, thread_name_prefix="convert"
+)
+BATCH_SLOTS = threading.BoundedSemaphore(settings.batch_worker_count)
+
+# Cooperative control for jobs that are queued or running. `CANCELLED` holds a
+# threading.Event per job the user has abandoned; the pipeline polls it at every
+# wait and unwinds with `pipeline.ConversionCancelled`. `PAUSE_REQUESTS` holds
+# ids asked to pause before they reached a worker slot — a job already
+# converting cannot be paused, only cancelled. Both are guarded by CONTROL_LOCK.
+CANCELLED: dict[str, threading.Event] = {}
+PAUSE_REQUESTS: set[str] = set()
+CONTROL_LOCK = threading.Lock()
+
+
+def _cancel_event(job_id: str) -> threading.Event:
+    with CONTROL_LOCK:
+        event = CANCELLED.get(job_id)
+        if event is None:
+            event = CANCELLED[job_id] = threading.Event()
+        return event
+
+
+def _should_cancel(job_id: str) -> bool:
+    event = CANCELLED.get(job_id)
+    return event is not None and event.is_set()
+
+
+def _clear_control(job_id: str) -> None:
+    with CONTROL_LOCK:
+        CANCELLED.pop(job_id, None)
+        PAUSE_REQUESTS.discard(job_id)
 
 
 def _newest_first(user_id: str) -> list[Job]:
@@ -386,9 +454,104 @@ def _promote_staged_job(directory: Path, staged: Path) -> None:
     shutil.rmtree(backup, ignore_errors=True)
 
 
+def _finalise_cancelled(job_id: str) -> None:
+    """Mark a job the user abandoned before (or as) a worker reached it."""
+    job = JOBS.get(job_id)
+    if job is None:
+        return
+    with JOBS_LOCK:
+        job.status = "cancelled"
+        job.error = None
+        job.finished_at = _now()
+    _clear_control(job_id)
+    _persist(job)
+
+
+def _dispatch(job: Job, pdf_path: Path, background: BackgroundTasks) -> None:
+    """Reset a job's run state to `queued` and hand it to a background worker.
+
+    The one place a conversion is started — by the single-file route, a batch
+    start, and a per-file resume or retry alike. Each job is submitted to `_POOL`,
+    so a batch converts up to `batch_worker_count` files at once; a job may sit
+    `queued` (in the pool's own work queue, or briefly at `BATCH_SLOTS`) before it
+    actually begins.
+
+    A matching `background` task simply blocks on the future. That is what keeps a
+    conversion's result in place before the response returns *under the test
+    client* (which drains a request's background tasks synchronously); on the live
+    server the futures are already running in parallel on the pool and the task
+    only awaits them.
+    """
+    with JOBS_LOCK:
+        job.status = "queued"
+        job.done = 0
+        job.total = job.pages
+        job.error = None
+        job.cost = 0.0
+        job.prompt_tokens = 0
+        job.completion_tokens = 0
+        job.calls = 0
+        job.priced_calls = 0
+        job.diagnostics = []
+        job.started_at = _now()
+        job.finished_at = None
+    _clear_control(job.id)
+    _persist(job)
+    future = _POOL.submit(_run_job, job.id, pdf_path)
+    background.add_task(_await_conversion, future)
+
+
+def _await_conversion(future: concurrent.futures.Future) -> None:
+    """Block until a dispatched conversion finishes. `_run_job` handles its own
+    failures and never propagates, so this only ever returns."""
+    try:
+        future.result()
+    except Exception:  # pragma: no cover - defensive; _run_job swallows its own
+        logging.getLogger("uvicorn.error").exception("a conversion worker raised")
+
+
 def _run_job(job_id: str, pdf_path: Path) -> None:
     job = JOBS[job_id]
     directory = pdf_path.parent
+
+    # Abandoned before any worker picked it up: nothing to unwind.
+    if _should_cancel(job_id):
+        _finalise_cancelled(job_id)
+        return
+
+    # One slot per concurrent conversion. A queued job blocks here until one is
+    # free; while it waits the user may still pause or cancel it.
+    BATCH_SLOTS.acquire()
+    try:
+        if _should_cancel(job_id):
+            _finalise_cancelled(job_id)
+            return
+        with CONTROL_LOCK:
+            paused = job_id in PAUSE_REQUESTS
+            if paused:
+                PAUSE_REQUESTS.discard(job_id)
+        if paused:
+            with JOBS_LOCK:
+                job.status = "paused"
+                job.started_at = None
+            _persist(job)
+            return
+        with JOBS_LOCK:
+            began = job.status == "queued"
+            if began:
+                job.status = "rendering"
+        if not began:
+            # Paused or cancelled after dispatch but before this slot opened.
+            if _should_cancel(job_id):
+                _finalise_cancelled(job_id)
+            return
+        _convert_in_slot(job, pdf_path, directory)
+    finally:
+        BATCH_SLOTS.release()
+
+
+def _convert_in_slot(job: Job, pdf_path: Path, directory: Path) -> None:
+    job_id = job.id
     staged: Path | None = None
 
     def on_progress(stage: str, done: int, total: int) -> None:
@@ -425,6 +588,7 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
             on_usage=on_usage,
             mathpix_formats=job.requested_formats,
             multi_column=job.multi_column,
+            should_cancel=lambda: _should_cancel(job_id),
         )
         _preserve_compatibility_files(directory, staged)
         _promote_staged_job(directory, staged)
@@ -442,6 +606,14 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
             ]
             job.status = "done"
             job.finished_at = _now()
+    except pipeline.ConversionCancelled:
+        # The user abandoned it mid-flight. Not a failure: the staged partial is
+        # dropped in `finally`, the source PDF stays so a retry is one click, and
+        # `pipeline` has already asked Mathpix to delete the upload.
+        with JOBS_LOCK:
+            job.status = "cancelled"
+            job.error = None
+            job.finished_at = _now()
     except Exception as exc:  # surfaced to the browser rather than swallowed
         with JOBS_LOCK:
             job.status = "error"
@@ -452,6 +624,7 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
     finally:
         if staged is not None and staged.exists():
             shutil.rmtree(staged, ignore_errors=True)
+        _clear_control(job_id)
         _persist(job)
 
 
@@ -574,6 +747,8 @@ def config(user: User = Depends(current_user)) -> dict:
         "dpi": settings.dpi,
         "max_pages": settings.max_pages,
         "max_upload_mb": settings.max_upload_mb,
+        "batch_max_files": settings.batch_max_files,
+        "batch_workers": settings.batch_worker_count,
         "mathpix_page_rate": settings.mathpix_page_rate,
         "remote_delete": settings.mathpix_delete,
         "improve_mathpix": settings.mathpix_improve,
@@ -588,26 +763,15 @@ def get_history(user: User = Depends(current_user)) -> dict:
     return {"jobs": jobs, "total_cost": round(spent, 6), "count": len(jobs)}
 
 
-@app.post("/api/convert")
-async def convert(
-    request: Request,
-    background: BackgroundTasks,
-    file: UploadFile = File(...),
-    # Accepted and ignored, so a client written against the older API still
-    # works. `layout` is the exception: `_mathpix_layout` refuses a legacy value
-    # rather than silently converting something else.
-    model: str = Form(default=""),
-    layout: str = Form(default=""),
-    columns: str = Form(default=""),
-    multi_column: bool = Form(default=False),
-    start: bool = Form(default=False),
-    user: User = Depends(current_user),
-) -> dict:
-    """Stage an uploaded PDF. Conversion waits for /start unless `start` is set."""
+async def _stage_upload(file: UploadFile, user: User, batch_id: str = "") -> Job:
+    """Write one uploaded PDF to a fresh job directory and register the job.
+
+    Shared by the single-file and batch upload routes. Raises ``HTTPException``
+    for a bad upload; the caller decides whether that fails the whole request
+    (single file) or is collected and reported per entry (a batch).
+    """
     if not (file.filename or "").lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Please upload a .pdf file.")
-    selected_layout = _mathpix_layout(layout)
-    _require_mathpix_credential()
 
     job_id = uuid.uuid4().hex[:12]
     directory = settings.jobs_dir / job_id
@@ -649,9 +813,10 @@ async def convert(
     job = Job(
         id=job_id,
         user_id=user.id,
+        batch_id=batch_id,
         filename=file.filename,
         pages=pages,
-        layout=selected_layout,
+        layout="mathpix",
         total=pages,
         size_bytes=size,
         directory=directory,
@@ -659,11 +824,34 @@ async def convert(
     with JOBS_LOCK:
         JOBS[job_id] = job
     _persist(job)
+    return job
+
+
+@app.post("/api/convert")
+async def convert(
+    request: Request,
+    background: BackgroundTasks,
+    file: UploadFile = File(...),
+    # Accepted and ignored, so a client written against the older API still
+    # works. `layout` is the exception: `_mathpix_layout` refuses a legacy value
+    # rather than silently converting something else.
+    model: str = Form(default=""),
+    layout: str = Form(default=""),
+    columns: str = Form(default=""),
+    multi_column: bool = Form(default=False),
+    start: bool = Form(default=False),
+    user: User = Depends(current_user),
+) -> dict:
+    """Stage an uploaded PDF. Conversion waits for /start unless `start` is set."""
+    _mathpix_layout(layout)
+    _require_mathpix_credential()
+
+    job = await _stage_upload(file, user)
 
     if start:
         return await start_job(
             request,
-            job_id,
+            job.id,
             background,
             model=model,
             layout=layout,
@@ -672,6 +860,48 @@ async def convert(
             user=user,
         )
     return job.as_dict()
+
+
+@app.post("/api/convert/batch")
+async def convert_batch(
+    files: list[UploadFile] = File(...),
+    layout: str = Form(default=""),
+    user: User = Depends(current_user),
+) -> dict:
+    """Stage several PDFs as one batch. Conversion waits for the batch start.
+
+    A member that cannot be staged — not a PDF, empty, unreadable — is reported
+    in ``rejected`` rather than failing the whole upload, so one bad file in a
+    stack of ten does not cost the user the other nine.
+    """
+    _mathpix_layout(layout)
+    _require_mathpix_credential()
+
+    if not files:
+        raise HTTPException(status_code=400, detail="Attach at least one PDF.")
+    if len(files) > settings.batch_max_files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A batch is at most {settings.batch_max_files} files.",
+        )
+
+    batch_id = uuid.uuid4().hex[:12]
+    staged: list[dict] = []
+    rejected: list[dict] = []
+    for upload in files:
+        try:
+            job = await _stage_upload(upload, user, batch_id)
+        except HTTPException as exc:
+            rejected.append({"filename": upload.filename or "(unnamed)", "detail": exc.detail})
+        else:
+            staged.append(job.as_dict())
+
+    if not staged:
+        raise HTTPException(
+            status_code=400,
+            detail=rejected[0]["detail"] if rejected else "No PDF could be staged.",
+        )
+    return {"batch_id": batch_id, "jobs": staged, "rejected": rejected}
 
 
 @app.post("/api/jobs/{job_id}/start")
@@ -714,21 +944,198 @@ async def start_job(
         job.layout = selected_layout
         job.requested_formats = selected_formats
         job.multi_column = multi_column
-        job.status = "queued"
-        job.done = 0
-        job.total = job.pages
-        job.error = None
-        job.cost = 0.0
-        job.prompt_tokens = 0
-        job.completion_tokens = 0
-        job.calls = 0
-        job.priced_calls = 0
-        job.diagnostics = []
-        job.started_at = _now()
-        job.finished_at = None
-    _persist(job)
+    _dispatch(job, pdf_path, background)
+    return job.as_dict()
 
-    background.add_task(_run_job, job_id, pdf_path)
+
+# --------------------------------------------------------------------- batches --
+#
+# A batch is just the set of jobs sharing a `batch_id`. There is no batch record:
+# the id is minted at upload, carried on each job, and the routes below fan a
+# single action out over `_batch_jobs`.
+
+
+def _batch_jobs(batch_id: str, user: User) -> list[Job]:
+    """One account's jobs in a batch, oldest first. Never another account's."""
+    if not batch_id:
+        return []
+    with JOBS_LOCK:
+        jobs = [j for j in JOBS.values() if j.batch_id == batch_id and j.user_id == user.id]
+    return sorted(jobs, key=lambda j: j.created_at)
+
+
+def _batch_view(batch_id: str, jobs: list[Job]) -> dict:
+    counts: dict[str, int] = {}
+    for job in jobs:
+        counts[job.status] = counts.get(job.status, 0) + 1
+    return {
+        "batch_id": batch_id,
+        "jobs": [job.as_dict() for job in jobs],
+        "counts": counts,
+        "active": any(job.status in RUNNING for job in jobs),
+    }
+
+
+def _pause_one(job: Job) -> bool:
+    """Hold a not-yet-running job out of the queue. Returns whether it changed.
+
+    A job already in a worker's hands (`rendering`/`transcribing`/`building`) or
+    finished cannot be paused — only cancelled.
+    """
+    with JOBS_LOCK:
+        if job.status not in ("ready", "queued"):
+            return False
+        was_queued = job.status == "queued"
+        job.status = "paused"
+        job.started_at = None
+    if was_queued:
+        # It has been dispatched and is blocked on a slot; the worker checks
+        # this the moment its slot opens and steps aside.
+        with CONTROL_LOCK:
+            PAUSE_REQUESTS.add(job.id)
+    _persist(job)
+    return True
+
+
+def _cancel_one(job: Job) -> bool:
+    """Abandon a job at any pre-terminal stage. Returns whether it changed."""
+    with JOBS_LOCK:
+        if job.status in TERMINAL:
+            return False
+        running = job.status in CONVERTING
+    # Set the flag first: a worker that reads it before we write `cancelled`
+    # still unwinds, and a worker mid-conversion is polling it every interval.
+    _cancel_event(job.id).set()
+    if not running:
+        with JOBS_LOCK:
+            job.status = "cancelled"
+            job.error = None
+            job.finished_at = _now()
+        with CONTROL_LOCK:
+            PAUSE_REQUESTS.discard(job.id)
+        _persist(job)
+    return True
+
+
+@app.get("/api/batches/{batch_id}")
+def batch_status(batch_id: str, user: User = Depends(current_user)) -> dict:
+    """The whole batch in one poll: every job, a status tally, and whether any run."""
+    jobs = _batch_jobs(batch_id, user)
+    if not jobs:
+        raise HTTPException(status_code=404, detail="Unknown batch id")
+    return _batch_view(batch_id, jobs)
+
+
+@app.post("/api/batches/{batch_id}/start")
+async def start_batch(
+    request: Request,
+    batch_id: str,
+    background: BackgroundTasks,
+    layout: str = Form(default=""),
+    multi_column: bool = Form(default=False),
+    formats: str | None = Form(default=None),
+    user: User = Depends(current_user),
+) -> dict:
+    """Begin every `ready` file in the batch, at the configured concurrency.
+
+    Paused files are left alone — that is what pausing them was for. The output
+    formats and column choice apply to the whole batch.
+    """
+    form = await request.form()
+    raw_formats = str(form.get("formats") or "") if "formats" in form else formats
+
+    selected_layout = _mathpix_layout(layout)
+    selected_formats = _start_formats(raw_formats)
+    _require_mathpix_credential()
+
+    jobs = _batch_jobs(batch_id, user)
+    if not jobs:
+        raise HTTPException(status_code=404, detail="Unknown batch id")
+
+    for job in jobs:
+        if job.status != "ready":
+            continue
+        pdf_path = (job.directory or Path()) / "source.pdf"
+        if not pdf_path.exists():
+            continue
+        with JOBS_LOCK:
+            job.layout = selected_layout
+            job.requested_formats = selected_formats
+            job.multi_column = multi_column
+        _dispatch(job, pdf_path, background)
+    return _batch_view(batch_id, _batch_jobs(batch_id, user))
+
+
+@app.post("/api/batches/{batch_id}/pause")
+def pause_batch(batch_id: str, user: User = Depends(current_user)) -> dict:
+    """Hold every not-yet-running file. Anything already converting keeps going."""
+    jobs = _batch_jobs(batch_id, user)
+    if not jobs:
+        raise HTTPException(status_code=404, detail="Unknown batch id")
+    for job in jobs:
+        _pause_one(job)
+    return _batch_view(batch_id, _batch_jobs(batch_id, user))
+
+
+@app.post("/api/batches/{batch_id}/resume")
+def resume_batch(
+    batch_id: str, background: BackgroundTasks, user: User = Depends(current_user)
+) -> dict:
+    """Re-queue every paused file in the batch."""
+    jobs = _batch_jobs(batch_id, user)
+    if not jobs:
+        raise HTTPException(status_code=404, detail="Unknown batch id")
+    for job in jobs:
+        if job.status != "paused":
+            continue
+        pdf_path = (job.directory or Path()) / "source.pdf"
+        if pdf_path.exists():
+            _dispatch(job, pdf_path, background)
+    return _batch_view(batch_id, _batch_jobs(batch_id, user))
+
+
+@app.post("/api/batches/{batch_id}/cancel")
+def cancel_batch(batch_id: str, user: User = Depends(current_user)) -> dict:
+    """Abandon every file in the batch that has not finished."""
+    jobs = _batch_jobs(batch_id, user)
+    if not jobs:
+        raise HTTPException(status_code=404, detail="Unknown batch id")
+    for job in jobs:
+        _cancel_one(job)
+    return _batch_view(batch_id, _batch_jobs(batch_id, user))
+
+
+@app.post("/api/jobs/{job_id}/pause")
+def pause_job(job_id: str, user: User = Depends(current_user)) -> dict:
+    job = _get_job(job_id, user)
+    if not _pause_one(job):
+        raise HTTPException(
+            status_code=409, detail="This file is already running or finished."
+        )
+    return job.as_dict()
+
+
+@app.post("/api/jobs/{job_id}/resume")
+def resume_job(
+    job_id: str, background: BackgroundTasks, user: User = Depends(current_user)
+) -> dict:
+    job = _get_job(job_id, user)
+    if job.status != "paused":
+        raise HTTPException(status_code=409, detail="This file is not paused.")
+    pdf_path = (job.directory or Path()) / "source.pdf"
+    if not pdf_path.exists():
+        raise HTTPException(
+            status_code=409, detail="The uploaded PDF is no longer available — upload it again."
+        )
+    _dispatch(job, pdf_path, background)
+    return job.as_dict()
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str, user: User = Depends(current_user)) -> dict:
+    job = _get_job(job_id, user)
+    if not _cancel_one(job):
+        raise HTTPException(status_code=409, detail="This conversion has already finished.")
     return job.as_dict()
 
 
@@ -917,6 +1324,7 @@ def job_delete(job_id: str, user: User = Depends(current_user)) -> dict:
         shutil.rmtree(job.directory, ignore_errors=True)
     with JOBS_LOCK:
         JOBS.pop(job_id, None)
+    _clear_control(job_id)
     db.delete_job(job_id)
     return {"deleted": job_id}
 
@@ -932,6 +1340,7 @@ def history_clear(user: User = Depends(current_user)) -> dict:
             shutil.rmtree(job.directory, ignore_errors=True)
         with JOBS_LOCK:
             JOBS.pop(job.id, None)
+        _clear_control(job.id)
         db.delete_job(job.id)
         deleted += 1
     return {"deleted": deleted}

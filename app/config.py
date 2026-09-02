@@ -189,6 +189,19 @@ class Settings:
     # PDF cannot fill the volume the whole history lives on. 0 means no limit.
     max_upload_mb: int = _int("PDF2DOCX_MAX_UPLOAD_MB", 50)
 
+    # Batch conversion. `batch_max_files` caps how many PDFs one upload may
+    # stage; `batch_workers` is how many of a batch's files convert at once —
+    # every file is still a per-page Mathpix charge, so this is deliberately a
+    # handful rather than unbounded. Read through `batch_worker_count`, which
+    # clamps it: a frozen dataclass cannot clamp itself, and a nonsense value in
+    # the environment should degrade to something sane rather than stop the app.
+    batch_max_files: int = _int("PDF2DOCX_BATCH_MAX_FILES", 10)
+    batch_workers: int = _int("PDF2DOCX_BATCH_WORKERS", 3)
+
+    @property
+    def batch_worker_count(self) -> int:
+        return max(1, min(5, self.batch_workers))
+
     @property
     def jobs_dir(self) -> Path:
         return self.data_dir / "jobs"

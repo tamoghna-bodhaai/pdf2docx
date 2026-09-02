@@ -17,7 +17,7 @@
   })();
 </script>
 <link rel="stylesheet" href="/static/vendor/katex/katex.min.css" />
-<link rel="stylesheet" href="/static/app.css?v=20260825-inter" />
+<link rel="stylesheet" href="/static/app.css?v=20260901-batch-ui" />
 </head>
 <body>
 <div class="workspace-shell" id="app-shell">
@@ -103,10 +103,10 @@
             </span>
             <span class="choose-file">Choose PDF</span>
           </button>
-          <input id="picker" type="file" accept="application/pdf,.pdf" />
+          <input id="picker" type="file" accept="application/pdf,.pdf" multiple />
           <div class="upload-constraints" id="hint">
             <span id="upload-limits">PDF only · loading limits…</span>
-            <span>One file at a time</span>
+            <span id="upload-batch-hint">Up to 10 files at once</span>
           </div>
           <div class="upload-progress hidden" id="upload-progress" role="progressbar"
                aria-label="PDF upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
@@ -116,15 +116,15 @@
         </section>
 
 
-        <section class="job-card hidden" id="job-card" aria-label="Current conversion">
+        <section class="job-card batch-panel hidden" id="batch-panel" aria-label="Batch conversion">
           <div class="job-header">
             <span class="file-icon" aria-hidden="true">PDF</span>
-            <div class="job-copy"><h2 id="job-file"></h2><p id="job-meta"></p></div>
-            <span class="status-badge" id="job-badge">Ready</span>
+            <div class="job-copy"><h2 id="batch-title">Batch conversion</h2><p id="batch-summary"></p></div>
+            <span class="status-badge" id="batch-badge">Ready</span>
           </div>
-          <div class="job-notice hidden" id="job-notice" role="alert"></div>
+          <div class="job-notice hidden" id="batch-notice" role="alert"></div>
 
-          <div class="conversion-controls" id="start-actions">
+          <div class="conversion-controls" id="batch-controls">
             <div class="format-field">
               <span class="field-label">Output formats</span>
               <details class="format-menu" id="format-menu">
@@ -135,11 +135,14 @@
                 <span>Included</span><strong>Loading preview formats…</strong>
               </div>
             </div>
-            <div class="job-buttons">
-              <button class="primary" id="start" type="button">Convert PDF
+            <div class="job-buttons batch-buttons">
+              <button class="primary" id="batch-start" type="button">Convert all
                 <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6" /></svg>
               </button>
-              <button id="discard" type="button">Remove file</button>
+              <button id="batch-pause" type="button">Pause all</button>
+              <button id="batch-resume" type="button" class="hidden">Resume all</button>
+              <button id="batch-cancel" type="button">Cancel all</button>
+              <button id="batch-clear" type="button">Clear finished</button>
             </div>
             <div class="layout-field" id="multi-column-field">
               <span class="field-label">Page layout</span>
@@ -153,26 +156,7 @@
             </div>
           </div>
 
-          <div class="run-area hidden" id="run-area">
-            <div class="run-heading"><strong id="job-status" aria-live="polite">Queued…</strong><span id="progress-value">0%</span></div>
-            <div class="progress-track job-progress" id="job-progress" role="progressbar"
-                 aria-label="Conversion progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-              <i id="bar-fill"></i>
-            </div>
-            <div class="cost hidden" id="cost-box">Estimated cost <b id="cost-value">—</b><span id="cost-note"></span></div>
-            <button class="secondary hidden" id="retry" type="button">Try conversion again</button>
-          </div>
-
-          <div class="completion-actions hidden" id="actions">
-            <details class="download-menu" id="download-menu">
-              <summary class="primary">Download outputs
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 10 4 4 4-4" /></svg>
-              </summary>
-              <div id="download-links" class="download-links"></div>
-            </details>
-            <button id="open-comparison" type="button">Open comparison</button>
-            <button id="reset" type="button">Convert another PDF</button>
-          </div>
+          <ul class="batch-list" id="batch-list" aria-label="Files in this batch"></ul>
         </section>
 
         <section class="history-section" id="history-panel" aria-labelledby="history-title">
@@ -278,6 +262,6 @@
 <script src="/static/vendor/katex/katex.min.js"></script>
 <script src="/static/vendor/katex/contrib/auto-render.min.js"></script>
 <script src="/static/mmd.js?v=20260823-cleanup"></script>
-<script src="/static/app.js?v=20260823-cleanup"></script>
+<script src="/static/app.js?v=20260831-batch"></script>
 </body>
 </html>

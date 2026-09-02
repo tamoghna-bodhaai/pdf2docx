@@ -138,6 +138,17 @@ class MathpixError(RuntimeError):
     """Mathpix is unavailable, refused the document, or returned something unusable."""
 
 
+class ConversionCancelled(RuntimeError):
+    """The caller asked, through ``should_cancel``, to stop waiting on this job.
+
+    Not a Mathpix failure: the remote conversion may well be running or finished.
+    It means the user cancelled, so this process stops polling and downloading
+    and lets its caller clean up. Deliberately outside the ``MathpixError`` tree
+    so an ``except MathpixError`` that turns a provider fault into an on-screen
+    sentence does not also swallow a cancellation.
+    """
+
+
 class MathpixNotReady(MathpixError):
     """The format exists but Mathpix is still converting it."""
 
@@ -453,10 +464,18 @@ class MathpixClient:
         file_id: str,
         on_status: Callable[[MathpixStatus], None] | None = None,
         deadline: float | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> MathpixStatus:
-        """Poll until the document reaches a terminal state, reporting progress."""
+        """Poll until the document reaches a terminal state, reporting progress.
+
+        ``should_cancel`` is consulted once per iteration; when it returns true
+        this raises ``ConversionCancelled`` rather than waiting out the next
+        interval, so a cancel takes effect within one ``poll_interval``.
+        """
         limit = deadline if deadline is not None else time.monotonic() + self.poll_timeout
         while True:
+            if should_cancel is not None and should_cancel():
+                raise ConversionCancelled("cancelled while waiting for the conversion")
             state = self.status(file_id)
             if on_status is not None:
                 on_status(state)
@@ -496,6 +515,7 @@ class MathpixClient:
         wanted: Iterable[str],
         on_ready: Callable[[str, bytes], None],
         deadline: float | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> dict[str, str]:
         """Download every requested result, returning the reason each missing one is missing.
 
@@ -512,6 +532,8 @@ class MathpixClient:
         missing: dict[str, str] = {}
 
         while pending:
+            if should_cancel is not None and should_cancel():
+                raise ConversionCancelled("cancelled while downloading the results")
             waiting: list[str] = []
             for ext in pending:
                 try:
