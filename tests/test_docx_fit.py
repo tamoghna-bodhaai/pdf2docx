@@ -1970,3 +1970,164 @@ def test_a_symbol_run_in_the_body_is_left_alone_too():
     data, fit = fit_docx(package(body), lines=None, font_points=0, side_margin_inches=0)
     assert fit.fonts_restated == 0
     assert data == package(body)
+
+
+# --- redundant page breaks, and the blank pages they add ----------------------
+
+PAGE_BREAK = '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+
+
+def text_p(text: str) -> str:
+    return f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
+
+
+def prune(body):
+    """Fit with only the page-break pass live, so nothing else moves the bytes."""
+    data = body if isinstance(body, bytes) else package(body)
+    return fit_docx(
+        data,
+        lines=None,
+        fit_images=False,
+        fit_tables=False,
+        fit_equations=False,
+        fill_math_gaps=False,
+        join_steps=False,
+        font_points=0,
+        font_name="",
+        side_margin_inches=0,
+    )
+
+
+def test_two_consecutive_page_breaks_collapse_to_one():
+    body = text_p("Page one.") + PAGE_BREAK + PAGE_BREAK + text_p("Page three.")
+    data, fit = prune(body)
+    assert read(data).count('<w:br w:type="page"/>') == 1
+    assert fit.blank_pages_pruned == 1
+
+
+def test_empty_paragraphs_between_two_breaks_go_with_the_second():
+    body = text_p("A") + PAGE_BREAK + "<w:p/>" + "<w:p/>" + PAGE_BREAK + text_p("B")
+    data, fit = prune(body)
+    xml = read(data)
+    assert xml.count('<w:br w:type="page"/>') == 1
+    assert xml.count("<w:p/>") == 0
+    assert fit.blank_pages_pruned == 1
+
+
+def test_a_single_page_break_between_content_is_kept():
+    body = text_p("A") + PAGE_BREAK + text_p("B")
+    data, fit = prune(body)
+    assert read(data).count('<w:br w:type="page"/>') == 1
+    assert fit.blank_pages_pruned == 0
+    assert fit.reason == "nothing to fit"
+
+
+def test_a_trailing_page_break_is_removed():
+    body = text_p("Only page.") + PAGE_BREAK
+    data, fit = prune(body)
+    assert '<w:br w:type="page"/>' not in read(data)
+    assert fit.blank_pages_pruned == 1
+
+
+def test_trailing_empty_and_break_paragraphs_all_go():
+    body = text_p("Content.") + "<w:p/>" + PAGE_BREAK + "<w:p/>"
+    data, fit = prune(body)
+    xml = read(data)
+    assert '<w:br w:type="page"/>' not in xml
+    assert xml.count("<w:p/>") == 0
+    assert fit.blank_pages_pruned == 1
+
+
+def test_a_break_before_a_self_breaking_paragraph_is_removed():
+    self_breaking = (
+        "<w:p><w:pPr><w:pageBreakBefore/></w:pPr>"
+        "<w:r><w:t>New chapter.</w:t></w:r></w:p>"
+    )
+    body = text_p("End of chapter.") + PAGE_BREAK + self_breaking
+    data, fit = prune(body)
+    xml = read(data)
+    assert '<w:br w:type="page"/>' not in xml
+    assert "<w:pageBreakBefore/>" in xml
+    assert fit.blank_pages_pruned == 1
+
+
+def test_a_page_break_inside_a_table_cell_is_left_alone():
+    cell = (
+        "<w:tbl><w:tr><w:tc>"
+        '<w:p><w:r><w:br w:type="page"/></w:r></w:p>'
+        "</w:tc></w:tr></w:tbl>"
+    )
+    body = text_p("Before.") + cell + text_p("After.")
+    data, fit = prune(body)
+    assert read(data).count('<w:br w:type="page"/>') == 1
+    assert fit.blank_pages_pruned == 0
+
+
+def test_a_break_paragraph_that_carries_a_bookmark_is_kept():
+    bookmarked = (
+        '<w:p><w:bookmarkStart w:id="1" w:name="page2"/>'
+        '<w:r><w:br w:type="page"/></w:r>'
+        '<w:bookmarkEnd w:id="1"/></w:p>'
+    )
+    body = text_p("A") + bookmarked + PAGE_BREAK + text_p("B")
+    data, fit = prune(body)
+    xml = read(data)
+    assert 'w:name="page2"' in xml
+    assert xml.count('<w:br w:type="page"/>') == 2
+    assert fit.blank_pages_pruned == 0
+
+
+def test_a_column_break_is_not_treated_as_blank_space():
+    column_break = '<w:p><w:r><w:br w:type="column"/></w:r></w:p>'
+    body = text_p("A") + PAGE_BREAK + column_break + PAGE_BREAK + text_p("B")
+    data, fit = prune(body)
+    xml = read(data)
+    assert '<w:br w:type="column"/>' in xml
+    assert xml.count('<w:br w:type="page"/>') == 2
+    assert fit.blank_pages_pruned == 0
+
+
+def test_a_body_that_is_nothing_but_blank_pages_is_left_alone():
+    body = "<w:p/>" + PAGE_BREAK + "<w:p/>"
+    data, fit = prune(body)
+    assert fit.reason == "nothing to fit"
+    assert data == package(body)
+
+
+def test_the_page_break_pass_is_idempotent():
+    body = (
+        text_p("A")
+        + PAGE_BREAK
+        + PAGE_BREAK
+        + "<w:p/>"
+        + PAGE_BREAK
+        + text_p("B")
+        + PAGE_BREAK
+    )
+    once, first = prune(body)
+    twice, second = prune(once)
+    # Two collapsed out of the run of three, plus the one trailing the last line.
+    assert first.blank_pages_pruned == 3
+    assert read(once).count('<w:br w:type="page"/>') == 1
+    assert once == twice
+    assert second.blank_pages_pruned == 0
+
+
+def test_the_blank_page_count_is_in_the_record():
+    body = text_p("A") + PAGE_BREAK + PAGE_BREAK + text_p("B")
+    _, fit = prune(body)
+    assert fit.as_dict()["blank_pages_pruned"] == 1
+
+
+def test_turning_the_page_break_pass_off_keeps_every_break():
+    body = text_p("A") + PAGE_BREAK + PAGE_BREAK + text_p("B") + PAGE_BREAK
+    data, fit = fit_docx(
+        package(body),
+        lines=None,
+        collapse_page_breaks=False,
+        font_points=0,
+        font_name="",
+        side_margin_inches=0,
+    )
+    assert read(data).count('<w:br w:type="page"/>') == 3
+    assert fit.blank_pages_pruned == 0

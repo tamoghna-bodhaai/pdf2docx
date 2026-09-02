@@ -173,10 +173,21 @@ cramped. Sources whose geometry cannot be read confidently — too few lines, pa
 that disagree about their column count, overlapping columns — stay single-column
 rather than being laid out on a guess.
 
+Mathpix is asked for page breaks, so its DOCX carries one dedicated
+`<w:br w:type="page"/>` paragraph at every source-page boundary. Where a page
+held nothing Mathpix could read, or its content ended near the foot of the US
+Letter page it was poured onto, two of those breaks meet with nothing between
+them and a page comes out blank. The fit prunes a break that starts a page with
+no content on it — consecutive breaks, a break trailing the last of the content,
+or a break in front of a paragraph that already carries `<w:pageBreakBefore/>` —
+and removes only whole empty paragraphs, so nothing a reader can see is touched.
+This is renderer-independent: every reader paginates an explicit break the same
+way. `blank_pages_pruned` in the `fit` record counts them.
+
 What each job changed is recorded under `fit` in `mathpix/metadata.json`,
-including `headings_repaired`, the body and display-equation sizes, and the
-column count and page size when one was applied. Set
-`PDF2DOCX_FIT_DOCX=off` to download exactly what Mathpix returned.
+including `headings_repaired`, `blank_pages_pruned`, the body and
+display-equation sizes, and the column count and page size when one was applied.
+Set `PDF2DOCX_FIT_DOCX=off` to download exactly what Mathpix returned.
 
 Changing your mind about columns does not mean paying for the document again:
 `POST /api/jobs/{id}/refit` rebuilds the delivered DOCX from the exports the job

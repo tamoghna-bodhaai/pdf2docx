@@ -42,7 +42,7 @@ a fallback for safe flat expressions that cannot be represented structurally.
 Nothing here invents a layout; it re-expresses Mathpix's own one in units that
 survive being resized.
 
-Three further repairs are not about the measure at all. Every empty maths
+Several further repairs are not about the measure at all. Every empty maths
 argument Mathpix writes — the alignment cells of a matrix, the missing half of a
 one-sided script — is filled with a zero-width space, because Word draws nothing
 for an empty ``<m:e/>`` while LibreOffice draws its missing-operand placeholder
@@ -63,7 +63,13 @@ step's
 connective — a lone ``⇒`` or ``∴`` sitting on its own line above the equation it
 introduces — is joined to that equation, because Mathpix groups it as a line of
 its own in some places and inside the equation in others, and the second of
-those is what a derivation looks like.
+those is what a derivation looks like. And the page breaks Mathpix writes at
+every source-page boundary — one dedicated ``<w:br w:type="page"/>`` paragraph
+apiece — are pruned wherever one starts a page with nothing on it: two in a
+row, one trailing the last of the content, or one standing in front of a
+paragraph that already carries ``<w:pageBreakBefore/>``. Every reader paginates
+an explicit break the same way, so those are the blank pages in the delivered
+file, and only whole empty paragraphs are removed to be rid of them.
 
 And when the document is asked for in columns, the section is restated as the page
 the source was laid out on, read out of ``lines.json``: at the source book's own
@@ -285,6 +291,8 @@ class Fit:
     equations_broken: int = 0
     math_gaps_filled: int = 0
     steps_joined: int = 0
+    # Redundant Mathpix page breaks removed, one per blank page no longer shown.
+    blank_pages_pruned: int = 0
     # Literal Mathpix LaTeX heading commands turned into Word headings.
     headings_repaired: int = 0
     # Every size the document states, plus every maths run given one.
@@ -318,6 +326,7 @@ class Fit:
             "equations_broken": self.equations_broken,
             "math_gaps_filled": self.math_gaps_filled,
             "steps_joined": self.steps_joined,
+            "blank_pages_pruned": self.blank_pages_pruned,
             "headings_repaired": self.headings_repaired,
             "sizes_restated": self.sizes_restated,
             "font_points": self.font_points or None,
@@ -2797,6 +2806,162 @@ def _break_equations(document: bytes, walk: _Walk) -> tuple[list, int]:
 
     return edits, changed
 
+
+# --- redundant page breaks, and the blank pages they add ----------------------
+
+# Mathpix asks the Files API for page breaks (`include_page_breaks`), so its
+# .docx carries one dedicated break paragraph per source-page boundary —
+# `<w:p><w:r><w:br w:type="page"/></w:r></w:p>` — alongside empty spacer
+# paragraphs around figures. Where a source page held nothing Mathpix could
+# read, or where a page's content ended near the foot of the US Letter page it
+# was poured onto, two of those breaks land with nothing between them and a
+# whole page comes out blank. This is not a rendering choice: every reader
+# paginates an explicit break the same way, so the repair is to drop the breaks
+# that start a page without putting anything on it. Only whole empty paragraphs
+# are removed; a break sharing its paragraph with text, a drawing or a bookmark
+# is left exactly as Mathpix wrote it.
+PAGE_BREAK_RUN_RE = re.compile(rb'<w:br\b[^>]*\bw:type="page"')
+# `<w:pageBreakBefore/>`, but not one explicitly switched off.
+PAGE_BREAK_BEFORE_RE = re.compile(
+    rb'<w:pageBreakBefore\b(?![^>]*\bw:val="(?:0|false|off)")'
+)
+# Content a blank-looking paragraph can still carry that a reader would miss, or
+# that another pass depends on. A column break is layout, not blank space.
+PARAGRAPH_CONTENT_MARKERS = (
+    b"<m:oMath", b"<w:drawing", b"<w:pict", b"<w:object", b"<w:bookmarkStart",
+    b"<w:hyperlink", b"<w:fldChar", b"<w:instrText", b"<w:footnoteReference",
+    b"<w:endnoteReference", b"<w:commentReference", b"<w:sectPr",
+    b'w:type="column"',
+)
+
+
+def _paragraph_has_content(body: bytes) -> bool:
+    """Whether a paragraph holds anything a reader would miss if it were gone."""
+    if _paragraph_text(body).strip():
+        return True
+    return any(marker in body for marker in PARAGRAPH_CONTENT_MARKERS)
+
+
+def _collapse_page_breaks(document: bytes) -> tuple[bytes, int]:
+    """Remove page breaks that start a page without putting anything on it.
+
+    Three shapes, each measurable in the file and each safe to drop because it
+    carries no content:
+
+      * two or more break paragraphs in a row, separated only by empty
+        paragraphs — collapsed to the first break;
+      * break and empty paragraphs following the last of the document's
+        content — removed, with the final ``<w:sectPr>`` left in place;
+      * a break paragraph immediately before a paragraph that already carries
+        ``<w:pageBreakBefore/>`` — removed, since that paragraph ejects itself
+        to a new page without it.
+
+    A paragraph is only ever removed whole, and only when it holds no text, no
+    maths, no drawing and no bookmark. The count returned is the number of
+    removed break paragraphs — one per blank page the reader no longer sees.
+
+    The whole pass is skipped rather than guessed at when the body cannot be
+    read as a balanced sequence of children, or when it has no content at all.
+    """
+    body_open = re.search(rb"<w:body\b[^>]*>", document)
+    if body_open is None:
+        return document, 0
+    body_close = document.rfind(b"</w:body>")
+    if body_close <= body_open.end():
+        return document, 0
+
+    base = body_open.end()
+    inner = document[base:body_close]
+    children = _direct_children(inner)
+    if not children:
+        return document, 0
+
+    CONTENT, BREAK, BLANK = 1, 2, 3
+    cats: list[int] = []
+    for child in children:
+        if child.name != "w:p":
+            cats.append(CONTENT)
+            continue
+        pbody = inner[child.inner_start:child.inner_end]
+        if _paragraph_has_content(pbody):
+            cats.append(CONTENT)
+        elif PAGE_BREAK_RUN_RE.search(pbody) or PAGE_BREAK_BEFORE_RE.search(pbody):
+            cats.append(BREAK)
+        else:
+            cats.append(BLANK)
+
+    if CONTENT not in cats:
+        # An all-empty body is not what this pass is for, and reducing it to
+        # bare section properties would be a larger change than the defect.
+        return document, 0
+
+    drop: set[int] = set()
+
+    # Consecutive breaks: keep the first, drop every later break in the run and
+    # every empty paragraph that trails it.
+    index = 0
+    while index < len(cats):
+        if cats[index] not in (BREAK, BLANK):
+            index += 1
+            continue
+        run_start = index
+        while index < len(cats) and cats[index] in (BREAK, BLANK):
+            index += 1
+        run = range(run_start, index)
+        breaks = [position for position in run if cats[position] == BREAK]
+        if len(breaks) >= 2:
+            for position in run:
+                if position > breaks[0]:
+                    drop.add(position)
+
+    # Trailing breaks: everything empty after the last content, with the final
+    # `<w:sectPr>` child (when the body ends on one) left untouched.
+    limit = len(children) - 1 if children[-1].name == "w:sectPr" else len(children)
+    last_content = max(
+        (position for position in range(limit) if cats[position] == CONTENT),
+        default=-1,
+    )
+    # Only when there is real content to trail. A body that is nothing but empty
+    # paragraphs is left as it is rather than reduced to bare section
+    # properties.
+    if last_content >= 0:
+        for position in range(last_content + 1, limit):
+            if cats[position] in (BREAK, BLANK):
+                drop.add(position)
+
+    # A break immediately before a paragraph that already breaks itself.
+    for position in range(1, len(cats)):
+        if cats[position] != CONTENT:
+            continue
+        pbody = inner[children[position].inner_start:children[position].inner_end]
+        if not PAGE_BREAK_BEFORE_RE.search(pbody):
+            continue
+        previous = position - 1
+        while previous >= 0 and cats[previous] == BLANK:
+            previous -= 1
+        if previous < 0 or cats[previous] != BREAK:
+            continue
+        prev_body = inner[
+            children[previous].inner_start:children[previous].inner_end
+        ]
+        if PAGE_BREAK_RUN_RE.search(prev_body):
+            drop.add(previous)
+
+    if not drop:
+        return document, 0
+
+    edits = [
+        (
+            base + children[position].start,
+            children[position].end - children[position].start,
+            b"",
+        )
+        for position in sorted(drop)
+    ]
+    removed_breaks = sum(1 for position in drop if cats[position] == BREAK)
+    return _apply(document, edits), removed_breaks
+
+
 def _relax_wrap_indent(settings: bytes, twips: int) -> bytes:
     """Stop a wrapped equation losing an inch of a measure it has little of.
 
@@ -2850,6 +3015,7 @@ def fit_docx(
     font_points: float = 10.0,
     font_name: str = "Cambria Math",
     join_steps: bool = True,
+    collapse_page_breaks: bool = True,
     side_margin_inches: float = 0.5,
 ) -> tuple[bytes, Fit]:
     """Return Mathpix's document restated in units that survive being resized.
@@ -2879,8 +3045,12 @@ def fit_docx(
     Standalone literal LaTeX title and section commands are repaired into bold,
     unnumbered Word paragraphs before those typography passes. ``join_steps``
     puts a lone ``⇒`` on the line of the equation it introduces.
-    None of the three is gated on ``multi_column``: all are wrong at any
-    measure.
+    ``collapse_page_breaks`` removes the page breaks Mathpix writes at every
+    source-page boundary that start a new page without any content on it —
+    consecutive breaks, breaks trailing the last content, and a break in front
+    of a paragraph that already carries ``<w:pageBreakBefore/>`` — which is
+    where the blank pages in the delivered file come from. None of these is
+    gated on ``multi_column``: all are wrong at any measure.
 
     ``side_margin_inches`` is the left and right margin every section is given,
     overriding both Mathpix's margins and the ones read off the source page; 0
@@ -2929,6 +3099,13 @@ def fit_docx(
         edits += math_edits
 
     document = _apply(document, edits)
+
+    # A structural pass, before any run is sized or refonted: whole empty
+    # paragraphs go, so there is less to walk and nothing the later passes
+    # inserted can be caught by it.
+    pruned = 0
+    if collapse_page_breaks:
+        document, pruned = _collapse_page_breaks(document)
 
     # Everything from here is a whole-document rewrite rather than a positioned
     # edit, so it runs after the offsets collected above have been spent — and
@@ -3034,6 +3211,7 @@ def fit_docx(
         equations_broken=broken,
         math_gaps_filled=gaps,
         steps_joined=joined,
+        blank_pages_pruned=pruned,
         headings_repaired=headings,
         sizes_restated=restated,
         font_points=font_points if half_points > 0 else 0.0,
