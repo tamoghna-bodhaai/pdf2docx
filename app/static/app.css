@@ -158,6 +158,16 @@ button {
   padding: 9px 14px;
   font-weight: 620;
 }
+a.download-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 9px 14px;
+  color: var(--text);
+  font-weight: 620;
+  text-decoration: none;
+}
+a.download-link:hover { border-color: var(--border-strong); background: var(--surface-hover); }
 
 button svg,
 summary svg { width: 17px; height: 17px; }
@@ -256,6 +266,11 @@ input:focus-visible {
 .account-identity > span:last-child { display: grid; min-width: 0; }
 .account-identity small { color: var(--text-faint); font-size: 10px; }
 .account-identity strong { overflow: hidden; color: var(--text-strong); font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.notification-toggle { justify-content: flex-start; width: 100%; padding: 9px 10px; color: var(--text-muted); text-align: left; }
+.notification-toggle > span { display: grid; min-width: 0; }
+.notification-toggle strong { color: var(--text-strong); font-size: 10.5px; }
+.notification-toggle small { color: var(--text-faint); font-size: 9.5px; }
+.notification-toggle[aria-pressed="true"] svg { color: var(--success); }
 .account-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .account-actions button { min-width: 0; padding: 8px 9px; color: var(--text-muted); font-size: 11px; }
 .account-actions button svg { width: 16px; height: 16px; }
@@ -336,6 +351,7 @@ input[type="file"] { display: none; }
 .job-copy h2 { overflow: hidden; margin: 0; color: var(--text-strong); font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .job-copy p { margin: 3px 0 0; color: var(--text-muted); font: 11.5px/1.4 var(--font-mono); }
 .status-badge { margin-left: auto; padding: 5px 9px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-muted); background: var(--surface-soft); font-size: 10.5px; font-weight: 720; white-space: nowrap; }
+.batch-new { flex: none; }
 .status-badge.working { border-color: color-mix(in oklch, var(--blue) 35%, var(--border)); background: var(--blue-soft); color: var(--blue); }
 .job-notice { margin-top: 13px; padding: 10px 12px; border: 1px solid color-mix(in oklch, var(--error) 32%, var(--border)); border-radius: 8px; background: var(--error-soft); color: var(--error); font-size: 12px; }
 .status-badge.complete { border-color: color-mix(in oklch, var(--success) 35%, var(--border)); background: var(--success-soft); color: var(--success); }
@@ -468,6 +484,10 @@ tbody tr.open { background: var(--brand-soft); }
 .history-status.cancelled { background: var(--surface-soft); color: color-mix(in oklch, var(--error) 62%, var(--text-muted)); }
 .icon-action { min-height: 36px; padding: 7px 9px; border-color: transparent; background: transparent; color: var(--text-muted); font-size: 10.5px; }
 .icon-action:hover:not(:disabled) { border-color: color-mix(in oklch, var(--error) 30%, var(--border)); background: var(--error-soft); color: var(--error); }
+.history-row-actions { white-space: normal; }
+.history-row-actions > * { margin: 2px; }
+.history-row-actions a { min-height: 36px; padding: 7px 9px; border: 1px solid transparent; border-radius: 8px; color: var(--text-muted); font-size: 10.5px; text-decoration: none; }
+.history-row-actions a:hover { border-color: var(--border); background: var(--surface-hover); color: var(--brand); }
 .history-actions { display: flex; justify-content: flex-end; padding: 12px 18px; border-top: 1px solid var(--border); }
 .history-actions:empty { display: none; }
 .history-actions button { background: transparent; color: var(--text-muted); font-size: 11px; }
@@ -478,6 +498,11 @@ tbody tr.open { background: var(--brand-soft); }
 .empty-icon svg { width: 24px; height: 24px; }
 .history-loading { display: grid; gap: 1px; background: var(--border); }
 .history-loading span { height: 58px; background: linear-gradient(90deg, var(--surface) 25%, var(--surface-soft) 48%, var(--surface) 72%); background-size: 220% 100%; }
+
+/* --------------------------------------------------------- notifications -- */
+
+.toast-region { position: fixed; right: 22px; bottom: 22px; z-index: 80; display: grid; width: min(390px, calc(100vw - 32px)); gap: 9px; pointer-events: none; }
+.toast { padding: 13px 15px; border: 1px solid color-mix(in oklch, var(--success) 38%, var(--border)); border-radius: 10px; background: var(--surface-raised); color: var(--text-strong); box-shadow: var(--shadow-popover); font-size: 12.5px; font-weight: 650; pointer-events: auto; }
 
 /* -------------------------------------------------------------- comparison -- */
 
@@ -731,6 +756,9 @@ button.auth-submit { width: 100%; }
   .job-card { padding: 16px; }
   .job-header { align-items: flex-start; }
   .status-badge { margin-left: 0; }
+  .job-header { flex-wrap: wrap; }
+  .job-copy { flex: 1 1 calc(100% - 60px); }
+  .batch-new { order: 4; width: 100%; }
   .batch-list { gap: 9px; margin-top: 16px; padding-top: 16px; }
   .batch-row {
     grid-template-columns: minmax(0, 1fr);
@@ -768,6 +796,7 @@ button.auth-submit { width: 100%; }
   .rendered .mmd-labelled > li { text-indent: -26px; }
   .rendered .mmd-item-label { min-width: 26px; }
   .confirm-dialog form { padding: 21px; }
+  .toast-region { right: 12px; bottom: 12px; width: calc(100vw - 24px); }
 }
 
 @media (prefers-reduced-motion: no-preference) {

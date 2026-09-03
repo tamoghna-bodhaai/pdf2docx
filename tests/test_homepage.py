@@ -50,6 +50,7 @@ def test_homepage_keeps_the_major_interaction_hooks() -> None:
     required = {
         "app-shell", "sidebar", "menu-toggle", "sidebar-backdrop",
         "uploads-nav", "history-nav", "theme-toggle", "user-email", "sign-out",
+        "notification-toggle", "notification-status", "toast-region",
         "dashboard-view", "dashboard-heading",
         "drop", "picker", "keywarn",
         "upload-progress", "upload-bar-fill", "upload-status", "upload-batch-hint",
@@ -57,7 +58,7 @@ def test_homepage_keeps_the_major_interaction_hooks() -> None:
         "included-formats", "multi-column", "multi-column-field",
         "batch-panel", "batch-title", "batch-summary", "batch-badge", "batch-notice",
         "batch-controls", "batch-list", "batch-start", "batch-pause", "batch-resume",
-        "batch-cancel", "batch-clear",
+        "batch-cancel", "batch-download", "batch-clear", "batch-new",
         "history-panel", "history-loading", "history-error",
         "history-retry", "history-table", "history-body", "history-actions",
         "comparison-view", "back-to-uploads", "comparison-file", "comparison-meta",
@@ -83,6 +84,17 @@ def test_upload_and_theme_controls_are_accessible() -> None:
     assert theme["type"] == "button"
     assert theme["aria-label"] == "Switch to dark theme"
     assert theme["aria-pressed"] == "false"
+
+    notification_tag, notification = page.elements["notification-toggle"]
+    assert notification_tag == "button"
+    assert notification["type"] == "button"
+    assert notification["aria-label"] == "Enable desktop notifications"
+    assert notification["aria-pressed"] == "false"
+
+    toast_tag, toast = page.elements["toast-region"]
+    assert toast_tag == "div"
+    assert toast["role"] == "status"
+    assert toast["aria-live"] == "polite"
 
     drop_tag, drop = page.elements["drop"]
     assert drop_tag == "button"
@@ -143,6 +155,13 @@ def test_homepage_exposes_only_the_mathpix_workflow() -> None:
     # and cancelled.
     assert "/api/convert/batch" in script
     assert "/api/batches/" in script
+    assert "/package.zip" in script
+    assert "Download all (.zip)" in script
+    assert "Download batch ZIP" in INDEX.read_text(encoding="utf-8")
+    assert "Notification.requestPermission()" in script
+    assert "localStorage.setItem(NOTIFICATION_PREFERENCE" in script
+    assert "beginNewConversion" in script
+    assert "Manage batch" in script
     assert "new URLSearchParams" in script
     assert "confirm(" not in script
     assert not (INDEX.parent / "index.html.orig").exists()
@@ -204,3 +223,19 @@ def test_the_workspace_bounces_an_expired_session() -> None:
     # Only the wrapper itself may call fetch directly; everything else uses api().
     assert script.count("await fetch(") == 1
     assert "/api/auth/logout" in script
+
+
+def test_new_conversion_only_detaches_the_panel_and_opens_the_picker() -> None:
+    script = SCRIPT.read_text(encoding="utf-8")
+    action = script.split("function beginNewConversion()", 1)[1].split(
+        "// --------------------------------------------------------- confirmation dialog", 1
+    )[0]
+
+    assert "currentBatch = null" in action
+    assert "renderFormats(['docx'])" in action
+    assert "$('multi-column').checked = false" in action
+    assert "picker.value = ''" in action
+    assert "picker.click()" in action
+    assert "api(" not in action
+    assert "DELETE" not in action
+    assert "cancel" not in action.lower()

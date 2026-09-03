@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import logging
+import re
 import secrets
 import shutil
 import tempfile
 import threading
+import unicodedata
 import uuid
+import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -199,6 +203,7 @@ class Job:
             # the browser draws a button per entry here rather than guessing.
             "mathpix_formats": self.mathpix_formats(),
             "has_detection": self._file("detection.json").exists(),
+            "has_package": bool(_package_files(self)[0]),
         }
 
     def mathpix_formats(self) -> list[str]:
@@ -901,7 +906,13 @@ async def convert_batch(
             status_code=400,
             detail=rejected[0]["detail"] if rejected else "No PDF could be staged.",
         )
-    return {"batch_id": batch_id, "jobs": staged, "rejected": rejected}
+    return {
+        "batch_id": batch_id,
+        "jobs": staged,
+        "rejected": rejected,
+        "package_ready": False,
+        "package_count": 0,
+    }
 
 
 @app.post("/api/jobs/{job_id}/start")
@@ -968,11 +979,15 @@ def _batch_view(batch_id: str, jobs: list[Job]) -> dict:
     counts: dict[str, int] = {}
     for job in jobs:
         counts[job.status] = counts.get(job.status, 0) + 1
+    package_count = sum(bool(_package_files(job)[0]) for job in jobs)
+    terminal = bool(jobs) and all(job.status in TERMINAL for job in jobs)
     return {
         "batch_id": batch_id,
         "jobs": [job.as_dict() for job in jobs],
         "counts": counts,
         "active": any(job.status in RUNNING for job in jobs),
+        "package_ready": terminal and package_count > 0,
+        "package_count": package_count,
     }
 
 
@@ -1259,6 +1274,168 @@ def job_asset(job_id: str, asset: str, user: User = Depends(current_user)) -> Fi
 # What each `format` names, as a fixed path and media type. `rebuilt.docx` is
 # only ever a pre-Mathpix job's comparison render — nothing produces one now —
 # but it stays downloadable for the accounts that still have one.
+
+
+@dataclass(frozen=True)
+class PackageFile:
+    """One user-facing output and its stable path inside an archive."""
+
+    format: str
+    path: Path
+    archive_name: str
+
+
+def _package_files(job: Job) -> tuple[list[PackageFile], list[str]]:
+    """Return packageable selected outputs and requested outputs that are absent.
+
+    The fitted DOCX is the public DOCX. Mathpix's raw DOCX is deliberately never
+    added as a second copy, and automatic preview/geometry artifacts never enter
+    this list at all. Other exports only qualify when the user selected them.
+    """
+    directory = job.directory or Path()
+    requested = list(dict.fromkeys(job.requested_formats))
+    requestable = {entry.ext: entry for entry in MATHPIX_FORMATS if entry.requested}
+    included: list[PackageFile] = []
+    missing: list[str] = []
+
+    fitted = directory / "document.docx"
+    if fitted.is_file():
+        included.append(PackageFile("docx", fitted, "document.docx"))
+
+    for format_name in requested:
+        entry = requestable.get(format_name)
+        if entry is None:
+            missing.append(format_name)
+            continue
+        if format_name == "docx":
+            if not fitted.is_file():
+                missing.append(format_name)
+            continue
+        output = directory / MATHPIX_RAW_DIR / f"document.{format_name}"
+        if output.is_file():
+            included.append(PackageFile(format_name, output, f"document.{format_name}"))
+        else:
+            missing.append(format_name)
+
+    # A malformed old record must not be able to create duplicate ZIP members.
+    unique: list[PackageFile] = []
+    seen: set[str] = set()
+    for item in included:
+        key = item.archive_name.casefold()
+        if key not in seen:
+            unique.append(item)
+            seen.add(key)
+    return unique, missing
+
+
+def _safe_archive_name(value: str, fallback: str = "document") -> str:
+    """Make an untrusted upload name safe as a ZIP component/download name."""
+    # Treat both slash conventions as separators, even on Unix, and remove
+    # control/format characters that make archive listings deceptive.
+    name = unicodedata.normalize("NFKC", value or "").replace("\\", "/").split("/")[-1]
+    name = "".join(
+        "_" if unicodedata.category(character).startswith("C") else character
+        for character in name
+    )
+    name = re.sub(r'[<>:"/\\|?*]', "_", name).strip(" .")
+    if not name or name in {".", ".."}:
+        name = fallback
+    # Keep names manageable without changing their compound extension.
+    if len(name) > 140:
+        suffixes = "".join(Path(name).suffixes)
+        keep = max(1, 140 - len(suffixes))
+        name = name[:keep].rstrip(" .") + suffixes
+    return name or fallback
+
+
+def _job_manifest(job: Job, files: list[PackageFile], missing: list[str]) -> dict:
+    return {
+        "package_version": 1,
+        "job_id": job.id,
+        "batch_id": job.batch_id or None,
+        "filename": job.filename,
+        "status": job.status,
+        "pages": job.pages,
+        "settings": {
+            "layout": job.layout,
+            "multi_column": job.multi_column,
+        },
+        "requested_formats": list(job.requested_formats),
+        "included_files": [item.archive_name for item in files],
+        "missing_requested_outputs": missing,
+        "created_at": job.created_at,
+        "started_at": job.started_at,
+        "finished_at": job.finished_at,
+        "cost": round(job.cost, 6),
+        "cost_known": job.cost_known,
+        "prompt_tokens": job.prompt_tokens,
+        "completion_tokens": job.completion_tokens,
+        "calls": job.calls,
+    }
+
+
+def _write_document_package(job: Job, target: Path) -> None:
+    files, missing = _package_files(job)
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for item in files:
+            archive.write(item.path, item.archive_name)
+        archive.writestr(
+            "manifest.json",
+            json.dumps(_job_manifest(job, files, missing), indent=2, ensure_ascii=False) + "\n",
+        )
+
+
+def _unique_batch_folder(job: Job, used: set[str]) -> str:
+    safe = _safe_archive_name(job.filename, "document")
+    stem = safe[:-4] if safe.lower().endswith(".pdf") else safe
+    stem = stem.strip(" .") or "document"
+    candidate = stem
+    number = 2
+    while candidate.casefold() in used:
+        candidate = f"{stem}-{number}"
+        number += 1
+    used.add(candidate.casefold())
+    return candidate
+
+
+def _write_batch_package(batch_id: str, jobs: list[Job], target: Path) -> None:
+    used_folders: set[str] = set()
+    manifest_jobs: list[dict] = []
+    with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for job in jobs:
+            files, missing = _package_files(job)
+            folder = _unique_batch_folder(job, used_folders) if files else None
+            entry = _job_manifest(job, files, missing)
+            entry["folder"] = folder
+            if folder:
+                entry["included_files"] = [f"{folder}/{item.archive_name}" for item in files]
+                for item in files:
+                    archive.write(item.path, f"{folder}/{item.archive_name}")
+            manifest_jobs.append(entry)
+
+        counts: dict[str, int] = {}
+        for job in jobs:
+            counts[job.status] = counts.get(job.status, 0) + 1
+        manifest = {
+            "package_version": 1,
+            "batch_id": batch_id,
+            "status": "finished",
+            "counts": counts,
+            "package_count": sum(bool(_package_files(job)[0]) for job in jobs),
+            "jobs": manifest_jobs,
+        }
+        archive.writestr(
+            "manifest.json", json.dumps(manifest, indent=2, ensure_ascii=False) + "\n"
+        )
+
+
+def _temporary_zip() -> Path:
+    handle = tempfile.NamedTemporaryFile(prefix="pdf2docx-package-", suffix=".zip", delete=False)
+    path = Path(handle.name)
+    handle.close()
+    return path
+
+
 DOWNLOADS = {
     "docx": (
         "document.docx",
@@ -1311,6 +1488,66 @@ def job_download(
 
     stem = Path(job.filename).stem or "document"
     return FileResponse(path, media_type=media_type, filename=f"{stem}.{extension}")
+
+
+@app.get("/api/jobs/{job_id}/package.zip")
+def job_package(
+    job_id: str,
+    background: BackgroundTasks,
+    user: User = Depends(current_user),
+) -> FileResponse:
+    """Build a document's selected, user-facing outputs into a transient ZIP."""
+    job = _get_job(job_id, user)
+    files, _missing = _package_files(job)
+    if not files:
+        raise HTTPException(status_code=409, detail="No downloadable output is available.")
+
+    path = _temporary_zip()
+    try:
+        _write_document_package(job, path)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    background.add_task(path.unlink, missing_ok=True)
+    safe = _safe_archive_name(job.filename, "document.pdf")
+    stem = safe[:-4] if safe.lower().endswith(".pdf") else safe
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=f"{stem or 'document'}.zip",
+        background=background,
+    )
+
+
+@app.get("/api/batches/{batch_id}/package.zip")
+def batch_package(
+    batch_id: str,
+    background: BackgroundTasks,
+    user: User = Depends(current_user),
+) -> FileResponse:
+    """Build one terminal batch without persisting a generated archive."""
+    jobs = _batch_jobs(batch_id, user)
+    if not jobs:
+        raise HTTPException(status_code=404, detail="Unknown batch id")
+    if any(job.status not in TERMINAL for job in jobs):
+        raise HTTPException(status_code=409, detail="This batch is still active.")
+    if not any(_package_files(job)[0] for job in jobs):
+        raise HTTPException(status_code=409, detail="No downloadable output is available.")
+
+    path = _temporary_zip()
+    try:
+        _write_batch_package(batch_id, jobs, path)
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    background.add_task(path.unlink, missing_ok=True)
+    safe_id = _safe_archive_name(batch_id, "batch")
+    return FileResponse(
+        path,
+        media_type="application/zip",
+        filename=f"batch-{safe_id}.zip",
+        background=background,
+    )
 
 
 @app.delete("/api/jobs/{job_id}")

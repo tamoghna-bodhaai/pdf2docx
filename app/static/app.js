@@ -99,6 +99,130 @@ themeToggle.addEventListener('click', () => {
   setTheme($root.dataset.theme === 'dark' ? 'light' : 'dark');
 });
 
+// ---------------------------------------------------------- notifications -- //
+
+const NOTIFICATION_PREFERENCE = 'pdf2docx-desktop-notifications';
+const notificationToggle = $('notification-toggle');
+const batchNoticeStates = new Map();
+let desktopNotificationsEnabled = false;
+
+function storedNotificationPreference() {
+  try { return localStorage.getItem(NOTIFICATION_PREFERENCE) === 'enabled'; }
+  catch (_) { return false; }
+}
+
+function storeNotificationPreference(enabled) {
+  try { localStorage.setItem(NOTIFICATION_PREFERENCE, enabled ? 'enabled' : 'disabled'); }
+  catch (_) {}
+}
+
+function syncNotificationControl() {
+  const supported = typeof Notification !== 'undefined';
+  if (!supported) {
+    desktopNotificationsEnabled = false;
+    notificationToggle.disabled = true;
+    notificationToggle.setAttribute('aria-label', 'Desktop notifications are unsupported');
+    $('notification-status').textContent = 'Not supported by this browser';
+  } else if (Notification.permission === 'denied') {
+    desktopNotificationsEnabled = false;
+    notificationToggle.disabled = true;
+    notificationToggle.setAttribute('aria-label', 'Desktop notifications are blocked');
+    $('notification-status').textContent = 'Blocked in browser settings';
+  } else {
+    desktopNotificationsEnabled = storedNotificationPreference()
+      && Notification.permission === 'granted';
+    notificationToggle.disabled = false;
+    notificationToggle.setAttribute(
+      'aria-label', desktopNotificationsEnabled
+        ? 'Disable desktop notifications' : 'Enable desktop notifications'
+    );
+    $('notification-status').textContent = desktopNotificationsEnabled ? 'On' : 'Off';
+  }
+  notificationToggle.setAttribute('aria-pressed', String(desktopNotificationsEnabled));
+}
+
+notificationToggle.addEventListener('click', async () => {
+  if (typeof Notification === 'undefined' || Notification.permission === 'denied') return;
+  if (desktopNotificationsEnabled) {
+    desktopNotificationsEnabled = false;
+    storeNotificationPreference(false);
+    syncNotificationControl();
+    return;
+  }
+  let permission = Notification.permission;
+  if (permission !== 'granted') {
+    try { permission = await Notification.requestPermission(); }
+    catch (_) { permission = 'denied'; }
+  }
+  desktopNotificationsEnabled = permission === 'granted';
+  storeNotificationPreference(desktopNotificationsEnabled);
+  syncNotificationControl();
+});
+
+function batchCompletionSummary(jobs) {
+  const completed = jobs.filter(job => job.status === 'done').length;
+  const failed = jobs.filter(job => job.status === 'error').length;
+  const cancelled = jobs.filter(job => job.status === 'cancelled').length;
+  const parts = [];
+  if (completed) parts.push(`${completed} completed`);
+  if (failed) parts.push(`${failed} failed`);
+  if (cancelled) parts.push(`${cancelled} cancelled`);
+  return `Batch finished: ${parts.join(', ') || 'no completed files'}.`;
+}
+
+function showCompletionNotice(message) {
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.textContent = message;
+  $('toast-region').appendChild(toast);
+  setTimeout(() => toast.remove(), 7000);
+
+  const pageIsBackgrounded = document.hidden
+    || (typeof document.hasFocus === 'function' && !document.hasFocus());
+  if (!desktopNotificationsEnabled || typeof Notification === 'undefined'
+      || Notification.permission !== 'granted' || !pageIsBackgrounded) return;
+  let notice;
+  try { notice = new Notification('PDF2DOCX', { body: message }); }
+  catch (_) { return; }
+  notice.onclick = () => {
+    window.focus();
+    showDashboard('history');
+    notice.close();
+  };
+}
+
+// Batch polling and history polling both feed this helper. Its page-session map
+// is the single deduplication point, so observing one transition twice still
+// creates one toast and at most one browser notification.
+function observeJobStates(jobs, { seed = false } = {}) {
+  const grouped = new Map();
+  for (const job of jobs || []) {
+    if (!job.batch_id) continue;
+    if (!grouped.has(job.batch_id)) grouped.set(job.batch_id, []);
+    grouped.get(job.batch_id).push(job);
+  }
+  for (const [batchId, members] of grouped) {
+    const terminal = members.length > 0 && members.every(job => TERMINAL.has(job.status));
+    const previous = batchNoticeStates.get(batchId);
+    if (!previous) {
+      batchNoticeStates.set(batchId, {
+        activeSeen: !terminal,
+        terminal,
+        notified: seed && terminal,
+      });
+      continue;
+    }
+    if (!terminal) previous.activeSeen = true;
+    if (terminal && !previous.terminal && previous.activeSeen && !previous.notified) {
+      previous.notified = true;
+      showCompletionNotice(batchCompletionSummary(members));
+    }
+    previous.terminal = terminal;
+  }
+}
+
+syncNotificationControl();
+
 // ------------------------------------------------------------- navigation -- //
 
 const appShell = $('app-shell');
@@ -165,8 +289,7 @@ $('back-to-uploads').addEventListener('click', () => showDashboard('uploads'));
 
 for (const id of ['mobile-upload', 'empty-upload']) {
   $(id).addEventListener('click', () => {
-    showDashboard('uploads');
-    $('picker').click();
+    beginNewConversion();
   });
 }
 
@@ -292,8 +415,10 @@ function syncUploaderAvailability() {
   const locked = uploadInFlight || Boolean(currentBatch);
   drop.disabled = locked;
   picker.disabled = locked;
-  $('mobile-upload').disabled = locked;
-  $('empty-upload').disabled = locked;
+  // These buttons detach a displayed batch first; only an upload already in
+  // flight should prevent that non-destructive action.
+  $('mobile-upload').disabled = uploadInFlight;
+  $('empty-upload').disabled = uploadInFlight;
   drop.setAttribute('aria-busy', String(uploadInFlight));
 }
 
@@ -401,7 +526,13 @@ async function uploadBatch(fileList) {
   setUploadProgress(100, 'Upload complete');
   setTimeout(() => $('upload-progress').classList.add('hidden'), 250);
 
-  currentBatch = { id: data.batch_id, jobs: new Map((data.jobs || []).map(job => [job.id, job])) };
+  currentBatch = {
+    id: data.batch_id,
+    jobs: new Map((data.jobs || []).map(job => [job.id, job])),
+    packageReady: false,
+    packageCount: 0,
+  };
+  observeJobStates(data.jobs || []);
   const notes = [];
   if (skippedNonPdf) notes.push('non-PDF files were skipped');
   if (overLimit) notes.push(`only the first ${batchMaxFiles} files were kept`);
@@ -429,6 +560,27 @@ function clearBatch() {
   renderFormats(['docx']);
   syncUploaderAvailability();
   loadHistory();
+}
+
+function beginNewConversion() {
+  if (uploadInFlight) return;
+  if (currentBatch) {
+    stopBatchPolling();
+    currentBatch = null;
+    picker.value = '';
+    $('batch-panel').classList.add('hidden');
+    $('batch-list').replaceChildren();
+    $('batch-notice').classList.add('hidden');
+    $('upload-progress').classList.add('hidden');
+    $('upload-progress').classList.remove('error');
+    renderFormats(['docx']);
+    $('multi-column').checked = false;
+    syncUploaderAvailability();
+  }
+  showDashboard('uploads');
+  // The click remains in the original user gesture, which browsers require
+  // before opening a file picker.
+  picker.click();
 }
 
 // --------------------------------------------------------- confirmation dialog -- //
@@ -653,12 +805,20 @@ function renderBatch() {
   $('batch-resume').classList.toggle('hidden', !anyPaused);
   $('batch-cancel').classList.toggle('hidden', !anyLive);
   $('batch-clear').classList.toggle('hidden', !anyDone);
+  const packageReady = jobs.length > 0 && jobs.every(job => TERMINAL.has(job.status))
+    && jobs.some(job => job.has_package);
+  $('batch-download').classList.toggle('hidden', !packageReady);
+  $('batch-download').href = packageReady
+    ? `/api/batches/${encodeURIComponent(currentBatch.id)}/package.zip` : '#';
 
   maybePollBatch();
 }
 
-function patchBatch(jobs) {
+function patchBatch(jobs, view = {}) {
   if (!currentBatch) return;
+  observeJobStates(jobs);
+  if (typeof view.package_ready === 'boolean') currentBatch.packageReady = view.package_ready;
+  if (Number.isFinite(Number(view.package_count))) currentBatch.packageCount = Number(view.package_count);
   const seen = new Set();
   for (const job of jobs) {
     currentBatch.jobs.set(job.id, job);
@@ -674,6 +834,7 @@ function patchBatch(jobs) {
 // ----- batch and per-file controls ----- //
 
 $('batch-start').addEventListener('click', startBatch);
+$('batch-new').addEventListener('click', beginNewConversion);
 $('batch-pause').addEventListener('click', () => batchAction('pause'));
 $('batch-resume').addEventListener('click', () => batchAction('resume'));
 $('batch-cancel').addEventListener('click', async () => {
@@ -711,7 +872,8 @@ async function startBatch() {
     return;
   }
   $('batch-notice').classList.add('hidden');
-  patchBatch((await response.json()).jobs || []);
+  const view = await response.json();
+  patchBatch(view.jobs || [], view);
   schedulePollBatch(0);
   loadHistory();
 }
@@ -723,7 +885,8 @@ async function batchAction(action) {
     response = await api(`/api/batches/${currentBatch.id}/${action}`, { method: 'POST' });
   } catch (_) { return; }
   if (response.ok) {
-    patchBatch((await response.json()).jobs || []);
+    const view = await response.json();
+    patchBatch(view.jobs || [], view);
     schedulePollBatch(action === 'resume' ? 0 : 600);
     loadHistory();
   }
@@ -787,12 +950,27 @@ async function removeJob(job) {
 async function clearFinished() {
   if (!currentBatch) return;
   const finished = batchList().filter(job => TERMINAL.has(job.status));
+  const approved = await requestConfirmation({
+    title: 'Clear finished files?',
+    description: `This permanently deletes ${finished.length} finished file${finished.length === 1 ? '' : 's'}, including each source PDF and every stored output. Running files are untouched.`,
+    action: 'Delete finished files',
+  });
+  if (!approved) return;
+  let failures = 0;
   for (const job of finished) {
-    try { await api(`/api/jobs/${job.id}`, { method: 'DELETE' }); } catch (_) {}
-    currentBatch.jobs.delete(job.id);
+    let response;
+    try { response = await api(`/api/jobs/${job.id}`, { method: 'DELETE' }); } catch (_) {}
+    if (response && response.ok) currentBatch.jobs.delete(job.id);
+    else failures += 1;
   }
   if (!currentBatch.jobs.size) clearBatch();
-  else renderBatch();
+  else {
+    renderBatch();
+    if (failures) {
+      $('batch-notice').textContent = `${failures} finished file${failures === 1 ? '' : 's'} could not be deleted.`;
+      $('batch-notice').classList.remove('hidden');
+    }
+  }
   loadHistory();
 }
 
@@ -833,7 +1011,7 @@ async function pollBatch() {
     return;
   }
   const data = await response.json();
-  patchBatch(data.jobs || []);
+  patchBatch(data.jobs || [], data);
   const jobs = batchList();
   const stillGoing = jobs.some(job => RUNNING.has(job.status));
   const settlingDone = jobs.some(job => job.status === 'done' && !job.has_md);
@@ -846,6 +1024,12 @@ async function pollBatch() {
 
 function renderDownloadLinks(job, container) {
   container.replaceChildren();
+  if (job.has_package) {
+    const packageLink = document.createElement('a');
+    packageLink.href = `/api/jobs/${encodeURIComponent(job.id)}/package.zip`;
+    packageLink.textContent = 'Download all (.zip)';
+    container.appendChild(packageLink);
+  }
   const available = new Set(job.mathpix_formats || []);
   for (const entry of mathpixFormats) {
     if (!available.has(entry.ext)) continue;
@@ -913,7 +1097,58 @@ function historyStatus(job) {
   return wrapper;
 }
 
-function buildHistoryRow(job) {
+function historyBatchGroups(jobs) {
+  const groups = new Map();
+  for (const job of jobs) {
+    if (!job.batch_id) continue;
+    if (!groups.has(job.batch_id)) {
+      groups.set(job.batch_id, { newestJobId: job.id, jobs: [] });
+    }
+    groups.get(job.batch_id).jobs.push(job);
+  }
+  for (const group of groups.values()) {
+    group.manageable = group.jobs.some(job =>
+      job.status === 'ready' || job.status === 'paused' || RUNNING.has(job.status)
+    );
+    group.packageReady = group.jobs.length > 0
+      && group.jobs.every(job => TERMINAL.has(job.status))
+      && group.jobs.some(job => job.has_package);
+  }
+  return groups;
+}
+
+async function manageBatch(batchId) {
+  let response;
+  try { response = await api(`/api/batches/${encodeURIComponent(batchId)}`); }
+  catch (_) {
+    showHistoryError('Couldn’t restore that batch', 'Check your connection and try again.');
+    return;
+  }
+  if (!response.ok) {
+    showHistoryError('Couldn’t restore that batch', 'It may have been deleted or is no longer available.');
+    return;
+  }
+  const view = await response.json();
+  const jobs = view.jobs || [];
+  stopBatchPolling();
+  currentBatch = {
+    id: view.batch_id,
+    jobs: new Map(jobs.map(job => [job.id, job])),
+    packageReady: Boolean(view.package_ready),
+    packageCount: Number(view.package_count) || 0,
+  };
+  observeJobStates(jobs);
+  const settingsJob = jobs.find(job => Array.isArray(job.requested_formats)) || jobs[0];
+  renderFormats(settingsJob && Array.isArray(settingsJob.requested_formats)
+    ? settingsJob.requested_formats : ['docx']);
+  $('multi-column').checked = Boolean(settingsJob && settingsJob.multi_column);
+  $('batch-notice').classList.add('hidden');
+  syncUploaderAvailability();
+  showDashboard('uploads');
+  renderBatch();
+}
+
+function buildHistoryRow(job, batchGroup) {
   const row = document.createElement('tr');
   row.dataset.job = job.id;
   if (job.id === currentJob) row.classList.add('open');
@@ -939,6 +1174,23 @@ function buildHistoryRow(job) {
   const statusCell = document.createElement('td'); statusCell.appendChild(historyStatus(job));
   const costCell = document.createElement('td'); costCell.textContent = money(estimatedCost(job), job.cost_known);
   const actionCell = document.createElement('td');
+  actionCell.className = 'history-row-actions';
+  const batchActionRow = batchGroup && batchGroup.newestJobId === job.id;
+  if (batchActionRow && batchGroup.manageable) {
+    const manage = document.createElement('button');
+    manage.type = 'button';
+    manage.className = 'icon-action';
+    manage.textContent = 'Manage batch';
+    manage.addEventListener('click', () => manageBatch(job.batch_id));
+    actionCell.appendChild(manage);
+  }
+  if (batchActionRow && batchGroup.packageReady) {
+    const download = document.createElement('a');
+    download.href = `/api/batches/${encodeURIComponent(job.batch_id)}/package.zip`;
+    download.textContent = 'Download batch ZIP';
+    download.setAttribute('aria-label', `Download batch containing ${job.filename}`);
+    actionCell.appendChild(download);
+  }
   if (RUNNING.has(job.status)) {
     const stop = document.createElement('button');
     stop.type = 'button';
@@ -982,7 +1234,11 @@ async function loadHistory() {
     const response = await api('/api/history');
     if (!response.ok) throw new Error('History unavailable');
     const data = await response.json();
-    $('history-body').replaceChildren(...data.jobs.map(buildHistoryRow));
+    observeJobStates(data.jobs, { seed: firstHistoryLoad });
+    const groups = historyBatchGroups(data.jobs);
+    $('history-body').replaceChildren(...data.jobs.map(job =>
+      buildHistoryRow(job, groups.get(job.batch_id))
+    ));
     const hasJobs = data.jobs.length > 0;
     $('history-table').classList.toggle('hidden', !hasJobs);
     $('history-empty').classList.toggle('hidden', hasJobs);

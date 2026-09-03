@@ -66,6 +66,9 @@ def test_a_batch_uploads_as_one_group(client, monkeypatch, tmp_path):
     assert body["rejected"] == []
     assert {job["batch_id"] for job in body["jobs"]} == {body["batch_id"]}
     assert all(job["status"] == "ready" for job in body["jobs"])
+    assert body["package_ready"] is False
+    assert body["package_count"] == 0
+    assert all(job["has_package"] is False for job in body["jobs"])
 
 
 def test_a_batch_larger_than_the_cap_is_refused(client, monkeypatch, tmp_path):

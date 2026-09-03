@@ -356,6 +356,18 @@ files they still have remain downloadable — including a `rebuilt.docx`, which
 nothing produces now but the compatibility download route still serves.
 Rerunning any historical job uses Mathpix and requires `MATHPIX_APP_KEY`.
 
+Starting a new conversion only detaches the displayed batch from the uploader;
+it does not cancel or delete anything. An unfinished detached batch can be
+restored with **Manage batch** in History. The workspace always shows an in-app
+completion toast and can optionally show a browser notification when the tab is
+in the background. That preference is local to the browser and requires the
+page to remain open.
+
+Document and terminal-batch ZIPs are assembled on demand. They contain selected
+user-facing exports plus a JSON manifest, never the source PDF, preview cache,
+geometry/metadata files, or a duplicate raw DOCX. Generated ZIPs are temporary
+response files and are not retained in job storage.
+
 ## Configuration
 
 All active web-workflow settings live in `.env` (see `.env.example`).
@@ -407,6 +419,7 @@ route are reachable signed out.
 | `GET` | `/healthz` | Liveness check, for the platform. |
 | `GET` | `/api/config` | Effective Mathpix/web settings without secret values. |
 | `POST` | `/api/convert` | Stage a multipart PDF; optional `start=true` starts it immediately. |
+| `POST` | `/api/convert/batch` | Stage several PDFs under one batch id. |
 | `POST` | `/api/jobs/{id}/start` | Start or rerun with Mathpix. Optional CSV `formats`; empty requests preview-only, omitted uses the configured default. Optional `multi_column` lays the document out in the source page's columns. |
 | `POST` | `/api/jobs/{id}/refit` | Rebuild the delivered DOCX from the job's stored exports, optionally with `multi_column`. No Mathpix call and no charge. |
 | `GET` | `/api/jobs/{id}` | Status, progress, available exports, and cost estimate. |
@@ -416,6 +429,10 @@ route are reachable signed out.
 | `GET` | `/api/jobs/{id}/asset/{path}` | A locally stored preview image. |
 | `GET` | `/api/jobs/{id}/download?format=docx` | Mathpix DOCX when it was selected and produced. |
 | `GET` | `/api/jobs/{id}/download?format=mathpix-{ext}` | An available untouched Mathpix export. |
+| `GET` | `/api/jobs/{id}/package.zip` | Fitted DOCX and other selected outputs, with a manifest. |
+| `GET` | `/api/batches/{id}` | Batch members, status counts, and package readiness. |
+| `GET` | `/api/batches/{id}/package.zip` | All packageable documents in a terminal batch, with a batch manifest. |
+| `POST` | `/api/batches/{id}/{start,pause,resume,cancel}` | Manage all eligible jobs in a batch. |
 | `DELETE` | `/api/jobs/{id}` | Delete one local job and all of its files. |
 | `DELETE` | `/api/history` | Delete every one of your jobs that is not running. |
 
