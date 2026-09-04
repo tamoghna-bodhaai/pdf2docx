@@ -104,10 +104,12 @@ def images_to_pdf(images: Iterable[str | Path], output_path: str | Path) -> Path
                 raise DocumentToolError("The composed PDF is incomplete.")
         staged.replace(target)
         return target
-    except Exception:
-        document.close()
+    finally:
+        if not document.is_closed:
+            document.close()
+        # After a successful atomic promotion this path no longer exists. On
+        # every failure it is the incomplete sibling that must be discarded.
         staged.unlink(missing_ok=True)
-        raise
 
 
 def split_pdf(
@@ -127,7 +129,7 @@ def split_pdf(
     staged: Path | None = None
     extracted = fitz.open()
     try:
-        if source.needs_pass:
+        if source.needs_pass or source.metadata.get("encryption"):
             raise DocumentToolError("The source PDF is encrypted and cannot be split.")
         count = source.page_count
         if not 1 <= start_page <= end_page <= count:

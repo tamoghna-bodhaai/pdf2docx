@@ -3,6 +3,7 @@
 import { FormEvent, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DownloadMenu } from "@/components/download-menu";
+import { DeleteJobButton } from "@/components/delete-job-button";
 import { Progress } from "@/components/progress";
 import { UploadZone } from "@/components/upload-zone";
 import { api, ApiError } from "@/lib/api/client";
@@ -61,7 +62,7 @@ export function SplitRangeForm({ job }: { job: JobDto }) {
   );
 }
 
-export function SplitPdfTool({ config, restoredJob, onCreated }: { config: ConfigDto; restoredJob?: JobDto; onCreated?: (job: JobDto) => void }) {
+export function SplitPdfTool({ config, restoredJob, onCreated, onDeleted }: { config: ConfigDto; restoredJob?: JobDto; onCreated?: (job: JobDto) => void; onDeleted?: () => void }) {
   const queryClient = useQueryClient();
   const [jobId, setJobId] = useState(restoredJob?.kind === "split_pdf" ? restoredJob.id : "");
   const [progress, setProgress] = useState<number | null>(null);
@@ -75,16 +76,16 @@ export function SplitPdfTool({ config, restoredJob, onCreated }: { config: Confi
   function choose(files: File[]) {
     const file = files[0]; setError("");
     if (!file || !(file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf"))) { setError("Choose one PDF file."); return; }
-    if (file.size > config.max_upload_mb * 1_048_576) { setError(`The PDF must be ${config.max_upload_mb} MB or smaller.`); return; }
+    if (config.max_upload_mb && file.size > config.max_upload_mb * 1_048_576) { setError(`The PDF must be ${config.max_upload_mb} MB or smaller.`); return; }
     upload.mutate(file);
   }
   return (
     <>
       <header className={styles.toolHeader}><p className="eyebrow">Local · no charge</p><h1>Extract pages from a PDF.</h1><p>Upload a PDF, then choose one inclusive range. The source stays available for another range.</p></header>
-      {!jobId && <UploadZone accept="application/pdf,.pdf" multiple={false} title="Drop your PDF here" buttonLabel="Choose PDF" hint={`One readable, unencrypted PDF · up to ${config.max_upload_mb} MB`} disabled={upload.isPending} onFiles={choose} />}
+      {!jobId && <UploadZone accept="application/pdf,.pdf" multiple={false} title="Drop your PDF here" buttonLabel="Choose PDF" hint={`One readable, unencrypted PDF · ${config.max_upload_mb ? `up to ${config.max_upload_mb} MB` : "no size limit"}`} disabled={upload.isPending} onFiles={choose} />}
       {progress !== null && progress < 100 && <Progress value={progress} label={`Uploading… ${progress}%`} />}
       {error && <p className={styles.error} role="alert">{error}</p>}
-      {jobId && job.data && <><section className={styles.resultCard}><h2>{job.data.filename}</h2><p className={styles.resultMeta}><span>{job.data.pages} source {job.data.pages === 1 ? "page" : "pages"}</span>{job.data.output_pages > 0 && <span>{job.data.output_pages} output {job.data.output_pages === 1 ? "page" : "pages"}</span>}<span>Local · no charge</span></p></section><SplitRangeForm job={job.data} /><div className={styles.primaryRow}><button type="button" onClick={() => { setJobId(""); setProgress(null); }}>Choose another PDF</button></div></>}
+      {jobId && job.data && <><section className={styles.resultCard}><h2>{job.data.filename}</h2><p className={styles.resultMeta}><span>{job.data.pages} source {job.data.pages === 1 ? "page" : "pages"}</span>{job.data.output_pages > 0 && <span>{job.data.output_pages} output {job.data.output_pages === 1 ? "page" : "pages"}</span>}<span>Local · no charge</span></p></section><SplitRangeForm job={job.data} /><div className={styles.primaryRow}><DeleteJobButton job={job.data} onDeleted={() => { setJobId(""); setProgress(null); onDeleted?.(); }} /><button type="button" onClick={() => { setJobId(""); setProgress(null); }}>Choose another PDF</button></div></>}
     </>
   );
 }

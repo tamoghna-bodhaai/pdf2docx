@@ -73,7 +73,7 @@ export function PdfToDocxTool({ config, restoredJob, onOpen }: { config: ConfigD
     <>
       <header className={styles.toolHeader}><p className="eyebrow">New conversion</p><h1>Convert a PDF into editable work.</h1><p>Choose the exact outputs you need, follow progress live, then compare the result beside its source.</p></header>
       {!config.mathpix_key_configured && <div className="warn" role="status"><strong>Conversion is unavailable</strong><span>The conversion service is not configured on this server.</span></div>}
-      <UploadZone accept="application/pdf,.pdf" multiple title="Drop your PDF here" buttonLabel="Choose PDF" hint={`PDF only · up to ${config.max_upload_mb} MB each · ${config.batch_max_files} files`} disabled={uploadMutation.isPending || Boolean(batchId)} onFiles={chooseFiles} />
+      <UploadZone accept="application/pdf,.pdf" multiple title="Drop your PDF here" buttonLabel="Choose PDF" hint={`PDF only · ${config.max_upload_mb ? `up to ${config.max_upload_mb} MB each` : "no size limit"} · ${config.batch_max_files} files`} disabled={uploadMutation.isPending || Boolean(batchId)} onFiles={chooseFiles} />
       {uploadProgress !== null && <Progress value={uploadProgress} label={uploadProgress < 100 ? `Uploading… ${uploadProgress}%` : "Upload complete"} />}
       {error && <p className={styles.error} role="alert">{error}</p>}
       {jobs.length > 0 && (

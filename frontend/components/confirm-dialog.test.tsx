@@ -21,7 +21,7 @@ describe("confirmation dialog", () => {
     renderWithQuery(<Harness />);
     const trigger = screen.getByRole("button", { name: "Delete file" });
     await user.click(trigger);
-    expect(screen.getByRole("dialog", { name: "Delete paper.pdf?" })).toHaveAttribute("aria-describedby", "confirm-description");
+    expect(screen.getByRole("dialog", { name: "Delete paper.pdf?" })).toHaveAccessibleDescription("This cannot be undone.");
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(trigger).toHaveFocus());
   });

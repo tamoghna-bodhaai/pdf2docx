@@ -576,7 +576,7 @@ pre.plain { margin: 0; padding: 22px 24px; color: var(--text); font: 12px/1.7 va
 
 /* ------------------------------------------------------------------- dialog -- */
 
-.confirm-dialog { width: min(100% - 32px, 420px); padding: 0; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-popover); }
+.confirm-dialog { position: fixed; inset: 0; width: calc(100vw - 32px); max-width: 420px; max-height: min(calc(100dvh - 32px), 640px); margin: auto; padding: 0; overflow: auto; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-popover); }
 .confirm-dialog::backdrop { background: var(--scrim); backdrop-filter: blur(3px); }
 .confirm-dialog form { display: grid; justify-items: start; padding: 24px; }
 .dialog-icon { display: grid; place-items: center; width: 42px; height: 42px; margin-bottom: 14px; border-radius: 11px; background: var(--error-soft); color: var(--error); }

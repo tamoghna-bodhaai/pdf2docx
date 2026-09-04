@@ -4,6 +4,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { DownloadMenu } from "@/components/download-menu";
+import { DeleteJobButton } from "@/components/delete-job-button";
 import { Progress } from "@/components/progress";
 import { UploadZone } from "@/components/upload-zone";
 import { api, ApiError } from "@/lib/api/client";
@@ -16,7 +17,7 @@ function formatSize(bytes: number) {
   return bytes < 1_048_576 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1_048_576).toFixed(1)} MB`;
 }
 
-export function ImageToPdfTool({ config, restoredJob, onCreated }: { config: ConfigDto; restoredJob?: JobDto; onCreated?: (job: JobDto) => void }) {
+export function ImageToPdfTool({ config, restoredJob, onCreated, onDeleted }: { config: ConfigDto; restoredJob?: JobDto; onCreated?: (job: JobDto) => void; onDeleted?: () => void }) {
   const queryClient = useQueryClient();
   const [images, setImages] = useState<ImageItem[]>([]);
   const [jobId, setJobId] = useState(restoredJob?.kind === "images_to_pdf" ? restoredJob.id : "");
@@ -41,7 +42,7 @@ export function ImageToPdfTool({ config, restoredJob, onCreated }: { config: Con
     if (accepted.length !== files.length) { setError("Use JPEG, PNG, or WebP images."); return; }
     if (images.length + accepted.length > config.image_max_files) { setError(`Choose at most ${config.image_max_files} images.`); return; }
     const bytes = images.reduce((sum, item) => sum + item.file.size, 0) + accepted.reduce((sum, file) => sum + file.size, 0);
-    if (bytes > config.image_max_upload_mb * 1_048_576) { setError(`Images may total at most ${config.image_max_upload_mb} MB.`); return; }
+    if (config.image_max_upload_mb && bytes > config.image_max_upload_mb * 1_048_576) { setError(`Images may total at most ${config.image_max_upload_mb} MB.`); return; }
     const next = accepted.map((file, index) => {
       const url = URL.createObjectURL(file); urls.current.add(url);
       return { id: `${file.name}-${file.lastModified}-${index}-${crypto.randomUUID()}`, file, url };
@@ -66,11 +67,11 @@ export function ImageToPdfTool({ config, restoredJob, onCreated }: { config: Con
   return (
     <>
       <header className={styles.toolHeader}><p className="eyebrow">Local · no charge</p><h1>Turn images into one PDF.</h1><p>Arrange up to {config.image_max_files} images. Each becomes a fitted A4 page in the order shown.</p></header>
-      {!jobId && <UploadZone accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple title="Drop your images here" buttonLabel="Choose images" hint={`JPEG, PNG, or WebP · ${config.image_max_files} images · ${config.image_max_upload_mb} MB combined`} disabled={create.isPending} onFiles={addFiles} />}
+      {!jobId && <UploadZone accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple title="Drop your images here" buttonLabel="Choose images" hint={`JPEG, PNG, or WebP · ${config.image_max_files} images · ${config.image_max_upload_mb ? `${config.image_max_upload_mb} MB combined` : "no size limit"}`} disabled={create.isPending} onFiles={addFiles} />}
       {error && <p className={styles.error} role="alert">{error}</p>}
       {!jobId && images.length > 0 && <><p className={styles.summary}>{images.length} image{images.length === 1 ? "" : "s"} · {formatSize(bytes)} combined</p><ol className={styles.imageList}>{images.map((item, index) => <li className={styles.imageRow} draggable onDragStart={() => setDragged(index)} onDragOver={(event) => event.preventDefault()} onDrop={() => { if (dragged !== null) move(dragged, index); setDragged(null); }} key={item.id}>{/* Object URLs are already local previews and cannot use the Next image optimizer. */}<img className={styles.thumbnail} src={item.url} width={56} height={56} alt={`Preview of ${item.file.name}`} /><span className={styles.imageMeta}><strong>{item.file.name}</strong><small>{formatSize(item.file.size)} · Page {index + 1}</small></span><span className={styles.rowActions}><button type="button" aria-label={`Move ${item.file.name} earlier`} disabled={index === 0} onClick={() => move(index, index - 1)}>↑</button><button type="button" aria-label={`Move ${item.file.name} later`} disabled={index === images.length - 1} onClick={() => move(index, index + 1)}>↓</button><button type="button" aria-label={`Remove ${item.file.name}`} onClick={() => remove(index)}>Remove</button></span></li>)}</ol><div className={styles.primaryRow}><button className="primary" type="button" disabled={create.isPending} onClick={() => create.mutate()}>{create.isPending ? "Creating PDF…" : "Create PDF"}</button></div></>}
       {progress !== null && progress < 100 && <Progress value={progress} label={`Uploading… ${progress}%`} />}
-      {currentJob && <section className={styles.resultCard} aria-live="polite"><div className={styles.statusRow}><div><h2>{currentJob.output_filename || "PDF result"}</h2><p className={styles.resultMeta}><span>{currentJob.output_pages || currentJob.pages} {(currentJob.output_pages || currentJob.pages) === 1 ? "page" : "pages"}</span><span>Local · no charge</span><span>{currentJob.status}</span></p></div><span className={`status-badge ${currentJob.status === "done" ? "complete" : currentJob.status === "error" ? "error" : "working"}`}>{currentJob.status}</span></div>{currentJob.error && <p className={styles.error}>{currentJob.error}</p>}<div className={styles.primaryRow}><DownloadMenu job={currentJob} /><button type="button" onClick={() => { setJobId(""); setProgress(null); }}>Create another</button></div></section>}
+      {currentJob && <section className={styles.resultCard} aria-live="polite"><div className={styles.statusRow}><div><h2>{currentJob.output_filename || "PDF result"}</h2><p className={styles.resultMeta}><span>{currentJob.output_pages || currentJob.pages} {(currentJob.output_pages || currentJob.pages) === 1 ? "page" : "pages"}</span><span>Local · no charge</span><span>{currentJob.status}</span></p></div><span className={`status-badge ${currentJob.status === "done" ? "complete" : currentJob.status === "error" ? "error" : "working"}`}>{currentJob.status}</span></div>{currentJob.error && <p className={styles.error}>{currentJob.error}</p>}<div className={styles.primaryRow}><DownloadMenu job={currentJob} /><DeleteJobButton job={currentJob} onDeleted={() => { setJobId(""); setProgress(null); onDeleted?.(); }} /><button type="button" onClick={() => { setJobId(""); setProgress(null); }}>Create another</button></div></section>}
     </>
   );
 }

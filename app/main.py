@@ -168,6 +168,11 @@ class Job:
     started_at: str | None = None
     finished_at: str | None = None
     directory: Path | None = None
+    # Serialises result replacement with deletion. It is process-local state,
+    # so it is deliberately absent from JSON records and browser DTOs.
+    operation_lock: threading.Lock = field(
+        default_factory=threading.Lock, repr=False, compare=False
+    )
 
     def _file(self, name: str) -> Path:
         return (self.directory or Path()) / name
@@ -472,6 +477,15 @@ def _get_job(job_id: str, user: User) -> Job:
     if job is None or job.user_id != user.id:
         raise HTTPException(status_code=404, detail="Unknown job id")
     return job
+
+
+def _require_pdf_to_docx(job: Job) -> None:
+    """Keep paid Mathpix controls unreachable from the two local workflows."""
+    if job.kind != "pdf_to_docx":
+        raise HTTPException(
+            status_code=409,
+            detail="This action is only available for PDF-to-DOCX jobs.",
+        )
 
 
 def _preserve_compatibility_files(previous: Path, staged: Path) -> None:
@@ -1011,7 +1025,7 @@ async def stage_split_pdf(
         if not size:
             raise HTTPException(status_code=400, detail="The uploaded file is empty.")
         with fitz.open(source_path) as document:
-            if document.needs_pass:
+            if document.needs_pass or document.metadata.get("encryption"):
                 raise HTTPException(
                     status_code=400, detail="Encrypted PDFs cannot be split."
                 )
@@ -1054,37 +1068,70 @@ def extract_job_range(
 ) -> dict:
     """Create or atomically replace the extracted result for a staged split job."""
     job = _get_job(job_id, user)
-    if job.kind != "split_pdf":
-        raise HTTPException(status_code=409, detail="This job is not a PDF split.")
     if job.status == "processing":
         raise HTTPException(status_code=409, detail="This PDF is already being processed.")
-    source = (job.directory or Path()) / "source.pdf"
-    if not source.exists():
-        raise HTTPException(status_code=409, detail="The source PDF is no longer available.")
+    with job.operation_lock:
+        # Re-check registry membership while claiming the operation: deletion
+        # may have won the race after `_get_job` returned its object reference.
+        with JOBS_LOCK:
+            if JOBS.get(job_id) is not job:
+                raise HTTPException(status_code=404, detail="Unknown job id")
+            if job.kind != "split_pdf":
+                raise HTTPException(status_code=409, detail="This job is not a PDF split.")
+            if job.status == "processing":
+                raise HTTPException(
+                    status_code=409, detail="This PDF is already being processed."
+                )
+            previous = (
+                job.status,
+                job.error,
+                job.started_at,
+                job.finished_at,
+                job.done,
+            )
+            job.status = "processing"
+            job.error = None
+            job.started_at = _now()
+            job.finished_at = None
+            job.done = 0
+        _persist(job)
 
-    try:
-        document_tools.split_pdf(
-            source,
-            (job.directory or Path()) / "document.pdf",
-            start_page,
-            end_page,
-        )
-    except document_tools.DocumentToolError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        source = (job.directory or Path()) / "source.pdf"
+        if not source.exists():
+            with JOBS_LOCK:
+                job.status, job.error, job.started_at, job.finished_at, job.done = previous
+            _persist(job)
+            raise HTTPException(
+                status_code=409, detail="The source PDF is no longer available."
+            )
 
-    with JOBS_LOCK:
-        job.page_range = (start_page, end_page)
-        job.output_pages = end_page - start_page + 1
-        job.output_filename = _local_output_name(
-            job.filename, f"-pages-{start_page}-{end_page}"
-        )
-        job.status = "done"
-        job.done = job.output_pages
-        job.error = None
-        job.started_at = job.started_at or _now()
-        job.finished_at = _now()
-    _persist(job)
-    return job.as_dict()
+        try:
+            document_tools.split_pdf(
+                source,
+                (job.directory or Path()) / "document.pdf",
+                start_page,
+                end_page,
+            )
+        except document_tools.DocumentToolError as exc:
+            # `document.pdf` was atomically preserved by the processing module;
+            # mirror that rollback in the job metadata as well.
+            with JOBS_LOCK:
+                job.status, job.error, job.started_at, job.finished_at, job.done = previous
+            _persist(job)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        with JOBS_LOCK:
+            job.page_range = (start_page, end_page)
+            job.output_pages = end_page - start_page + 1
+            job.output_filename = _local_output_name(
+                job.filename, f"-pages-{start_page}-{end_page}"
+            )
+            job.status = "done"
+            job.done = job.output_pages
+            job.error = None
+            job.finished_at = _now()
+        _persist(job)
+        return job.as_dict()
 
 
 @app.post("/api/convert")
@@ -1193,6 +1240,7 @@ async def start_job(
         raw_formats = formats
 
     job = _get_job(job_id, user)
+    _require_pdf_to_docx(job)
     if job.status in RUNNING:
         raise HTTPException(status_code=409, detail="This conversion is already running.")
 
@@ -1378,6 +1426,7 @@ def cancel_batch(batch_id: str, user: User = Depends(current_user)) -> dict:
 @app.post("/api/jobs/{job_id}/pause")
 def pause_job(job_id: str, user: User = Depends(current_user)) -> dict:
     job = _get_job(job_id, user)
+    _require_pdf_to_docx(job)
     if not _pause_one(job):
         raise HTTPException(
             status_code=409, detail="This file is already running or finished."
@@ -1390,6 +1439,7 @@ def resume_job(
     job_id: str, background: BackgroundTasks, user: User = Depends(current_user)
 ) -> dict:
     job = _get_job(job_id, user)
+    _require_pdf_to_docx(job)
     if job.status != "paused":
         raise HTTPException(status_code=409, detail="This file is not paused.")
     pdf_path = (job.directory or Path()) / "source.pdf"
@@ -1404,6 +1454,7 @@ def resume_job(
 @app.post("/api/jobs/{job_id}/cancel")
 def cancel_job(job_id: str, user: User = Depends(current_user)) -> dict:
     job = _get_job(job_id, user)
+    _require_pdf_to_docx(job)
     if not _cancel_one(job):
         raise HTTPException(status_code=409, detail="This conversion has already finished.")
     return job.as_dict()
@@ -1426,6 +1477,7 @@ def refit_job(
     block of the job's metadata change.
     """
     job = _get_job(job_id, user)
+    _require_pdf_to_docx(job)
     if job.status in RUNNING:
         raise HTTPException(
             status_code=409,
@@ -1824,14 +1876,21 @@ def job_delete(job_id: str, user: User = Depends(current_user)) -> dict:
     job = _get_job(job_id, user)
     if job.status in RUNNING:
         raise HTTPException(
-            status_code=409, detail="This conversion is still running — wait for it to finish."
+            status_code=409,
+            detail="This conversion is still running — wait for it to finish.",
         )
-    if job.directory:
-        shutil.rmtree(job.directory, ignore_errors=True)
-    with JOBS_LOCK:
-        JOBS.pop(job_id, None)
-    _clear_control(job_id)
-    db.delete_job(job_id)
+    with job.operation_lock:
+        if job.status in RUNNING:
+            raise HTTPException(
+                status_code=409,
+                detail="This conversion is still running — wait for it to finish.",
+            )
+        if job.directory:
+            shutil.rmtree(job.directory, ignore_errors=True)
+        with JOBS_LOCK:
+            JOBS.pop(job_id, None)
+        _clear_control(job_id)
+        db.delete_job(job_id)
     return {"deleted": job_id}
 
 
@@ -1842,11 +1901,14 @@ def history_clear(user: User = Depends(current_user)) -> dict:
     for job in _newest_first(user.id):
         if job.status in RUNNING:
             continue
-        if job.directory:
-            shutil.rmtree(job.directory, ignore_errors=True)
-        with JOBS_LOCK:
-            JOBS.pop(job.id, None)
-        _clear_control(job.id)
-        db.delete_job(job.id)
-        deleted += 1
+        with job.operation_lock:
+            if job.status in RUNNING:
+                continue
+            if job.directory:
+                shutil.rmtree(job.directory, ignore_errors=True)
+            with JOBS_LOCK:
+                JOBS.pop(job.id, None)
+            _clear_control(job.id)
+            db.delete_job(job.id)
+            deleted += 1
     return {"deleted": deleted}

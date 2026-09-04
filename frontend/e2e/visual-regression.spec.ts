@@ -1,41 +1,105 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const config = {
-  provider: "Mathpix", mathpix_key_configured: true, mathpix_formats: [], max_pages: 0,
-  max_upload_mb: 50, batch_max_files: 10, batch_workers: 3, mathpix_page_rate: 0.0015,
-  remote_delete: true, improve_mathpix: false, history_limit: 100, local_tools_available: true,
+  provider: "Mathpix", mathpix_key_configured: true,
+  mathpix_formats: [{ ext: "docx", media_type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", note: "", requestable: true, always: false }],
+  max_pages: 0, max_upload_mb: 50, batch_max_files: 10, batch_workers: 3,
+  mathpix_page_rate: 0.0015, remote_delete: true, improve_mathpix: false,
+  history_limit: 100, local_tools_available: true,
   accepted_image_types: ["image/jpeg", "image/png", "image/webp"], image_max_files: 30,
   image_max_pixels: 40_000_000, image_max_upload_mb: 50,
 };
 
+const pixel = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAgAAAALCAIAAADN+VtyAAAAFUlEQVR4nGP8//8/AzbAhFV0JEgAADzeAxN4UWjoAAAAAElFTkSuQmCC", "base64");
+
+function visualJob(id: string, filename: string, status: "ready" | "done") {
+  return {
+    id, filename, kind: "pdf_to_docx", source_filenames: [filename], output_filename: "",
+    output_pages: 0, page_range: null, batch_id: "visual-batch", pages: 12,
+    layout: "mathpix", requested_formats: ["docx"], multi_column: false,
+    diagnostics: [], status, done: status === "done" ? 12 : 0, total: 12, error: null,
+    size_bytes: 2_400_000, cost: status === "done" ? 0.018 : 0,
+    cost_known: status === "done", created_at: "2026-09-04T12:00:00Z",
+    started_at: status === "done" ? "2026-09-04T12:00:01Z" : null,
+    finished_at: status === "done" ? "2026-09-04T12:00:05Z" : null,
+    has_docx: status === "done", has_md: status === "done", has_source: true,
+    has_pdf: false, has_rebuilt: false, mathpix_formats: [], has_detection: false,
+    has_package: status === "done",
+  };
+}
+
 async function mockWorkspace(page: Page) {
+  const state: { uploaded: boolean; status: "ready" | "done" } = { uploaded: false, status: "ready" };
+  const jobs = () => [
+    visualJob("visual-1", "research-notes.pdf", state.status),
+    visualJob("visual-2", "appendix.pdf", state.status),
+  ];
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/auth/config") return route.fulfill({ json: { signup_open: true } });
     if (path === "/api/auth/me") return route.fulfill({ json: { id: "visual-user", email: "reader@example.com" } });
     if (path === "/api/config") return route.fulfill({ json: config });
-    if (path === "/api/history") return route.fulfill({ json: { jobs: [], total_cost: 0, count: 0 } });
+    if (path === "/api/history") return route.fulfill({ json: { jobs: state.uploaded ? jobs() : [], total_cost: 0, count: state.uploaded ? 2 : 0 } });
+    if (path === "/api/convert/batch") {
+      state.uploaded = true;
+      return route.fulfill({ json: { batch_id: "visual-batch", jobs: jobs(), rejected: [], package_ready: false, package_count: 0 } });
+    }
+    if (path === "/api/batches/visual-batch") return route.fulfill({ json: { batch_id: "visual-batch", jobs: jobs(), rejected: [], package_ready: state.status === "done", package_count: state.status === "done" ? 2 : 0 } });
+    if (/^\/api\/jobs\/visual-[12]$/.test(path)) return route.fulfill({ json: jobs().find((job) => path.endsWith(job.id)) });
+    if (/^\/api\/jobs\/visual-[12]\/markdown$/.test(path)) return route.fulfill({ json: { markdown: "# Converted page\n\nEditable text, mathematics $a^2+b^2=c^2$, and a labelled result." } });
+    if (/^\/api\/jobs\/visual-[12]\/page\/\d+\.png$/.test(path)) return route.fulfill({ body: pixel, headers: { "content-type": "image/png" } });
     return route.fulfill({ status: 404, json: { detail: "Not found" } });
   });
+  return state;
+}
+
+async function screenshot(page: Page, name: string) {
+  // Next's development-only corner badge animates independently of the app and
+  // does not exist in the static export. Keep it out of product baselines.
+  await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
+  await expect(page).toHaveScreenshot(name, { animations: "disabled", fullPage: true });
 }
 
 test.describe("visual contracts", () => {
   test.describe.configure({ mode: "serial" });
   for (const width of [375, 768, 1280]) {
     for (const theme of ["light", "dark"] as const) {
-      test(`login and empty workspace at ${width}px in ${theme} mode`, async ({ page }) => {
-        await mockWorkspace(page);
+      test(`legacy states at ${width}px in ${theme} mode`, async ({ page }) => {
+        const state = await mockWorkspace(page);
         await page.setViewportSize({ width, height: width === 375 ? 812 : 900 });
         await page.addInitScript((selected) => localStorage.setItem("pdf2docx-theme", selected), theme);
 
         await page.goto("/login");
         await expect(page.getByRole("tab", { name: "Sign up" })).toBeEnabled();
-        await expect(page).toHaveScreenshot(`login-${width}-${theme}.png`, { animations: "disabled", fullPage: true });
+        await screenshot(page, `login-${width}-${theme}.png`);
 
-        await page.goto("/?tool=images-to-pdf");
-        await expect(page.getByRole("heading", { name: "Turn images into one PDF." })).toBeVisible();
+        await page.goto("/?tool=pdf-to-docx");
+        await expect(page.getByRole("heading", { name: "Convert a PDF into editable work." })).toBeVisible();
+        await screenshot(page, `workspace-${width}-${theme}.png`);
+
+        await page.locator('input[type="file"]').setInputFiles([
+          { name: "research-notes.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF visual one") },
+          { name: "appendix.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF visual two") },
+        ]);
+        await expect(page.getByText("2 files · 24 pages")).toBeVisible();
+        await screenshot(page, `active-batch-${width}-${theme}.png`);
+
+        await page.goto("/?tool=history");
         await expect(page.getByRole("heading", { name: "Recent files" })).toBeVisible();
-        await expect(page).toHaveScreenshot(`workspace-${width}-${theme}.png`, { animations: "disabled", fullPage: true });
+        await expect(page.getByText("research-notes.pdf").first()).toBeVisible();
+        await screenshot(page, `history-${width}-${theme}.png`);
+
+        await page.getByRole("button", { name: "Delete research-notes.pdf" }).click();
+        await expect(page.getByRole("dialog", { name: "Delete research-notes.pdf?" })).toBeVisible();
+        await screenshot(page, `dialog-${width}-${theme}.png`);
+        await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
+
+        state.status = "done";
+        await page.goto("/?tool=pdf-to-docx&job=visual-1");
+        await expect(page.getByRole("heading", { name: "research-notes.pdf" })).toBeVisible();
+        if (width <= 900) await page.getByRole("tab", { name: "Converted" }).click();
+        await expect(page.getByRole("heading", { name: "Converted page" })).toBeVisible();
+        await screenshot(page, `viewer-${width}-${theme}.png`);
       });
     }
   }

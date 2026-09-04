@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { prepareMmd, restoreMmd } from "./mmd";
+import { dressMmdLists, prepareMmd, restoreMmd } from "./mmd";
 
 describe("Mathpix Markdown preparation", () => {
   it("converts document commands while preserving mathematics exactly", () => {
@@ -15,5 +15,11 @@ describe("Mathpix Markdown preparation", () => {
     expect(prepared.markdown).toContain("- One");
     expect(prepared.markdown).toContain("- Two");
     expect(prepared.markdown).toContain("![](figures/a.png)");
+  });
+
+  it("marks lists that carry Mathpix's own item labels", () => {
+    document.body.innerHTML = '<ol><li><span class="mmd-item-label">(a)</span> One</li></ol>';
+    dressMmdLists(document.body);
+    expect(document.querySelector("ol")).toHaveClass("mmd-labelled");
   });
 });

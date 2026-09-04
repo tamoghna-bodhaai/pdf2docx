@@ -1,10 +1,10 @@
-import { screen } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { api } from "@/lib/api/client";
-import { job } from "@/test/fixtures";
+import { config, job } from "@/test/fixtures";
 import { renderWithQuery } from "@/test/render";
-import { SplitRangeForm } from "./split-pdf-tool";
+import { SplitPdfTool, SplitRangeForm } from "./split-pdf-tool";
 
 describe("split range", () => {
   it("retains values, reports the live count, and focuses the first invalid field", async () => {
@@ -31,5 +31,14 @@ describe("split range", () => {
     expect(screen.getByText("Pages 2–4 · 3 pages")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Extract pages" }));
     expect(split).toHaveBeenCalledWith("job-1", 2, 4);
+  });
+
+  it("treats a zero upload limit as unlimited", async () => {
+    const upload = vi.spyOn(api, "uploadSplitPdf").mockReturnValue(new Promise(() => undefined));
+    const view = renderWithQuery(<SplitPdfTool config={{ ...config, max_upload_mb: 0 }} />);
+    const picker = view.container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    fireEvent.change(picker, { target: { files: [new File(["pdf"], "large.pdf", { type: "application/pdf" })] } });
+    await waitFor(() => expect(upload).toHaveBeenCalled());
+    expect(screen.getByText(/no size limit/)).toBeInTheDocument();
   });
 });

@@ -1,6 +1,9 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
+
+function subscribeToHydration() { return () => undefined; }
 
 export function ConfirmDialog({
   open, title, description, action = "Delete", onConfirm, onClose,
@@ -10,6 +13,9 @@ export function ConfirmDialog({
 }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const trigger = useRef<HTMLElement | null>(null);
+  const hydrated = useSyncExternalStore(subscribeToHydration, () => true, () => false);
+  const titleId = useId();
+  const descriptionId = useId();
   useEffect(() => {
     const element = dialog.current;
     if (!element) return;
@@ -21,16 +27,18 @@ export function ConfirmDialog({
       trigger.current?.focus();
     }
   }, [open]);
-  return (
-    <dialog ref={dialog} className="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-description" onCancel={onClose} onClose={() => { if (open) onClose(); }}>
+  if (!hydrated) return null;
+  return createPortal(
+    <dialog ref={dialog} className="confirm-dialog" aria-labelledby={titleId} aria-describedby={descriptionId} onCancel={onClose} onClose={() => { if (open) onClose(); }}>
       <form method="dialog" onSubmit={(event) => { event.preventDefault(); onConfirm(); }}>
-        <h2 id="confirm-title">{title}</h2>
-        <p id="confirm-description">{description}</p>
+        <h2 id={titleId}>{title}</h2>
+        <p id={descriptionId}>{description}</p>
         <div className="dialog-actions">
           <button type="button" onClick={onClose}>Cancel</button>
           <button type="submit" className="danger">{action}</button>
         </div>
       </form>
-    </dialog>
+    </dialog>,
+    document.body,
   );
 }

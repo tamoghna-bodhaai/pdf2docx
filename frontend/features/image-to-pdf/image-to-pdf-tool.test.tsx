@@ -29,4 +29,12 @@ describe("ordered image list", () => {
     view.unmount();
     expect(revoke).toHaveBeenCalledWith("blob:1");
   });
+
+  it("treats a zero upload limit as unlimited", () => {
+    const view = renderWithQuery(<ImageToPdfTool config={{ ...config, image_max_upload_mb: 0 }} />);
+    const picker = view.container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    fireEvent.change(picker, { target: { files: [new File(["content"], "large.png", { type: "image/png" })] } });
+    expect(screen.getByText("large.png")).toBeInTheDocument();
+    expect(screen.getByText(/no size limit/)).toBeInTheDocument();
+  });
 });

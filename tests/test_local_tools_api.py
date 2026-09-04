@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import io
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
 
@@ -165,6 +167,26 @@ def test_split_upload_rejects_corrupt_and_encrypted_sources_without_a_job(client
     assert client.get("/api/history").json()["jobs"] == []
 
 
+def test_split_upload_rejects_empty_password_encryption(client) -> None:
+    plain = fitz.open(stream=_pdf_bytes(1), filetype="pdf")
+    encrypted_stream = io.BytesIO()
+    plain.save(
+        encrypted_stream,
+        encryption=fitz.PDF_ENCRYPT_AES_256,
+        owner_pw="owner",
+        user_pw="",
+    )
+    plain.close()
+
+    response = client.post(
+        "/api/tools/split-pdf",
+        files={"file": ("locked.pdf", encrypted_stream.getvalue(), "application/pdf")},
+    )
+
+    assert response.status_code == 400
+    assert "Encrypted PDFs" in response.json()["detail"]
+
+
 def test_split_validation_keeps_the_source_and_previous_result(client) -> None:
     staged = client.post(
         "/api/tools/split-pdf",
@@ -184,6 +206,45 @@ def test_split_validation_keeps_the_source_and_previous_result(client) -> None:
     assert client.get(f"/api/jobs/{staged['id']}/download?format=pdf").content == previous
 
 
+def test_split_regeneration_claims_the_job_until_metadata_and_output_agree(
+    client, monkeypatch
+) -> None:
+    staged = client.post(
+        "/api/tools/split-pdf",
+        files={"file": ("report.pdf", _pdf_bytes(3), "application/pdf")},
+    ).json()
+    entered = threading.Event()
+    release = threading.Event()
+    original = main.document_tools.split_pdf
+
+    def blocked_split(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=5)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(main.document_tools, "split_pdf", blocked_split)
+    path = f"/api/jobs/{staged['id']}/split"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(
+            client.post, path, data={"start_page": 1, "end_page": 2}
+        )
+        assert entered.wait(timeout=5)
+        competing = client.post(path, data={"start_page": 3, "end_page": 3})
+        assert competing.status_code == 409
+        assert client.delete(f"/api/jobs/{staged['id']}").status_code == 409
+        release.set()
+        assert first.result(timeout=5).status_code == 200
+
+    job = client.get(f"/api/jobs/{staged['id']}").json()
+    assert job["page_range"] == {"start": 1, "end": 2}
+    assert job["output_filename"] == "report-pages-1-2.pdf"
+    with fitz.open(
+        stream=client.get(f"/api/jobs/{staged['id']}/download?format=pdf").content,
+        filetype="pdf",
+    ) as document:
+        assert document.page_count == 2
+
+
 def test_local_tools_require_authentication_and_keep_job_ownership_private(
     anonymous, client, other_client
 ) -> None:
@@ -198,6 +259,22 @@ def test_local_tools_require_authentication_and_keep_job_ownership_private(
         f"/api/jobs/{job['id']}/split", data={"start_page": 1, "end_page": 1}
     ).status_code == 404
     assert other_client.get(f"/api/jobs/{job['id']}/download?format=pdf").status_code == 404
+
+
+def test_local_jobs_cannot_enter_paid_mathpix_control_routes(client) -> None:
+    job = client.post(
+        "/api/tools/split-pdf",
+        files={"file": ("local.pdf", _pdf_bytes(2), "application/pdf")},
+    ).json()
+
+    for action in ("start", "pause", "resume", "cancel", "refit"):
+        response = client.post(f"/api/jobs/{job['id']}/{action}")
+        assert response.status_code == 409, (action, response.text)
+        assert "PDF-to-DOCX" in response.json()["detail"]
+
+    restored = client.get(f"/api/jobs/{job['id']}").json()
+    assert restored["kind"] == "split_pdf"
+    assert restored["status"] == "ready"
 
 
 def test_old_records_default_to_pdf_to_docx(tmp_path: Path) -> None:

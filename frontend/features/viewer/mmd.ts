@@ -20,3 +20,10 @@ const runtime = runtimeModule as MmdRuntime;
 
 export function prepareMmd(source: unknown): PreparedMmd { return runtime.prepare(source); }
 export function restoreMmd(html: string, math: string[]): string { return runtime.restore(html, math); }
+
+/** Hide Markdown's synthetic bullet when Mathpix supplied its own (a)/(b) label. */
+export function dressMmdLists(root: ParentNode): void {
+  root.querySelectorAll(".mmd-item-label").forEach((label) => {
+    label.closest("ul, ol")?.classList.add("mmd-labelled");
+  });
+}

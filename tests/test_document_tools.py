@@ -98,6 +98,24 @@ def test_corrupt_images_fail_without_replacing_an_existing_output(
     assert output.read_bytes() == b"previous complete result"
 
 
+def test_failed_atomic_promotion_closes_and_removes_the_staged_pdf(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = _image(tmp_path / "source.png", (40, 80), (1, 2, 3))
+    output = tmp_path / "document.pdf"
+    output.write_bytes(b"previous complete result")
+
+    def fail_replace(_source: Path, _target: Path) -> Path:
+        raise OSError("promotion failed")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(OSError, match="promotion failed"):
+        images_to_pdf([source], output)
+
+    assert output.read_bytes() == b"previous complete result"
+    assert list(tmp_path.glob(".document-*.pdf")) == []
+
+
 def test_unsupported_and_oversized_images_are_rejected(tmp_path: Path, monkeypatch) -> None:
     gif = _image(tmp_path / "animation.gif", (20, 20), (1, 2, 3))
     too_large = _image(tmp_path / "large.png", (11, 10), (1, 2, 3))
@@ -201,3 +219,14 @@ def test_split_rejects_unreadable_and_encrypted_pdfs(tmp_path: Path) -> None:
         )
     with pytest.raises(DocumentToolError, match="encrypted"):
         split_pdf(encrypted, tmp_path / "encrypted-output.pdf", 1, 1)
+
+    empty_password = tmp_path / "empty-password.pdf"
+    with fitz.open(plain) as source:
+        source.save(
+            empty_password,
+            encryption=fitz.PDF_ENCRYPT_AES_256,
+            owner_pw="owner",
+            user_pw="",
+        )
+    with pytest.raises(DocumentToolError, match="encrypted"):
+        split_pdf(empty_password, tmp_path / "empty-password-output.pdf", 1, 1)
