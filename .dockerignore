@@ -9,3 +9,9 @@ tests/
 .env
 *.docx
 *.md.out
+.venv/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+.pytest_cache/
+**/__pycache__/

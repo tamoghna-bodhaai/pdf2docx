@@ -1,12 +1,16 @@
 # pdf2docx — paper export workspace
 
-Upload one PDF, select the exact Mathpix outputs you need, follow conversion
-progress, and inspect each source page beside Mathpix's rendered Markdown.
+Convert PDFs to Mathpix outputs, combine ordered images into a PDF, or extract
+an inclusive page range from a PDF. All three tools share one authenticated
+workspace and durable per-user history.
 
-The web workflow is Mathpix-only. It does not select or initialise an
-OpenRouter model, and it does not rebuild Mathpix's DOCX locally.
+Only PDF-to-DOCX conversion contacts Mathpix. Image composition and PDF
+splitting run locally with Pillow and PyMuPDF, need no provider credentials,
+and are labelled “Local · no charge” throughout the interface.
 
 ## What the application does
+
+### PDF to DOCX and Mathpix exports
 
 1. Stores the uploaded PDF in the local job directory and reads its page count.
 2. Uploads the PDF to the Mathpix Files API with page breaks and the outputs
@@ -19,6 +23,30 @@ OpenRouter model, and it does not rebuild Mathpix's DOCX locally.
    and rendered Markdown stay aligned.
 6. Deletes the remote Mathpix upload after exports and preview images are stored,
    unless deletion is explicitly disabled.
+
+### Local PDF tools
+
+- **Images to PDF** accepts 1–30 ordered JPEG, PNG, or WebP files. EXIF
+  orientation is applied, transparency is flattened onto white, and each image
+  is fitted without cropping onto its own portrait or landscape A4 page with
+  36-point margins.
+- **Split PDF** stages one readable, unencrypted source, reports its exact page
+  count, and extracts one inclusive range. The source remains stored so the
+  same history item can be regenerated with a different range.
+
+Both tools build to temporary files and atomically promote a completed
+`document.pdf`, so a failed attempt cannot overwrite the previous result.
+
+## Application architecture
+
+The browser application lives in `frontend/` and uses Next.js App Router,
+strict TypeScript, CSS Modules, TanStack Query, Marked, and KaTeX. Production
+uses Next's static export: the Docker build creates `frontend/out`, then the
+single FastAPI/Uvicorn process serves `/`, `/login`, `/_next/*`, and every API
+route from the same origin. No Node process runs in production.
+
+During development, Next runs on port 3000 and rewrites `/api/*` to FastAPI on
+port 8000. Browser code calls FastAPI only through `frontend/lib/api`.
 
 When DOCX was selected and produced, `mathpix/document.docx` is the file Mathpix
 returned, byte for byte, and `document.docx` is that same file fitted to the
@@ -214,6 +242,7 @@ or third-party documents.
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env
+cd frontend && npm ci && cd ..
 ```
 
 Create Mathpix credentials in the [Mathpix console](https://console.mathpix.com/)
@@ -251,11 +280,15 @@ hour per caller. Without that, five digits is a hundred thousand guesses and a
 keypad someone can walk end to end in an afternoon. Use longer codes if you ever
 need more than a handful.
 
-Run the server:
+Run the backend and frontend development servers in separate terminals:
 
 ```bash
 .venv/bin/uvicorn app.main:app --reload --port 8000
+cd frontend && npm run dev
 ```
+
+Open `http://localhost:3000`. To exercise the production topology locally,
+run `npm run build` in `frontend/` and then open FastAPI on port 8000.
 
 `PDF2DOCX_COOKIE_SECURE` defaults to `auto`, which reads the scheme off the
 request — plain HTTP locally, TLS in front of a deployment — so neither case
@@ -394,6 +427,9 @@ All active web-workflow settings live in `.env` (see `.env.example`).
 | `PDF2DOCX_SESSION_DAYS` | `30` | How long a sign-in lasts. |
 | `PDF2DOCX_COOKIE_SECURE` | `auto` | Reads the scheme off the request. `on`/`off` force it either way. |
 | `PDF2DOCX_MAX_UPLOAD_MB` | `50` | Largest accepted PDF; `0` is unlimited. |
+| `PDF2DOCX_IMAGE_MAX_FILES` | `30` | Maximum images in one local PDF. |
+| `PDF2DOCX_IMAGE_MAX_PIXELS` | `40000000` | Maximum decoded pixels in any one image. |
+| `PDF2DOCX_IMAGE_MAX_UPLOAD_MB` | `50` | Maximum combined image upload size. |
 
 The API still accepts the old `model`, `layout`, and `columns` form fields so
 an older client keeps working. `model` and `columns` are ignored; an omitted or
@@ -420,6 +456,9 @@ route are reachable signed out.
 | `GET` | `/api/config` | Effective Mathpix/web settings without secret values. |
 | `POST` | `/api/convert` | Stage a multipart PDF; optional `start=true` starts it immediately. |
 | `POST` | `/api/convert/batch` | Stage several PDFs under one batch id. |
+| `POST` | `/api/tools/images-to-pdf` | Compose ordered multipart `files` into a local PDF. |
+| `POST` | `/api/tools/split-pdf` | Stage one multipart PDF and return its exact page count. |
+| `POST` | `/api/jobs/{id}/split` | Create or replace a staged split job's inclusive `start_page`–`end_page` result. |
 | `POST` | `/api/jobs/{id}/start` | Start or rerun with Mathpix. Optional CSV `formats`; empty requests preview-only, omitted uses the configured default. Optional `multi_column` lays the document out in the source page's columns. |
 | `POST` | `/api/jobs/{id}/refit` | Rebuild the delivered DOCX from the job's stored exports, optionally with `multi_column`. No Mathpix call and no charge. |
 | `GET` | `/api/jobs/{id}` | Status, progress, available exports, and cost estimate. |
@@ -429,6 +468,7 @@ route are reachable signed out.
 | `GET` | `/api/jobs/{id}/asset/{path}` | A locally stored preview image. |
 | `GET` | `/api/jobs/{id}/download?format=docx` | Mathpix DOCX when it was selected and produced. |
 | `GET` | `/api/jobs/{id}/download?format=mathpix-{ext}` | An available untouched Mathpix export. |
+| `GET` | `/api/jobs/{id}/download?format=pdf` | The PDF produced by a local tool. |
 | `GET` | `/api/jobs/{id}/package.zip` | Fitted DOCX and other selected outputs, with a manifest. |
 | `GET` | `/api/batches/{id}` | Batch members, status counts, and package readiness. |
 | `GET` | `/api/batches/{id}/package.zip` | All packageable documents in a terminal batch, with a batch manifest. |
@@ -518,7 +558,15 @@ history, and its partial output is cleaned up rather than promoted.
 ```bash
 .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/pytest
+cd frontend
+npm run lint
+npm run typecheck
+npm test
+npm run build
+npx playwright install chromium
+npm run test:e2e
 ```
 
-Tests use generated PDFs and fake Mathpix clients; they require no network or
-API credentials.
+Tests use generated PDFs and fake Mathpix clients; they require no provider
+credentials. CI runs the Python suite, frontend lint/type checks and unit tests,
+the production static export, and desktop/mobile Playwright workflows.

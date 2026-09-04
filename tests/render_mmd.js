@@ -9,15 +9,24 @@
 const fs = require('fs');
 const path = require('path');
 
-const staticDir = path.join(__dirname, '..', 'app', 'static');
-const mmd = require(path.join(staticDir, 'mmd.js'));
-const marked = require(path.join(staticDir, 'vendor', 'marked.min.js'));
+const { pathToFileURL } = require('url');
+const frontendDir = path.join(__dirname, '..', 'frontend');
+const mmd = require(path.join(frontendDir, 'features', 'viewer', 'mmd-runtime.js'));
 
-const source = fs.readFileSync(0, 'utf8');
-const converted = mmd.prepare(source);
-const html = marked.parse(converted.markdown, { gfm: true, breaks: true });
-process.stdout.write(
-  process.argv[2] === '--markdown'
-    ? converted.markdown
-    : mmd.restore(html, converted.math)
-);
+async function run() {
+  const markedPath = path.join(frontendDir, 'node_modules', 'marked', 'lib', 'marked.esm.js');
+  const { marked } = await import(pathToFileURL(markedPath).href);
+  const source = fs.readFileSync(0, 'utf8');
+  const converted = mmd.prepare(source);
+  const html = marked.parse(converted.markdown, { gfm: true, breaks: true });
+  process.stdout.write(
+    process.argv[2] === '--markdown'
+      ? converted.markdown
+      : mmd.restore(html, converted.math)
+  );
+}
+
+run().catch(error => {
+  process.stderr.write(`${error.stack}\n`);
+  process.exitCode = 1;
+});

@@ -1,5 +1,15 @@
-# Railway builds from this. Everything the application needs ships as a
-# manylinux wheel — PyMuPDF included — so there is no apt layer here.
+# Build the App Router application into files FastAPI can serve. No Node process
+# remains in the production image.
+FROM node:22-alpine AS frontend
+
+WORKDIR /src/frontend
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+COPY frontend ./
+RUN npm run lint && npm run typecheck && npm test && npm run build
+
+# Railway runs one Uvicorn process. Everything the backend needs ships as a
+# manylinux wheel — PyMuPDF and Pillow included — so there is no apt layer here.
 FROM python:3.12-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -20,6 +30,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY --from=frontend /src/frontend/out ./app/frontend
 
 EXPOSE 8000
 

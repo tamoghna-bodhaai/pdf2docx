@@ -189,6 +189,12 @@ class Settings:
     # PDF cannot fill the volume the whole history lives on. 0 means no limit.
     max_upload_mb: int = _int("PDF2DOCX_MAX_UPLOAD_MB", 50)
 
+    # Local image composition. These are separate from Mathpix's PDF upload
+    # limit because a group of images is one request and one output document.
+    local_image_max_files: int = _int("PDF2DOCX_IMAGE_MAX_FILES", 30)
+    local_image_max_pixels: int = _int("PDF2DOCX_IMAGE_MAX_PIXELS", 40_000_000)
+    local_image_upload_mb: int = _int("PDF2DOCX_IMAGE_MAX_UPLOAD_MB", 50)
+
     # Batch conversion. `batch_max_files` caps how many PDFs one upload may
     # stage; `batch_workers` is how many of a batch's files convert at once —
     # every file is still a per-page Mathpix charge, so this is deliberately a
@@ -209,6 +215,10 @@ class Settings:
     @property
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
+
+    @property
+    def local_image_upload_bytes(self) -> int:
+        return self.local_image_upload_mb * 1024 * 1024
 
 
 settings = Settings()

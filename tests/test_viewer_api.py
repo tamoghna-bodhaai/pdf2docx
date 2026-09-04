@@ -99,12 +99,3 @@ def test_a_documents_own_figures_are_served_to_the_preview(client, job):
 )
 def test_nothing_but_a_documents_images_can_be_fetched(client, job, asset):
     assert client.get(f"/api/jobs/{job.id}/asset/{asset}").status_code == 404
-
-
-def test_the_pages_own_assets_are_served(client):
-    """The viewer's script, stylesheet and renderer all come from this server."""
-    for path in ("/static/app.js", "/static/app.css", "/static/vendor/marked.min.js",
-                 "/static/vendor/katex/katex.min.js", "/static/vendor/katex/katex.min.css",
-                 "/static/vendor/inter/InterVariable.woff2",
-                 "/static/vendor/inter/InterVariable-Italic.woff2"):
-        assert client.get(path).status_code == 200, path

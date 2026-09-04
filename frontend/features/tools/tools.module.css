@@ -1,0 +1,38 @@
+.toolHeader { margin-bottom: 28px; }
+.toolHeader h1 { margin: 7px 0 8px; color: var(--text-strong); font-size: 40px; font-weight: 650; letter-spacing: -.045em; line-height: 1.05; }
+.toolHeader > p:last-child { max-width: 620px; margin: 0; color: var(--text-muted); font-size: 14px; }
+.error { margin: 12px 0 0; padding: 10px 12px; border: 1px solid color-mix(in oklch, var(--error) 32%, var(--border)); border-radius: 8px; background: var(--error-soft); color: var(--error); font-size: 12px; }
+.fieldError { margin: 5px 0 0; color: var(--error); font-size: 12px; }
+.imageList { display: grid; gap: 8px; margin: 16px 0 0; padding: 0; list-style: none; }
+.imageRow { display: grid; grid-template-columns: 56px minmax(0, 1fr) auto; align-items: center; gap: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-soft); }
+.thumbnail { width: 56px; height: 56px; object-fit: contain; border: 1px solid var(--border); border-radius: 7px; background: var(--paper); }
+.imageMeta { min-width: 0; }
+.imageMeta strong { display: block; overflow: hidden; color: var(--text-strong); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.imageMeta small { color: var(--text-muted); font: 11px var(--font-mono); }
+.rowActions { display: flex; gap: 8px; }
+.rowActions button { min-width: 40px; padding: 8px; }
+.summary { margin: 14px 0 0; color: var(--text-muted); font: 12px var(--font-mono); }
+.primaryRow { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.splitCard, .resultCard { margin-top: 16px; padding: 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.rangeFields { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; border: 0; margin: 0; padding: 0; }
+.rangeFields legend { grid-column: 1 / -1; margin-bottom: 4px; color: var(--text-strong); font-weight: 650; }
+.rangeFields label { display: grid; gap: 5px; color: var(--text-muted); font-size: 11px; font-weight: 650; }
+.rangeFields input { width: 100%; min-height: 42px; padding: 9px 11px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); color: var(--text); }
+.rangeSummary { margin: 12px 0 0; color: var(--text-muted); font: 12px var(--font-mono); }
+.resultCard h2 { margin: 0 0 6px; color: var(--text-strong); font-size: 17px; }
+.resultMeta { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 16px; color: var(--text-muted); font: 11px var(--font-mono); }
+.statusRow { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.formatGrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin-top: 8px; }
+.formatOption { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); color: var(--text); font-size: 12px; }
+.formatOption input { width: 17px; height: 17px; accent-color: var(--brand); }
+.layoutOption { display: flex; gap: 9px; align-items: flex-start; margin-top: 12px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-soft); }
+.layoutOption input { width: 17px; height: 17px; margin-top: 2px; accent-color: var(--brand); }
+.layoutOption span { display: grid; font-size: 12px; }
+.layoutOption small { color: var(--text-muted); }
+@media (max-width: 720px) {
+  .toolHeader h1 { font-size: 34px; }
+  .rangeFields { grid-template-columns: 1fr; }
+  .imageRow { grid-template-columns: 48px minmax(0, 1fr); }
+  .thumbnail { width: 48px; height: 48px; }
+  .rowActions { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, 1fr); }
+}

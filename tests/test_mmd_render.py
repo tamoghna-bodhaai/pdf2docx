@@ -3,7 +3,7 @@
 Mathpix returns MMD: Markdown with LaTeX still standing in it. Headings arrive
 as `\\section*{...}`, question numbering as `\\begin{itemize}\\item[(a)]`,
 pictures and tables inside float environments. None of that is Markdown, so
-until `app/static/mmd.js` existed all of it reached the page as literal
+until the viewer's MMD runtime existed all of it reached the page as literal
 backslashes in the middle of the text — which is what a reader saw instead of
 the document.
 

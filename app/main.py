@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import logging
+import os
 import re
 import secrets
 import shutil
@@ -39,7 +40,7 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import auth, db, detection, pipeline, storage
+from . import auth, db, detection, document_tools, pipeline, storage
 from .auth import User, current_user
 from .config import settings
 from .mathpix_client import FORMATS as MATHPIX_FORMATS
@@ -51,11 +52,15 @@ from .mathpix_client import requested_formats
 from .pdf_render import page_count, page_zoom
 from .pipeline import ConversionUsage, convert_pdf
 
-STATIC_DIR = Path(__file__).parent / "static"
+_PACKAGED_FRONTEND = Path(__file__).parent / "frontend"
+_SOURCE_FRONTEND = Path(__file__).parent.parent / "frontend" / "out"
+FRONTEND_DIR = Path(os.environ.get("PDF2DOCX_FRONTEND_DIR", "")).expanduser() if os.environ.get("PDF2DOCX_FRONTEND_DIR") else (
+    _PACKAGED_FRONTEND if _PACKAGED_FRONTEND.is_dir() else _SOURCE_FRONTEND
+)
 
 # Stages during which the pipeline owns the job; a job in one of these at startup
 # was interrupted by a restart.
-RUNNING = ("queued", "rendering", "transcribing", "building")
+RUNNING = ("queued", "rendering", "transcribing", "building", "processing")
 
 app = FastAPI(title="PDF → DOCX", version="2.0.0")
 
@@ -120,6 +125,13 @@ class Job:
     id: str
     filename: str
     pages: int
+    # The workflow that owns the record. Missing historical values are restored
+    # as pdf_to_docx, which keeps the JSON store migration-free.
+    kind: str = "pdf_to_docx"
+    source_filenames: list[str] = field(default_factory=list)
+    output_filename: str = ""
+    output_pages: int = 0
+    page_range: tuple[int, int] | None = None
     # Which account uploaded this. Every route that reaches a job checks it, and
     # it is the only thing separating one teammate's documents from another's.
     user_id: str = ""
@@ -171,9 +183,18 @@ class Job:
         return self.calls == 0 or self.priced_calls >= self.calls
 
     def as_dict(self) -> dict:
+        source_filenames = self.source_filenames or [self.filename]
         return {
             "id": self.id,
             "filename": self.filename,
+            "kind": self.kind,
+            "source_filenames": source_filenames,
+            "output_filename": self.output_filename,
+            "output_pages": self.output_pages,
+            "page_range": (
+                {"start": self.page_range[0], "end": self.page_range[1]}
+                if self.page_range else None
+            ),
             "batch_id": self.batch_id,
             "pages": self.pages,
             "layout": self.layout,
@@ -196,6 +217,7 @@ class Job:
             "has_docx": self._file("document.docx").exists(),
             "has_md": self._file("document.md").exists(),
             "has_source": self._file("source.pdf").exists(),
+            "has_pdf": self._file("document.pdf").exists(),
             "has_rebuilt": self._file("rebuilt.docx").exists(),
             # Which of Mathpix's exports this job actually has, read from disk
             # rather than remembered. A format Mathpix does not produce for a
@@ -228,7 +250,7 @@ class Job:
         directory = record.get("directory")
         status = record.get("status") or "ready"
         error = record.get("error")
-        if status in ("rendering", "transcribing", "building"):
+        if status in ("rendering", "transcribing", "building", "processing"):
             # The process that owned this job is gone.
             status, error = "error", "Interrupted — the server restarted mid-conversion."
         elif status in ("queued", "paused"):
@@ -260,6 +282,22 @@ class Job:
             batch_id=str(record.get("batch_id") or ""),
             filename=record.get("filename") or "document.pdf",
             pages=int(record.get("pages") or 0),
+            kind=(record.get("kind") if record.get("kind") in {
+                "pdf_to_docx", "images_to_pdf", "split_pdf"
+            } else "pdf_to_docx"),
+            source_filenames=(
+                [str(name) for name in record.get("source_filenames", []) if name]
+                if isinstance(record.get("source_filenames"), list)
+                else []
+            ),
+            output_filename=str(record.get("output_filename") or ""),
+            output_pages=int(record.get("output_pages") or 0),
+            page_range=(
+                (int(record["page_range"]["start"]), int(record["page_range"]["end"]))
+                if isinstance(record.get("page_range"), dict)
+                and "start" in record["page_range"] and "end" in record["page_range"]
+                else None
+            ),
             layout=record.get("layout") or "mathpix",
             requested_formats=selected,
             # Absent from every record written before the toggle existed, and
@@ -633,10 +671,12 @@ def _convert_in_slot(job: Job, pdf_path: Path, directory: Path) -> None:
         _persist(job)
 
 
-# The page's own stylesheet and script, and the vendored Markdown/maths
-# renderer. Everything the viewer loads comes from here; only the conversion
-# request and Mathpix-hosted images cross the network.
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+# Next's static export owns the browser application. The API and frontend stay
+# same-origin while production still runs only this Uvicorn process.
+if (FRONTEND_DIR / "_next").is_dir():
+    app.mount("/_next", StaticFiles(directory=FRONTEND_DIR / "_next"), name="next-static")
+if (FRONTEND_DIR / "licenses").is_dir():
+    app.mount("/licenses", StaticFiles(directory=FRONTEND_DIR / "licenses"), name="frontend-licenses")
 
 
 @app.get("/healthz")
@@ -658,14 +698,20 @@ def index(request: Request):
         # Relative, so a TLS-terminating proxy in front of this cannot turn the
         # redirect back into plain http.
         return RedirectResponse("/login", status_code=302)
-    return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
+    path = FRONTEND_DIR / "index.html"
+    if not path.is_file():
+        return HTMLResponse("Frontend export is not built. Run npm run build in frontend/.")
+    return HTMLResponse(path.read_text(encoding="utf-8"))
 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
     if auth.session_user(request) is not None:
         return RedirectResponse("/", status_code=302)
-    return HTMLResponse((STATIC_DIR / "login.html").read_text(encoding="utf-8"))
+    path = FRONTEND_DIR / "login.html"
+    if not path.is_file():
+        return HTMLResponse("Frontend export is not built. Run npm run build in frontend/.")
+    return HTMLResponse(path.read_text(encoding="utf-8"))
 
 
 class Credentials(BaseModel):
@@ -758,6 +804,11 @@ def config(user: User = Depends(current_user)) -> dict:
         "remote_delete": settings.mathpix_delete,
         "improve_mathpix": settings.mathpix_improve,
         "history_limit": settings.history_limit,
+        "local_tools_available": True,
+        "accepted_image_types": ["image/jpeg", "image/png", "image/webp"],
+        "image_max_files": settings.local_image_max_files,
+        "image_max_pixels": settings.local_image_max_pixels,
+        "image_max_upload_mb": settings.local_image_upload_mb,
     }
 
 
@@ -830,6 +881,210 @@ async def _stage_upload(file: UploadFile, user: User, batch_id: str = "") -> Job
         JOBS[job_id] = job
     _persist(job)
     return job
+
+
+def _local_output_name(filename: str, suffix: str = "") -> str:
+    safe = _safe_archive_name(filename, "document")
+    stem = Path(safe).stem.strip(" .") or "document"
+    return f"{stem}{suffix}.pdf"
+
+
+def _run_images_to_pdf_job(job_id: str, sources: list[Path]) -> None:
+    """Compose a staged image job and discard its temporary inputs on success."""
+    job = JOBS.get(job_id)
+    if job is None or job.directory is None:
+        return
+    try:
+        document_tools.images_to_pdf(sources, job.directory / "document.pdf")
+        with JOBS_LOCK:
+            job.status = "done"
+            job.done = len(sources)
+            job.output_pages = len(sources)
+            job.finished_at = _now()
+            job.error = None
+        shutil.rmtree(job.directory / "sources", ignore_errors=True)
+    except Exception as exc:
+        with JOBS_LOCK:
+            job.status = "error"
+            job.error = str(exc)
+            job.finished_at = _now()
+    _persist(job)
+
+
+@app.post("/api/tools/images-to-pdf")
+async def create_images_pdf(
+    background: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+    user: User = Depends(current_user),
+) -> dict:
+    """Stage ordered images and compose them locally without contacting Mathpix."""
+    if not files:
+        raise HTTPException(status_code=400, detail="Attach at least one image.")
+    if len(files) > settings.local_image_max_files:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Attach at most {settings.local_image_max_files} images.",
+        )
+
+    job_id = uuid.uuid4().hex[:12]
+    directory = settings.jobs_dir / job_id
+    sources_dir = directory / "sources"
+    sources_dir.mkdir(parents=True, exist_ok=True)
+    total_size = 0
+    source_paths: list[Path] = []
+    names: list[str] = []
+    try:
+        for index, upload in enumerate(files, start=1):
+            safe_name = _safe_archive_name(upload.filename or f"image-{index}", f"image-{index}")
+            names.append(safe_name)
+            suffix = Path(safe_name).suffix.lower() or ".image"
+            staged = sources_dir / f"{index:02d}{suffix}"
+            with staged.open("wb") as handle:
+                while chunk := await upload.read(1024 * 1024):
+                    total_size += len(chunk)
+                    if (
+                        settings.local_image_upload_bytes
+                        and total_size > settings.local_image_upload_bytes
+                    ):
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                "Those images are larger than the combined "
+                                f"{settings.local_image_upload_mb} MB limit."
+                            ),
+                        )
+                    handle.write(chunk)
+            if not staged.stat().st_size:
+                raise HTTPException(status_code=400, detail=f"{safe_name} is empty.")
+            source_paths.append(staged)
+    except Exception:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+
+    job = Job(
+        id=job_id,
+        user_id=user.id,
+        filename=names[0],
+        pages=len(source_paths),
+        kind="images_to_pdf",
+        source_filenames=names,
+        output_filename=_local_output_name(names[0]),
+        status="processing",
+        done=0,
+        total=len(source_paths),
+        size_bytes=total_size,
+        started_at=_now(),
+        directory=directory,
+    )
+    with JOBS_LOCK:
+        JOBS[job.id] = job
+    _persist(job)
+    background.add_task(_run_images_to_pdf_job, job.id, source_paths)
+    return job.as_dict()
+
+
+@app.post("/api/tools/split-pdf")
+async def stage_split_pdf(
+    file: UploadFile = File(...),
+    user: User = Depends(current_user),
+) -> dict:
+    """Store one source PDF and report its authoritative page count."""
+    safe_name = _safe_archive_name(file.filename or "document.pdf", "document.pdf")
+    if not safe_name.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Please upload a .pdf file.")
+
+    job_id = uuid.uuid4().hex[:12]
+    directory = settings.jobs_dir / job_id
+    directory.mkdir(parents=True, exist_ok=True)
+    source_path = directory / "source.pdf"
+    size = 0
+    try:
+        with source_path.open("wb") as handle:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if settings.max_upload_bytes and size > settings.max_upload_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"That PDF is larger than the {settings.max_upload_mb} MB limit.",
+                    )
+                handle.write(chunk)
+        if not size:
+            raise HTTPException(status_code=400, detail="The uploaded file is empty.")
+        with fitz.open(source_path) as document:
+            if document.needs_pass:
+                raise HTTPException(
+                    status_code=400, detail="Encrypted PDFs cannot be split."
+                )
+            pages = document.page_count
+            if not pages:
+                raise HTTPException(status_code=400, detail="The PDF has no pages.")
+    except HTTPException:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+    except Exception as exc:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"Could not read the PDF: {exc}") from exc
+
+    job = Job(
+        id=job_id,
+        user_id=user.id,
+        filename=safe_name,
+        pages=pages,
+        kind="split_pdf",
+        source_filenames=[safe_name],
+        output_filename=_local_output_name(safe_name),
+        output_pages=0,
+        status="ready",
+        total=pages,
+        size_bytes=size,
+        directory=directory,
+    )
+    with JOBS_LOCK:
+        JOBS[job.id] = job
+    _persist(job)
+    return job.as_dict()
+
+
+@app.post("/api/jobs/{job_id}/split")
+def extract_job_range(
+    job_id: str,
+    start_page: int = Form(...),
+    end_page: int = Form(...),
+    user: User = Depends(current_user),
+) -> dict:
+    """Create or atomically replace the extracted result for a staged split job."""
+    job = _get_job(job_id, user)
+    if job.kind != "split_pdf":
+        raise HTTPException(status_code=409, detail="This job is not a PDF split.")
+    if job.status == "processing":
+        raise HTTPException(status_code=409, detail="This PDF is already being processed.")
+    source = (job.directory or Path()) / "source.pdf"
+    if not source.exists():
+        raise HTTPException(status_code=409, detail="The source PDF is no longer available.")
+
+    try:
+        document_tools.split_pdf(
+            source,
+            (job.directory or Path()) / "document.pdf",
+            start_page,
+            end_page,
+        )
+    except document_tools.DocumentToolError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    with JOBS_LOCK:
+        job.page_range = (start_page, end_page)
+        job.output_pages = end_page - start_page + 1
+        job.output_filename = _local_output_name(
+            job.filename, f"-pages-{start_page}-{end_page}"
+        )
+        job.status = "done"
+        job.done = job.output_pages
+        job.error = None
+        job.started_at = job.started_at or _now()
+        job.finished_at = _now()
+    _persist(job)
+    return job.as_dict()
 
 
 @app.post("/api/convert")
@@ -1475,6 +1730,20 @@ def job_download(
     job_id: str, format: str = "docx", user: User = Depends(current_user)
 ) -> FileResponse:
     job = _get_job(job_id, user)
+    if format == "pdf":
+        if job.kind not in {"images_to_pdf", "split_pdf"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Use format=mathpix-pdf for a Mathpix-generated PDF.",
+            )
+        path = (job.directory or Path()) / "document.pdf"
+        if not path.exists():
+            raise HTTPException(status_code=409, detail="The file is not ready yet.")
+        return FileResponse(
+            path,
+            media_type="application/pdf",
+            filename=job.output_filename or _local_output_name(job.filename),
+        )
     choice = DOWNLOADS.get(format)
     if choice is None:
         raise HTTPException(

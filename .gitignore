@@ -12,3 +12,10 @@ vendor/PDF-Extract-Kit/
 vendor/llama/
 # Regenerable palette previews; brand.md is the tracked output.
 .brand-preview/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/coverage/
+frontend/test-results/
+frontend/playwright-report/
+frontend/tsconfig.tsbuildinfo
