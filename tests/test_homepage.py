@@ -72,8 +72,9 @@ def test_tools_and_deep_links_share_one_workspace() -> None:
     workspace = _read("components/workspace.tsx")
     url_state = _read("hooks/use-workspace-url.ts")
     assert all(label in workspace for label in ("PDF to DOCX", "Images to PDF", "Split PDF", "History"))
-    assert "RecentFiles" in workspace
+    assert "ToolFrame" in _read("features/pdf-to-docx/pdf-to-docx-tool.tsx")
     assert 'next.set("tool", nextTool)' in url_state
+    assert 'next.set("panel", nextPanel ?? panel)' in url_state
     assert 'next.set("job", nextJob)' in url_state
 
 

@@ -4,6 +4,13 @@ export type JobStatus =
   | "building" | "processing" | "done" | "error" | "cancelled";
 
 export interface PageRange { start: number; end: number }
+export type PageOrientation = "auto" | "portrait" | "landscape";
+export interface JobArtifact {
+  key: string;
+  filename: string;
+  media_type: "application/pdf" | "application/zip";
+  pages: number | null;
+}
 
 export interface JobDto {
   id: string;
@@ -13,6 +20,10 @@ export interface JobDto {
   output_filename: string;
   output_pages: number;
   page_range: PageRange | null;
+  page_orientation: PageOrientation;
+  page_ranges: PageRange[];
+  merge_ranges: boolean;
+  artifacts: JobArtifact[];
   batch_id: string;
   pages: number;
   layout: string;

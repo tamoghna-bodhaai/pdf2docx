@@ -10,6 +10,9 @@ from __future__ import annotations
 import io
 import os
 import tempfile
+import shutil
+import uuid
+import zipfile
 from copy import deepcopy
 from pathlib import Path
 from typing import Iterable
@@ -25,6 +28,7 @@ try:
 except ValueError:
     MAX_IMAGE_PIXELS = 40_000_000
 SUPPORTED_IMAGE_FORMATS = frozenset({"JPEG", "PNG", "WEBP"})
+PAGE_ORIENTATIONS = frozenset({"auto", "portrait", "landscape"})
 
 
 class DocumentToolError(ValueError):
@@ -78,11 +82,17 @@ def _normalised_image(path: Path) -> tuple[bytes, int, int]:
         raise DocumentToolError(f"Could not read {path.name} as an image.") from exc
 
 
-def images_to_pdf(images: Iterable[str | Path], output_path: str | Path) -> Path:
+def images_to_pdf(
+    images: Iterable[str | Path],
+    output_path: str | Path,
+    orientation: str = "auto",
+) -> Path:
     """Compose ordered JPEG, PNG, or WebP images into orientation-matched A4 pages."""
     sources = [Path(image) for image in images]
     if not sources:
         raise DocumentToolError("Attach at least one image.")
+    if orientation not in PAGE_ORIENTATIONS:
+        raise DocumentToolError("Page orientation must be auto, portrait, or landscape.")
 
     target = Path(output_path)
     staged = _temporary_output(target)
@@ -90,7 +100,10 @@ def images_to_pdf(images: Iterable[str | Path], output_path: str | Path) -> Path
     try:
         for source in sources:
             data, width, height = _normalised_image(source)
-            page_width, page_height = A4_LANDSCAPE if width > height else A4_PORTRAIT
+            use_landscape = orientation == "landscape" or (
+                orientation == "auto" and width > height
+            )
+            page_width, page_height = A4_LANDSCAPE if use_landscape else A4_PORTRAIT
             page = document.new_page(width=page_width, height=page_height)
             page.insert_image(
                 _fit_rect(width, height, page_width, page_height),
@@ -189,3 +202,110 @@ def split_pdf(
             extracted.close()
         if not source.is_closed:
             source.close()
+
+
+def _merged_ranges(
+    source_path: Path, output_path: Path, ranges: list[tuple[int, int]]
+) -> None:
+    """Write ranges into one PDF in caller-provided order."""
+    target = fitz.open()
+    with fitz.open(source_path) as source:
+        for start, end in ranges:
+            target.insert_pdf(
+                source, from_page=start - 1, to_page=end - 1, links=True, annots=True
+            )
+        metadata_keys = {
+            "title", "author", "subject", "keywords", "creator", "producer",
+            "creationDate", "modDate", "trapped",
+        }
+        target.set_metadata(
+            {key: value for key, value in source.metadata.items() if key in metadata_keys and value}
+        )
+    try:
+        target.save(output_path, garbage=4, deflate=True)
+    finally:
+        target.close()
+
+
+def split_pdf_ranges(
+    source_path: str | Path,
+    output_dir: str | Path,
+    ranges: Iterable[tuple[int, int]],
+    *,
+    merge: bool,
+    stem: str,
+) -> list[dict]:
+    """Build and atomically promote the complete configured split artifact set."""
+    source_file = Path(source_path)
+    selected = [(int(start), int(end)) for start, end in ranges]
+    if not selected:
+        raise DocumentToolError("Add at least one page range.")
+    try:
+        with fitz.open(source_file) as source:
+            if source.needs_pass or source.metadata.get("encryption"):
+                raise DocumentToolError("The source PDF is encrypted and cannot be split.")
+            count = source.page_count
+    except DocumentToolError:
+        raise
+    except Exception as exc:
+        raise DocumentToolError(f"Could not read {source_file.name} as a PDF.") from exc
+    if any(not 1 <= start <= end <= count for start, end in selected):
+        raise DocumentToolError(
+            f"Choose every page range from 1 to {count}, with the start before the end."
+        )
+
+    destination = Path(output_dir)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    staged = Path(tempfile.mkdtemp(prefix=".split-artifacts-", dir=destination.parent))
+    artifacts: list[dict] = []
+    try:
+        if merge:
+            filename = f"{stem}-selected-pages.pdf"
+            _merged_ranges(source_file, staged / "merged.pdf", selected)
+            artifacts.append({
+                "key": "merged", "filename": filename,
+                "media_type": "application/pdf",
+                "pages": sum(end - start + 1 for start, end in selected),
+            })
+        else:
+            occurrences: dict[tuple[int, int], int] = {}
+            packaged: list[tuple[Path, str]] = []
+            for ordinal, (start, end) in enumerate(selected, start=1):
+                pair = (start, end)
+                occurrences[pair] = occurrences.get(pair, 0) + 1
+                repeat = occurrences[pair]
+                suffix = f"-{repeat}" if repeat > 1 else ""
+                filename = f"{stem}-pages-{start}-{end}{suffix}.pdf"
+                path = staged / f"range-{ordinal}.pdf"
+                split_pdf(source_file, path, start, end)
+                artifacts.append({
+                    "key": f"range-{ordinal}", "filename": filename,
+                    "media_type": "application/pdf", "pages": end - start + 1,
+                })
+                packaged.append((path, filename))
+            package_name = f"{stem}-ranges.zip"
+            with zipfile.ZipFile(staged / "package.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+                for path, filename in packaged:
+                    archive.write(path, filename)
+            artifacts.append({
+                "key": "package", "filename": package_name,
+                "media_type": "application/zip", "pages": None,
+            })
+
+        backup = destination.with_name(f".{destination.name}-old-{uuid.uuid4().hex}")
+        if destination.exists():
+            destination.replace(backup)
+        try:
+            staged.replace(destination)
+        except Exception:
+            if backup.exists():
+                backup.replace(destination)
+            raise
+        shutil.rmtree(backup, ignore_errors=True)
+        return artifacts
+    except DocumentToolError:
+        raise
+    except Exception as exc:
+        raise DocumentToolError(f"Could not create the requested PDF artifacts: {exc}") from exc
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)

@@ -22,9 +22,15 @@ test.beforeAll(() => {
 
 test("creates, restores, regenerates, and downloads local PDFs", async ({ page }, testInfo) => {
   async function selectTool(name: "Images to PDF" | "Split PDF") {
-    const menu = page.getByRole("button", { name: "Open navigation" });
-    if (await menu.isVisible()) await menu.click();
     await page.getByRole("button", { name }).click();
+  }
+  async function openDock() {
+    const trigger = page.getByRole("button", { name: "Workspace", exact: true });
+    if (await trigger.isVisible() && await trigger.getAttribute("aria-expanded") === "false") await trigger.click();
+  }
+  async function closeDock() {
+    const close = page.getByRole("button", { name: "Close", exact: true });
+    if (await close.isVisible()) await close.click();
   }
   await page.goto("/login");
   const signup = page.getByRole("tab", { name: "Sign up" });
@@ -34,29 +40,29 @@ test("creates, restores, regenerates, and downloads local PDFs", async ({ page }
   await page.getByLabel("Password", { exact: true }).fill("a good password");
   await page.getByLabel("Invite code").fill("playwright-invite");
   await page.getByRole("button", { name: "Create account" }).click();
-  await expect(page.getByRole("heading", { name: "Convert a PDF into editable work." })).toBeVisible();
-  const mobileMenu = page.getByRole("button", { name: "Open navigation" });
-  if (await mobileMenu.isVisible()) {
-    await mobileMenu.click();
-    await expect(page.locator("#sidebar")).not.toHaveAttribute("aria-hidden", "true");
-    await page.keyboard.press("Escape");
-    await expect(mobileMenu).toBeFocused();
-    await expect(page.locator("#sidebar")).toHaveAttribute("aria-hidden", "true");
-  }
+  await expect(page.getByRole("heading", { name: "PDF to DOCX" })).toBeVisible();
 
   await selectTool("Images to PDF");
   await expect(page).toHaveURL(/tool=images-to-pdf/);
-  await expect(page.getByRole("heading", { name: "Turn images into one PDF." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Images to PDF" })).toBeVisible();
   await page.locator('input[type="file"]').setInputFiles({ name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("not an image") });
   await expect(page.getByText("Use JPEG, PNG, or WebP images.")).toBeVisible();
   await page.locator('input[type="file"]').setInputFiles([firstImage, secondImage]);
-  await page.getByRole("button", { name: "Move second.webp earlier" }).click();
-  await page.getByRole("button", { name: "Create PDF" }).click();
-  await expect(page).toHaveURL(/tool=images-to-pdf&job=/);
-  await expect(page.getByText("Local · no charge").first()).toBeVisible();
+  await page.getByRole("button", { name: /Reorder second\.webp/ }).press("ArrowUp");
+  await openDock();
+  await page.getByRole("radio", { name: "Landscape" }).click();
+  await page.getByRole("button", { name: /Create PDF/ }).click();
+  await expect(page).toHaveURL(/tool=images-to-pdf.*job=/);
+  await expect(page.getByText("No charge").first()).toBeVisible();
+  await openDock();
+  await page.getByRole("button", { name: "Setup" }).click();
   await expect(page.getByText("done", { exact: true }).first()).toBeVisible();
   await page.reload();
+  await expect(page.getByRole("heading", { name: "Images to PDF" })).toBeVisible();
+  await openDock();
+  await page.getByRole("button", { name: "Setup" }).click();
   await expect(page.getByText("done", { exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: "Files" }).click();
   await page.getByText("Download", { exact: true }).first().click();
   const imageDownload = page.waitForEvent("download");
   await page.getByRole("link", { name: "Download PDF" }).first().click();
@@ -64,41 +70,51 @@ test("creates, restores, regenerates, and downloads local PDFs", async ({ page }
 
   await selectTool("Split PDF");
   await expect(page).toHaveURL(/tool=split-pdf/);
-  await expect(page.getByRole("heading", { name: "Extract pages from a PDF." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Split PDF" })).toBeVisible();
   await page.locator('input[type="file"]').setInputFiles(sourcePdf);
-  await expect(page).toHaveURL(/tool=split-pdf&job=/);
+  await expect(page).toHaveURL(/tool=split-pdf.*job=/);
+  await openDock();
+  await page.getByRole("button", { name: "Setup" }).click();
+  await closeDock();
   await page.getByLabel("Start page").fill("1");
   await page.getByLabel("End page").fill("2");
   await expect(page.getByText("Pages 1–2 · 2 pages")).toBeVisible();
+  await page.getByRole("button", { name: "Add range" }).click();
+  await openDock();
+  await page.getByRole("button", { name: "Setup" }).click();
   await page.getByRole("button", { name: "Extract pages" }).click();
   await expect(page.getByRole("button", { name: "Regenerate PDF" })).toBeVisible();
-  await page.getByLabel("Start page").fill("3");
-  await page.getByLabel("End page").fill("3");
-  await page.getByRole("button", { name: "Regenerate PDF" }).click();
-  await expect(page.getByText("1 output page")).toBeVisible();
-  await page.getByText("Download", { exact: true }).first().click();
-  const splitDownload = page.waitForEvent("download");
-  await page.getByRole("link", { name: "Download PDF" }).first().click();
-  expect((await splitDownload).suggestedFilename()).toBe("source-pages-3-3.pdf");
+  await page.getByRole("button", { name: "Files" }).click();
+  await expect(page.getByText("source-pages-1-2.pdf").first()).toBeVisible();
+  await expect(page.getByText("source-pages-3-3.pdf").first()).toBeVisible();
+  await expect(page.getByText("source-ranges.zip").first()).toBeVisible();
 
+  await closeDock();
+  await page.getByRole("button", { name: /Reorder range 2/ }).press("ArrowUp");
+  await openDock();
+  await page.getByRole("button", { name: "Setup" }).click();
+  await page.getByRole("checkbox", { name: /Merge ranges into one PDF/ }).check();
+  await page.getByRole("button", { name: "Regenerate PDF" }).click();
+  await page.getByRole("button", { name: "Files" }).click();
+  await expect(page.getByText("source-selected-pages.pdf").first()).toBeVisible();
+  const splitDownload = page.waitForEvent("download");
+  await page.getByRole("link", { name: "source-selected-pages.pdf" }).first().click();
+  expect((await splitDownload).suggestedFilename()).toBe("source-selected-pages.pdf");
+
+  await page.getByRole("button", { name: "Setup" }).click();
   await page.getByRole("button", { name: "Delete", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Delete source-pages-3-3.pdf?" });
+  const dialog = page.getByRole("dialog", { name: "Delete source-selected-pages.pdf?" });
   await dialog.getByRole("button", { name: "Delete", exact: true }).click();
   await expect(page).toHaveURL(/tool=split-pdf(?!.*job=)/);
 });
 
 test("keeps the existing PDF batch and comparison workflow", async ({ page }, testInfo) => {
   const email = `playwright-docx-${testInfo.project.name}-${Date.now()}@example.com`;
-  const signup = await page.request.post("/api/auth/signup", {
-    data: { email, password: "a good password", invite_code: "playwright-invite" },
-  });
-  expect(signup.ok()).toBeTruthy();
-
   let uploaded = false;
   let status = "ready";
   const makeJob = (id: string, filename: string) => ({
     id, filename, kind: "pdf_to_docx", source_filenames: [filename], output_filename: "",
-    output_pages: 0, page_range: null, batch_id: "mock-batch", pages: 3, layout: "mathpix",
+    output_pages: 0, page_range: null, page_orientation: "auto", page_ranges: [], merge_ranges: false, artifacts: [], batch_id: "mock-batch", pages: 3, layout: "mathpix",
     requested_formats: ["docx"], multi_column: false, diagnostics: [], status,
     done: status === "done" ? 3 : 0, total: 3, error: null, size_bytes: 1000,
     cost: status === "done" ? 0.0045 : 0, cost_known: status === "done",
@@ -141,14 +157,18 @@ test("keeps the existing PDF batch and comparison workflow", async ({ page }, te
   });
 
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Convert a PDF into editable work." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "PDF to DOCX" })).toBeVisible();
   await page.locator('input[type="file"]').setInputFiles([sourcePdf, sourcePdf]);
   await expect(page.getByText("2 files · 6 pages")).toBeVisible();
+  const workbench = page.getByRole("button", { name: "Workspace", exact: true });
+  if (await workbench.isVisible()) await workbench.click();
   await page.getByRole("button", { name: "Convert all" }).click();
   await expect(page.getByText("done", { exact: true }).first()).toBeVisible();
   const archive = page.waitForEvent("download");
   await page.getByRole("link", { name: "Download batch ZIP" }).click();
   expect((await archive).suggestedFilename()).toBe("batch-mock-batch.zip");
+  if (await workbench.isVisible()) await page.getByRole("button", { name: "Close", exact: true }).click();
+  for (const dismiss of await page.getByRole("button", { name: "Dismiss notification" }).all()) await dismiss.click();
   await page.getByRole("button", { name: "Open", exact: true }).first().click();
   await expect(page.getByRole("heading", { name: "report-a.pdf" })).toBeVisible();
   if (testInfo.project.name === "mobile") await page.getByRole("tab", { name: "Converted" }).click();

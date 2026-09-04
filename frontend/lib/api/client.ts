@@ -1,5 +1,6 @@
 import type {
-  AuthConfigDto, BatchDto, ConfigDto, DetectionDto, HistoryDto, JobDto, UserDto,
+  AuthConfigDto, BatchDto, ConfigDto, DetectionDto, HistoryDto, JobDto, JobKind,
+  PageOrientation, PageRange, UserDto,
 } from "./types";
 
 /* eslint-disable @next/next/no-location-assign-relative-destination -- FastAPI owns same-origin authentication redirects. */
@@ -92,7 +93,9 @@ export const api = {
   logout: () => request<{ signed_out: boolean }>("/api/auth/logout", { method: "POST" }),
   config: () => request<ConfigDto>("/api/config"),
   history: () => request<HistoryDto>("/api/history"),
-  clearHistory: () => request<{ deleted: number }>("/api/history", { method: "DELETE" }),
+  clearHistory: (kind?: JobKind) => request<{ deleted: number }>(
+    `/api/history${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`, { method: "DELETE" },
+  ),
   job: (id: string) => request<JobDto>(`/api/jobs/${encodeURIComponent(id)}`),
   deleteJob: (id: string) => request<{ deleted: string }>(`/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" }),
   markdown: (id: string) => request<{ markdown: string }>(`/api/jobs/${encodeURIComponent(id)}/markdown`),
@@ -102,9 +105,10 @@ export const api = {
     files.forEach((file) => body.append("files", file));
     return upload<BatchDto>("/api/convert/batch", body, onProgress);
   },
-  uploadImages: (files: File[], onProgress?: (percent: number) => void) => {
+  uploadImages: (files: File[], orientation: PageOrientation = "auto", onProgress?: (percent: number) => void) => {
     const body = new FormData();
     files.forEach((file) => body.append("files", file));
+    body.append("orientation", orientation);
     return upload<JobDto>("/api/tools/images-to-pdf", body, onProgress);
   },
   uploadSplitPdf: (file: File, onProgress?: (percent: number) => void) => {
@@ -112,8 +116,8 @@ export const api = {
     body.append("file", file);
     return upload<JobDto>("/api/tools/split-pdf", body, onProgress);
   },
-  split: (id: string, startPage: number, endPage: number) => request<JobDto>(
-    `/api/jobs/${encodeURIComponent(id)}/split`, { method: "POST", body: form({ start_page: startPage, end_page: endPage }) },
+  split: (id: string, ranges: PageRange[], merge: boolean) => request<JobDto>(
+    `/api/jobs/${encodeURIComponent(id)}/split`, { method: "POST", body: form({ ranges: JSON.stringify(ranges), merge }) },
   ),
   startJob: (id: string, formats: string[], multiColumn: boolean) => request<JobDto>(
     `/api/jobs/${encodeURIComponent(id)}/start`, { method: "POST", body: form({ formats: formats.join(","), multi_column: multiColumn }) },
@@ -127,7 +131,8 @@ export const api = {
   ),
   batch: (id: string) => request<BatchDto>(`/api/batches/${encodeURIComponent(id)}`),
   downloadUrl: (id: string, format: string) => `/api/jobs/${encodeURIComponent(id)}/download?format=${encodeURIComponent(format)}`,
-  pageUrl: (id: string, page: number) => `/api/jobs/${encodeURIComponent(id)}/page/${page}.png`,
+  pageUrl: (id: string, page: number, width?: number) => `/api/jobs/${encodeURIComponent(id)}/page/${page}.png${width ? `?width=${width}` : ""}`,
+  artifactUrl: (id: string, key: string) => `/api/jobs/${encodeURIComponent(id)}/artifacts/${encodeURIComponent(key)}`,
   assetUrl: (id: string, asset: string) => `/api/jobs/${encodeURIComponent(id)}/asset/${asset.split("/").map(encodeURIComponent).join("/")}`,
   packageUrl: (id: string) => `/api/jobs/${encodeURIComponent(id)}/package.zip`,
   batchPackageUrl: (id: string) => `/api/batches/${encodeURIComponent(id)}/package.zip`,

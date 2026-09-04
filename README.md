@@ -6,7 +6,7 @@ workspace and durable per-user history.
 
 Only PDF-to-DOCX conversion contacts Mathpix. Image composition and PDF
 splitting run locally with Pillow and PyMuPDF, need no provider credentials,
-and are labelled “Local · no charge” throughout the interface.
+and are labelled “No charge” throughout the interface.
 
 ## What the application does
 
@@ -31,11 +31,11 @@ and are labelled “Local · no charge” throughout the interface.
   is fitted without cropping onto its own portrait or landscape A4 page with
   36-point margins.
 - **Split PDF** stages one readable, unencrypted source, reports its exact page
-  count, and extracts one inclusive range. The source remains stored so the
-  same history item can be regenerated with a different range.
+  count, and extracts ordered, optionally overlapping ranges as individual PDFs
+  plus a ZIP or as one merged PDF. The source remains stored for regeneration.
 
-Both tools build to temporary files and atomically promote a completed
-`document.pdf`, so a failed attempt cannot overwrite the previous result.
+Both tools build to temporary paths and atomically promote complete results,
+so a failed attempt cannot overwrite the previous PDF or split artifact set.
 
 ## Application architecture
 
@@ -456,15 +456,16 @@ route are reachable signed out.
 | `GET` | `/api/config` | Effective Mathpix/web settings without secret values. |
 | `POST` | `/api/convert` | Stage a multipart PDF; optional `start=true` starts it immediately. |
 | `POST` | `/api/convert/batch` | Stage several PDFs under one batch id. |
-| `POST` | `/api/tools/images-to-pdf` | Compose ordered multipart `files` into a local PDF. |
+| `POST` | `/api/tools/images-to-pdf` | Compose ordered multipart `files`; optional `orientation` is `auto`, `portrait`, or `landscape`. |
 | `POST` | `/api/tools/split-pdf` | Stage one multipart PDF and return its exact page count. |
-| `POST` | `/api/jobs/{id}/split` | Create or replace a staged split job's inclusive `start_page`–`end_page` result. |
+| `POST` | `/api/jobs/{id}/split` | Create or replace outputs from JSON `ranges` and boolean `merge`; legacy `start_page`/`end_page` remain accepted. |
 | `POST` | `/api/jobs/{id}/start` | Start or rerun with Mathpix. Optional CSV `formats`; empty requests preview-only, omitted uses the configured default. Optional `multi_column` lays the document out in the source page's columns. |
 | `POST` | `/api/jobs/{id}/refit` | Rebuild the delivered DOCX from the job's stored exports, optionally with `multi_column`. No Mathpix call and no charge. |
 | `GET` | `/api/jobs/{id}` | Status, progress, available exports, and cost estimate. |
 | `GET` | `/api/history` | Stored jobs, newest first. |
 | `GET` | `/api/jobs/{id}/detection` | Page dimensions and page-aligned Markdown; Mathpix blocks are empty. |
-| `GET` | `/api/jobs/{id}/page/{number}.png` | Locally rendered source page. |
+| `GET` | `/api/jobs/{id}/page/{number}.png` | Rendered source page; optional bounded `width` creates a thumbnail-specific cache. |
+| `GET` | `/api/jobs/{id}/artifacts/{key}` | Download one declared split PDF or ZIP artifact. |
 | `GET` | `/api/jobs/{id}/asset/{path}` | A locally stored preview image. |
 | `GET` | `/api/jobs/{id}/download?format=docx` | Mathpix DOCX when it was selected and produced. |
 | `GET` | `/api/jobs/{id}/download?format=mathpix-{ext}` | An available untouched Mathpix export. |
@@ -474,7 +475,7 @@ route are reachable signed out.
 | `GET` | `/api/batches/{id}/package.zip` | All packageable documents in a terminal batch, with a batch manifest. |
 | `POST` | `/api/batches/{id}/{start,pause,resume,cancel}` | Manage all eligible jobs in a batch. |
 | `DELETE` | `/api/jobs/{id}` | Delete one local job and all of its files. |
-| `DELETE` | `/api/history` | Delete every one of your jobs that is not running. |
+| `DELETE` | `/api/history?kind={job_kind}` | Delete completed/cancelled history, optionally scoped to one tool. |
 
 Example:
 

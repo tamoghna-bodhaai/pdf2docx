@@ -3,7 +3,8 @@ import type { ConfigDto, JobDto } from "@/lib/api/types";
 export function job(values: Partial<JobDto> = {}): JobDto {
   return {
     id: "job-1", filename: "report.pdf", kind: "split_pdf", source_filenames: ["report.pdf"],
-    output_filename: "", output_pages: 0, page_range: null, batch_id: "", pages: 8,
+    output_filename: "", output_pages: 0, page_range: null, page_orientation: "auto",
+    page_ranges: [], merge_ranges: false, artifacts: [], batch_id: "", pages: 8,
     layout: "mathpix", requested_formats: [], multi_column: false, diagnostics: [], status: "ready",
     done: 0, total: 8, error: null, size_bytes: 1000, cost: 0, cost_known: false,
     created_at: "2026-01-01T00:00:00Z", started_at: null, finished_at: null,

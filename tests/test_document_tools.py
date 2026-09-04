@@ -41,6 +41,22 @@ def test_images_are_composed_in_order_on_orientation_matched_a4_pages(tmp_path: 
         assert second.pixel(second.width // 2, second.height // 2)[2] > 180
 
 
+@pytest.mark.parametrize(
+    ("orientation", "expected"),
+    [("auto", A4_LANDSCAPE), ("portrait", A4_PORTRAIT), ("landscape", A4_LANDSCAPE)],
+)
+def test_images_respect_the_requested_page_orientation(
+    tmp_path: Path, orientation: str, expected: tuple[float, float]
+) -> None:
+    source = _image(tmp_path / "wide.png", (200, 100), (20, 50, 220))
+    output = tmp_path / f"{orientation}.pdf"
+
+    images_to_pdf([source], output, orientation=orientation)
+
+    with fitz.open(output) as document:
+        assert tuple(document[0].rect) == pytest.approx((0, 0, *expected), abs=0.02)
+
+
 def test_image_fit_is_centered_inside_the_36_point_margin_without_stretching(
     tmp_path: Path,
 ) -> None:
@@ -230,3 +246,28 @@ def test_split_rejects_unreadable_and_encrypted_pdfs(tmp_path: Path) -> None:
         )
     with pytest.raises(DocumentToolError, match="encrypted"):
         split_pdf(empty_password, tmp_path / "empty-password-output.pdf", 1, 1)
+
+
+def test_split_artifact_promotion_restores_the_previous_complete_set(
+    tmp_path: Path, monkeypatch
+) -> None:
+    source = _source_pdf(tmp_path / "source.pdf", pages=3)
+    destination = tmp_path / "artifacts"
+    destination.mkdir()
+    (destination / "range-1.pdf").write_bytes(b"previous complete result")
+    real_replace = Path.replace
+
+    def fail_new_promotion(path: Path, target: Path) -> Path:
+        if path.name.startswith(".split-artifacts-") and target == destination:
+            raise OSError("promotion failed")
+        return real_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_new_promotion)
+    with pytest.raises(DocumentToolError, match="promotion failed"):
+        document_tools.split_pdf_ranges(
+            source, destination, [(1, 2), (3, 3)], merge=False, stem="source"
+        )
+
+    assert (destination / "range-1.pdf").read_bytes() == b"previous complete result"
+    assert list(tmp_path.glob(".split-artifacts-*")) == []
+    assert list(tmp_path.glob(".artifacts-old-*")) == []

@@ -19,7 +19,8 @@ class NotificationMock {
 function job(status: JobStatus, values: Partial<JobDto> = {}): JobDto {
   return {
     id: "one", filename: "paper.pdf", kind: "pdf_to_docx", source_filenames: ["paper.pdf"],
-    output_filename: "paper.docx", output_pages: 0, page_range: null, batch_id: "", pages: 2,
+    output_filename: "paper.docx", output_pages: 0, page_range: null, page_orientation: "auto",
+    page_ranges: [], merge_ranges: false, artifacts: [], batch_id: "", pages: 2,
     layout: "mathpix", requested_formats: ["docx"], multi_column: false, diagnostics: [], status,
     done: 0, total: 2, error: null, size_bytes: 100, cost: 0, cost_known: false,
     created_at: "2026-09-04T00:00:00Z", started_at: null, finished_at: null,

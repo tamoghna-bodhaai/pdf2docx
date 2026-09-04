@@ -17,6 +17,7 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote
 
 import fitz
@@ -27,6 +28,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Request,
     Response,
     UploadFile,
@@ -132,6 +134,10 @@ class Job:
     output_filename: str = ""
     output_pages: int = 0
     page_range: tuple[int, int] | None = None
+    page_orientation: str = "auto"
+    page_ranges: list[tuple[int, int]] = field(default_factory=list)
+    merge_ranges: bool = False
+    artifacts: list[dict] = field(default_factory=list)
     # Which account uploaded this. Every route that reaches a job checks it, and
     # it is the only thing separating one teammate's documents from another's.
     user_id: str = ""
@@ -200,6 +206,12 @@ class Job:
                 {"start": self.page_range[0], "end": self.page_range[1]}
                 if self.page_range else None
             ),
+            "page_orientation": self.page_orientation,
+            "page_ranges": [
+                {"start": start, "end": end} for start, end in self.page_ranges
+            ],
+            "merge_ranges": self.merge_ranges,
+            "artifacts": self.artifacts,
             "batch_id": self.batch_id,
             "pages": self.pages,
             "layout": self.layout,
@@ -222,7 +234,13 @@ class Job:
             "has_docx": self._file("document.docx").exists(),
             "has_md": self._file("document.md").exists(),
             "has_source": self._file("source.pdf").exists(),
-            "has_pdf": self._file("document.pdf").exists(),
+            "has_pdf": self._file("document.pdf").exists() or any(
+                item.get("media_type") == "application/pdf"
+                and self._file(
+                    f"artifacts/{item.get('key')}.pdf"
+                ).exists()
+                for item in self.artifacts
+            ),
             "has_rebuilt": self._file("rebuilt.docx").exists(),
             # Which of Mathpix's exports this job actually has, read from disk
             # rather than remembered. A format Mathpix does not produce for a
@@ -302,6 +320,30 @@ class Job:
                 if isinstance(record.get("page_range"), dict)
                 and "start" in record["page_range"] and "end" in record["page_range"]
                 else None
+            ),
+            page_orientation=(
+                record.get("page_orientation")
+                if record.get("page_orientation") in document_tools.PAGE_ORIENTATIONS
+                else "auto"
+            ),
+            page_ranges=(
+                [
+                    (int(item["start"]), int(item["end"]))
+                    for item in record.get("page_ranges", [])
+                    if isinstance(item, dict) and "start" in item and "end" in item
+                ]
+                if isinstance(record.get("page_ranges"), list)
+                else (
+                    [(int(record["page_range"]["start"]), int(record["page_range"]["end"]))]
+                    if isinstance(record.get("page_range"), dict)
+                    and "start" in record["page_range"] and "end" in record["page_range"]
+                    else []
+                )
+            ),
+            merge_ranges=bool(record.get("merge_ranges")),
+            artifacts=(
+                [item for item in record.get("artifacts", []) if isinstance(item, dict)]
+                if isinstance(record.get("artifacts"), list) else []
             ),
             layout=record.get("layout") or "mathpix",
             requested_formats=selected,
@@ -909,7 +951,9 @@ def _run_images_to_pdf_job(job_id: str, sources: list[Path]) -> None:
     if job is None or job.directory is None:
         return
     try:
-        document_tools.images_to_pdf(sources, job.directory / "document.pdf")
+        document_tools.images_to_pdf(
+            sources, job.directory / "document.pdf", orientation=job.page_orientation
+        )
         with JOBS_LOCK:
             job.status = "done"
             job.done = len(sources)
@@ -929,11 +973,17 @@ def _run_images_to_pdf_job(job_id: str, sources: list[Path]) -> None:
 async def create_images_pdf(
     background: BackgroundTasks,
     files: list[UploadFile] = File(...),
+    orientation: str = Form(default="auto"),
     user: User = Depends(current_user),
 ) -> dict:
     """Stage ordered images and compose them locally without contacting Mathpix."""
     if not files:
         raise HTTPException(status_code=400, detail="Attach at least one image.")
+    if orientation not in document_tools.PAGE_ORIENTATIONS:
+        raise HTTPException(
+            status_code=400,
+            detail="Page orientation must be auto, portrait, or landscape.",
+        )
     if len(files) > settings.local_image_max_files:
         raise HTTPException(
             status_code=400,
@@ -983,6 +1033,7 @@ async def create_images_pdf(
         kind="images_to_pdf",
         source_filenames=names,
         output_filename=_local_output_name(names[0]),
+        page_orientation=orientation,
         status="processing",
         done=0,
         total=len(source_paths),
@@ -1062,11 +1113,32 @@ async def stage_split_pdf(
 @app.post("/api/jobs/{job_id}/split")
 def extract_job_range(
     job_id: str,
-    start_page: int = Form(...),
-    end_page: int = Form(...),
+    ranges: str = Form(default=""),
+    merge: bool = Form(default=False),
+    start_page: int | None = Form(default=None),
+    end_page: int | None = Form(default=None),
     user: User = Depends(current_user),
 ) -> dict:
-    """Create or atomically replace the extracted result for a staged split job."""
+    """Create or atomically replace the configured artifacts for a split job."""
+    selected: list[tuple[int, int]] = []
+    if ranges.strip():
+        try:
+            decoded = json.loads(ranges)
+            if not isinstance(decoded, list):
+                raise ValueError
+            selected = [
+                (int(item["start"]), int(item["end"]))
+                for item in decoded
+                if isinstance(item, dict) and "start" in item and "end" in item
+            ]
+            if len(selected) != len(decoded):
+                raise ValueError
+        except (TypeError, ValueError, KeyError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail="Page ranges are invalid.") from exc
+    elif start_page is not None and end_page is not None:
+        selected = [(start_page, end_page)]
+    else:
+        raise HTTPException(status_code=400, detail="Add at least one page range.")
     job = _get_job(job_id, user)
     if job.status == "processing":
         raise HTTPException(status_code=409, detail="This PDF is already being processed.")
@@ -1106,11 +1178,14 @@ def extract_job_range(
             )
 
         try:
-            document_tools.split_pdf(
+            safe = _safe_archive_name(job.filename, "document.pdf")
+            stem = Path(safe).stem.strip(" .") or "document"
+            artifacts = document_tools.split_pdf_ranges(
                 source,
-                (job.directory or Path()) / "document.pdf",
-                start_page,
-                end_page,
+                (job.directory or Path()) / "artifacts",
+                selected,
+                merge=merge,
+                stem=stem,
             )
         except document_tools.DocumentToolError as exc:
             # `document.pdf` was atomically preserved by the processing module;
@@ -1121,11 +1196,12 @@ def extract_job_range(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         with JOBS_LOCK:
-            job.page_range = (start_page, end_page)
-            job.output_pages = end_page - start_page + 1
-            job.output_filename = _local_output_name(
-                job.filename, f"-pages-{start_page}-{end_page}"
-            )
+            job.page_range = selected[0]
+            job.page_ranges = selected
+            job.merge_ranges = merge
+            job.artifacts = artifacts
+            job.output_pages = sum(end - start + 1 for start, end in selected)
+            job.output_filename = artifacts[0]["filename"]
             job.status = "done"
             job.done = job.output_pages
             job.error = None
@@ -1525,7 +1601,12 @@ def job_detection(job_id: str, user: User = Depends(current_user)) -> dict:
 
 
 @app.get("/api/jobs/{job_id}/page/{number}.png")
-def job_page(job_id: str, number: int, user: User = Depends(current_user)) -> FileResponse:
+def job_page(
+    job_id: str,
+    number: int,
+    width: int | None = Query(default=None, ge=64, le=480),
+    user: User = Depends(current_user),
+) -> FileResponse:
     """One page of the source PDF, rasterised for the viewer.
 
     Rendered on demand and kept, rather than rendered for every job up front:
@@ -1539,7 +1620,11 @@ def job_page(job_id: str, number: int, user: User = Depends(current_user)) -> Fi
     if not pdf_path.exists():
         raise HTTPException(status_code=409, detail="The uploaded PDF is no longer available.")
 
-    path = directory / "preview" / f"page-{number:04d}.png"
+    cache_name = (
+        f"page-{number:04d}-w{width}.png" if width is not None
+        else f"page-{number:04d}.png"
+    )
+    path = directory / "preview" / cache_name
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         with fitz.open(pdf_path) as doc:
@@ -1548,7 +1633,11 @@ def job_page(job_id: str, number: int, user: User = Depends(current_user)) -> Fi
             page = doc.load_page(number - 1)
             # The same zoom the rest of the application renders at, so a box
             # read off one view of the page lands where it does on the other.
-            zoom = page_zoom(page.rect.width, page.rect.height)
+            zoom = (
+                width / page.rect.width
+                if width is not None
+                else page_zoom(page.rect.width, page.rect.height)
+            )
             page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False).save(path)
     return FileResponse(path, media_type="image/png")
 
@@ -1789,6 +1878,13 @@ def job_download(
                 detail="Use format=mathpix-pdf for a Mathpix-generated PDF.",
             )
         path = (job.directory or Path()) / "document.pdf"
+        if job.kind == "split_pdf" and job.artifacts:
+            pdf_artifact = next(
+                (item for item in job.artifacts if item.get("media_type") == "application/pdf"),
+                None,
+            )
+            if pdf_artifact:
+                path = (job.directory or Path()) / "artifacts" / f"{pdf_artifact['key']}.pdf"
         if not path.exists():
             raise HTTPException(status_code=409, detail="The file is not ready yet.")
         return FileResponse(
@@ -1809,6 +1905,28 @@ def job_download(
 
     stem = Path(job.filename).stem or "document"
     return FileResponse(path, media_type=media_type, filename=f"{stem}.{extension}")
+
+
+@app.get("/api/jobs/{job_id}/artifacts/{artifact_key}")
+def job_artifact_download(
+    job_id: str, artifact_key: str, user: User = Depends(current_user)
+) -> FileResponse:
+    """Download one declared output without exposing storage paths."""
+    job = _get_job(job_id, user)
+    artifact = next(
+        (item for item in job.artifacts if item.get("key") == artifact_key), None
+    )
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="No such artifact.")
+    extension = ".zip" if artifact.get("media_type") == "application/zip" else ".pdf"
+    path = (job.directory or Path()) / "artifacts" / f"{artifact_key}{extension}"
+    if not path.is_file():
+        raise HTTPException(status_code=409, detail="The file is not ready yet.")
+    return FileResponse(
+        path,
+        media_type=str(artifact.get("media_type") or "application/octet-stream"),
+        filename=str(artifact.get("filename") or path.name),
+    )
 
 
 @app.get("/api/jobs/{job_id}/package.zip")
@@ -1895,10 +2013,17 @@ def job_delete(job_id: str, user: User = Depends(current_user)) -> dict:
 
 
 @app.delete("/api/history")
-def history_clear(user: User = Depends(current_user)) -> dict:
+def history_clear(
+    kind: Literal["pdf_to_docx", "images_to_pdf", "split_pdf"] | None = None,
+    user: User = Depends(current_user),
+) -> dict:
     """Delete every one of this account's jobs that is not currently running."""
     deleted = 0
     for job in _newest_first(user.id):
+        if kind is not None and job.kind != kind:
+            continue
+        if job.status not in {"done", "cancelled"}:
+            continue
         if job.status in RUNNING:
             continue
         with job.operation_lock:
