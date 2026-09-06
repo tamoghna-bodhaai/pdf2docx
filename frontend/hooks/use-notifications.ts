@@ -34,12 +34,14 @@ function preference() {
 }
 
 function completionSummary(jobs: JobDto[]) {
-  if (jobs.length === 1 && !jobs[0]?.batch_id) {
-    const job = jobs[0]!;
+  const remaining = jobs.filter((job) => job.status !== "cancelled");
+  const single = remaining.length === 1 ? remaining[0] : jobs.length === 1 ? jobs[0] : undefined;
+  if (single) {
+    const job = single;
     const name = job.output_filename || job.filename;
-    if (job.status === "done") return `${name} is ready.`;
-    if (job.status === "error") return `${name} failed.`;
-    return `${name} was cancelled.`;
+    if (job.status === "done") return `Conversion finished: ${name} is ready.`;
+    if (job.status === "error") return `Conversion finished: ${name} failed.`;
+    return `Conversion finished: ${name} was cancelled.`;
   }
   const completed = jobs.filter((job) => job.status === "done").length;
   const failed = jobs.filter((job) => job.status === "error").length;

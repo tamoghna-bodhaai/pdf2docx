@@ -50,9 +50,21 @@ describe("completion notifications", () => {
 
     const current = renderHook(({ jobs }) => useNotifications(jobs), { initialProps: { jobs: [job("processing")] } });
     current.rerender({ jobs: [completed] });
-    expect(current.result.current.notices.map((notice) => notice.message)).toEqual(["paper.docx is ready."]);
+    expect(current.result.current.notices.map((notice) => notice.message)).toEqual(["Conversion finished: paper.docx is ready."]);
     current.rerender({ jobs: [completed] });
     expect(current.result.current.notices).toHaveLength(1);
+  });
+
+  it("uses single-conversion copy for a one-file group with a batch ID", async () => {
+    localStorage.setItem("pdf2docx-desktop-notifications", "enabled");
+    const active = [job("processing", { batch_id: "batch" }), job("queued", { id: "cancelled", batch_id: "batch" })];
+    const terminal = [job("done", { batch_id: "batch" }), job("cancelled", { id: "cancelled", batch_id: "batch" })];
+    const { result, rerender } = renderHook(({ jobs }) => useNotifications(jobs), { initialProps: { jobs: active } });
+
+    await act(async () => rerender({ jobs: terminal }));
+
+    expect(result.current.notices[0]?.message).toBe("Conversion finished: paper.docx is ready.");
+    expect(shown.map((notice) => notice.body)).toEqual(["Conversion finished: paper.docx is ready."]);
   });
 
   it("deduplicates a finished batch and uses a background desktop notification", async () => {
