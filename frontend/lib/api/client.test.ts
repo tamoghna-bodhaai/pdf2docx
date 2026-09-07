@@ -4,6 +4,15 @@ import { api } from "./client";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("typed API adapter", () => {
+  it("sends resume settings and preserves an explicit empty export selection", async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response("{}", {status: 200}));
+    vi.stubGlobal("fetch", fetch);
+    await api.jobAction("one", "resume", [], true);
+    const body = fetch.mock.calls[0][1].body as FormData;
+    expect(body.has("formats")).toBe(true);
+    expect(body.get("formats")).toBe("");
+    expect(body.get("multi_column")).toBe("true");
+  });
   it("normalizes FastAPI validation details", async () => {
     const response = new Response(JSON.stringify({ detail: [{ msg: "Start page is required" }, { msg: "End page is invalid" }] }), {
       status: 422, headers: { "content-type": "application/json" },

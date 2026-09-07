@@ -130,6 +130,8 @@ class Job:
     # The workflow that owns the record. Missing historical values are restored
     # as pdf_to_docx, which keeps the JSON store migration-free.
     kind: str = "pdf_to_docx"
+    merge_sources: list[dict] = field(default_factory=list)
+    merge_dirty: bool = False
     source_filenames: list[str] = field(default_factory=list)
     output_filename: str = ""
     output_pages: int = 0
@@ -193,14 +195,26 @@ class Job:
             return False
         return self.calls == 0 or self.priced_calls >= self.calls
 
+    def download_name(self, filename: str) -> str:
+        """Use concise range names for existing split PDFs as well as new ones."""
+        if self.kind == "split_pdf":
+            stem = Path(_safe_archive_name(self.filename, "document.pdf")).stem
+            prefix = f"{stem}-pages-"
+            if filename.startswith(prefix) and re.fullmatch(r"\d+-\d+(?:-\d+)?\.pdf", filename[len(prefix):]):
+                return f"{stem}-{filename[len(prefix):]}"
+        return filename
+
     def as_dict(self) -> dict:
-        source_filenames = self.source_filenames or [self.filename]
+        pdf_outputs = sum(item.get("media_type") == "application/pdf" for item in self.artifacts)
+        source_filenames = self.source_filenames if self.kind == "merge_pdf" else self.source_filenames or [self.filename]
         return {
             "id": self.id,
             "filename": self.filename,
             "kind": self.kind,
             "source_filenames": source_filenames,
-            "output_filename": self.output_filename,
+            "merge_sources": self.merge_sources,
+            "merge_dirty": self.merge_dirty,
+            "output_filename": self.download_name(self.output_filename),
             "output_pages": self.output_pages,
             "page_range": (
                 {"start": self.page_range[0], "end": self.page_range[1]}
@@ -211,7 +225,10 @@ class Job:
                 {"start": start, "end": end} for start, end in self.page_ranges
             ],
             "merge_ranges": self.merge_ranges,
-            "artifacts": self.artifacts,
+            "artifacts": [
+                {**item, "filename": self.download_name(str(item.get("filename", "")))} for item in self.artifacts
+                if self.kind != "split_pdf" or item.get("media_type") != "application/zip" or pdf_outputs > 1
+            ],
             "batch_id": self.batch_id,
             "pages": self.pages,
             "layout": self.layout,
@@ -306,8 +323,10 @@ class Job:
             filename=record.get("filename") or "document.pdf",
             pages=int(record.get("pages") or 0),
             kind=(record.get("kind") if record.get("kind") in {
-                "pdf_to_docx", "images_to_pdf", "split_pdf"
+                "pdf_to_docx", "images_to_pdf", "split_pdf", "merge_pdf"
             } else "pdf_to_docx"),
+            merge_sources=record.get("merge_sources") or [],
+            merge_dirty=bool(record.get("merge_dirty", False)),
             source_filenames=(
                 [str(name) for name in record.get("source_filenames", []) if name]
                 if isinstance(record.get("source_filenames"), list)
@@ -369,7 +388,9 @@ class Job:
 
 
 JOBS: dict[str, Job] = {}
-JOBS_LOCK = threading.Lock()
+JOBS_LOCK = threading.RLock()
+# Count worker invocations: a paused queue entry may overlap its resumed run.
+WORKERS: dict[str, int] = {}
 
 # Terminal states: nothing restarts a job in one of these without the user.
 TERMINAL = ("done", "error", "cancelled")
@@ -425,7 +446,7 @@ def _clear_control(job_id: str) -> None:
 def _newest_first(user_id: str) -> list[Job]:
     """One account's jobs, newest first. Never another account's."""
     with JOBS_LOCK:
-        jobs = [job for job in JOBS.values() if job.user_id == user_id]
+        jobs = [job for job in JOBS.values() if job.user_id == user_id and job.status != "cancelled"]
     return sorted(jobs, key=lambda job: job.created_at, reverse=True)
 
 
@@ -435,21 +456,46 @@ def _persist(job: Job) -> None:
     The history limit is per account rather than global: one teammate's busy week
     should not push another's finished documents off the end.
     """
-    db.save_job(job.user_id, job.id, job.created_at, job.to_record())
+    with JOBS_LOCK:
+        if JOBS.get(job.id) is not job or job.status == "cancelled" or _should_cancel(job.id):
+            return
+        db.save_job(job.user_id, job.id, job.created_at, job.to_record())
 
     for stale in db.overflow(job.user_id):
-        directory = stale.get("directory")
-        if directory:
-            shutil.rmtree(directory, ignore_errors=True)
         with JOBS_LOCK:
+            current = JOBS.get(stale["id"])
+            # History eviction must not delete active sources or cancellation
+            # markers while their workers still own files.
+            if (current.status if current else stale.get("status")) != "done":
+                continue
+            if stale["id"] in WORKERS or (current and current.operation_lock.locked()):
+                continue
+            directory = stale.get("directory")
+            if directory:
+                shutil.rmtree(directory, ignore_errors=True)
             JOBS.pop(stale["id"], None)
-        db.delete_job(stale["id"])
+            db.delete_job(stale["id"])
+
+
+def _delete_cancelled_files(job: Job) -> bool:
+    paths = []
+    if job.directory:
+        paths.append(job.directory)
+        for pattern in (f".{job.id}-run-*", f".{job.id}-previous-*"):
+            paths.extend(job.directory.parent.glob(pattern))
+    for path in paths:
+        shutil.rmtree(path, ignore_errors=True)
+    return not any(path.exists() for path in paths)
 
 
 def _restore() -> None:
     """Rebuild the registry from the database, dropping records whose files are gone."""
     for record in db.load_jobs():
         job = Job.from_record(record)
+        if record.get("status") == "cancelled":
+            if _delete_cancelled_files(job):
+                db.delete_job(job.id)
+            continue
         if job.directory is None or not job.directory.exists():
             continue
         JOBS[job.id] = job
@@ -516,7 +562,7 @@ def _get_job(job_id: str, user: User) -> Job:
     """
     with JOBS_LOCK:
         job = JOBS.get(job_id)
-    if job is None or job.user_id != user.id:
+    if job is None or job.user_id != user.id or job.status == "cancelled":
         raise HTTPException(status_code=404, detail="Unknown job id")
     return job
 
@@ -554,16 +600,15 @@ def _promote_staged_job(directory: Path, staged: Path) -> None:
 
 
 def _finalise_cancelled(job_id: str) -> None:
-    """Mark a job the user abandoned before (or as) a worker reached it."""
-    job = JOBS.get(job_id)
-    if job is None:
-        return
+    """Purge only after the worker has stopped touching the job's files."""
     with JOBS_LOCK:
-        job.status = "cancelled"
-        job.error = None
-        job.finished_at = _now()
-    _clear_control(job_id)
-    _persist(job)
+        job = JOBS.get(job_id)
+        if job is not None:
+            if not _delete_cancelled_files(job):
+                return  # Keep the durable marker so startup can retry cleanup.
+            JOBS.pop(job_id, None)
+            db.delete_job(job_id)
+        _clear_control(job_id)
 
 
 def _dispatch(job: Job, pdf_path: Path, background: BackgroundTasks) -> None:
@@ -582,6 +627,8 @@ def _dispatch(job: Job, pdf_path: Path, background: BackgroundTasks) -> None:
     only awaits them.
     """
     with JOBS_LOCK:
+        if JOBS.get(job.id) is not job or job.status == "cancelled":
+            raise HTTPException(status_code=404, detail="Unknown job id")
         job.status = "queued"
         job.done = 0
         job.total = job.pages
@@ -594,8 +641,8 @@ def _dispatch(job: Job, pdf_path: Path, background: BackgroundTasks) -> None:
         job.diagnostics = []
         job.started_at = _now()
         job.finished_at = None
-    _clear_control(job.id)
-    _persist(job)
+        _clear_control(job.id)
+        _persist(job)
     future = _POOL.submit(_run_job, job.id, pdf_path)
     background.add_task(_await_conversion, future)
 
@@ -610,12 +657,28 @@ def _await_conversion(future: concurrent.futures.Future) -> None:
 
 
 def _run_job(job_id: str, pdf_path: Path) -> None:
-    job = JOBS[job_id]
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job is None:
+            return
+        WORKERS[job_id] = WORKERS.get(job_id, 0) + 1
+    try:
+        _run_registered_job(job, pdf_path)
+    finally:
+        with JOBS_LOCK:
+            WORKERS[job_id] -= 1
+            if not WORKERS[job_id]:
+                WORKERS.pop(job_id)
+                if job.status == "cancelled" or _should_cancel(job_id):
+                    _finalise_cancelled(job_id)
+
+
+def _run_registered_job(job: Job, pdf_path: Path) -> None:
+    job_id = job.id
     directory = pdf_path.parent
 
     # Abandoned before any worker picked it up: nothing to unwind.
     if _should_cancel(job_id):
-        _finalise_cancelled(job_id)
         return
 
     # One slot per concurrent conversion. A queued job blocks here until one is
@@ -623,7 +686,6 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
     BATCH_SLOTS.acquire()
     try:
         if _should_cancel(job_id):
-            _finalise_cancelled(job_id)
             return
         with CONTROL_LOCK:
             paused = job_id in PAUSE_REQUESTS
@@ -631,6 +693,8 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
                 PAUSE_REQUESTS.discard(job_id)
         if paused:
             with JOBS_LOCK:
+                if job.status == "cancelled" or _should_cancel(job_id):
+                    return
                 job.status = "paused"
                 job.started_at = None
             _persist(job)
@@ -640,9 +704,7 @@ def _run_job(job_id: str, pdf_path: Path) -> None:
             if began:
                 job.status = "rendering"
         if not began:
-            # Paused or cancelled after dispatch but before this slot opened.
-            if _should_cancel(job_id):
-                _finalise_cancelled(job_id)
+            # Paused, cancelled, or picked up by another invocation.
             return
         _convert_in_slot(job, pdf_path, directory)
     finally:
@@ -655,6 +717,8 @@ def _convert_in_slot(job: Job, pdf_path: Path, directory: Path) -> None:
 
     def on_progress(stage: str, done: int, total: int) -> None:
         with JOBS_LOCK:
+            if job.status == "cancelled" or _should_cancel(job_id):
+                return
             # A pipeline reports "done" when *its* work is over, which is still
             # several steps before the results reach `job.directory`: the
             # mathpix mode then deletes the remote upload over the network, and
@@ -670,6 +734,8 @@ def _convert_in_slot(job: Job, pdf_path: Path, directory: Path) -> None:
 
     def on_usage(usage: ConversionUsage) -> None:
         with JOBS_LOCK:
+            if job.status == "cancelled" or _should_cancel(job_id):
+                return
             job.cost = usage.cost
             job.prompt_tokens = usage.prompt_tokens
             job.completion_tokens = usage.completion_tokens
@@ -689,9 +755,11 @@ def _convert_in_slot(job: Job, pdf_path: Path, directory: Path) -> None:
             multi_column=job.multi_column,
             should_cancel=lambda: _should_cancel(job_id),
         )
-        _preserve_compatibility_files(directory, staged)
-        _promote_staged_job(directory, staged)
         with JOBS_LOCK:
+            if job.status == "cancelled" or _should_cancel(job_id):
+                raise pipeline.ConversionCancelled("cancelled before output promotion")
+            _preserve_compatibility_files(directory, staged)
+            _promote_staged_job(directory, staged)
             usage = getattr(result, "usage", ConversionUsage())
             job.cost = usage.cost
             job.prompt_tokens = usage.prompt_tokens
@@ -706,16 +774,14 @@ def _convert_in_slot(job: Job, pdf_path: Path, directory: Path) -> None:
             job.status = "done"
             job.finished_at = _now()
     except pipeline.ConversionCancelled:
-        # The user abandoned it mid-flight. Not a failure: the staged partial is
-        # dropped in `finally`, the source PDF stays so a retry is one click, and
-        # `pipeline` has already asked Mathpix to delete the upload.
+        # The worker unwinds before its wrapper removes source and outputs.
         with JOBS_LOCK:
             job.status = "cancelled"
             job.error = None
             job.finished_at = _now()
     except Exception as exc:  # surfaced to the browser rather than swallowed
         with JOBS_LOCK:
-            job.status = "error"
+            job.status = "cancelled" if _should_cancel(job_id) else "error"
             # A conversion failure already reads as a sentence; prefixing it with
             # the exception's class name only puts the provider's name on screen.
             job.error = str(exc) if isinstance(exc, MathpixError) else f"{type(exc).__name__}: {exc}"
@@ -723,7 +789,6 @@ def _convert_in_slot(job: Job, pdf_path: Path, directory: Path) -> None:
     finally:
         if staged is not None and staged.exists():
             shutil.rmtree(staged, ignore_errors=True)
-        _clear_control(job_id)
         _persist(job)
 
 
@@ -862,6 +927,8 @@ def config(user: User = Depends(current_user)) -> dict:
         "history_limit": settings.history_limit,
         "local_tools_available": True,
         "accepted_image_types": ["image/jpeg", "image/png", "image/webp"],
+        "merge_max_files": settings.merge_max_files,
+        "merge_max_upload_mb": settings.merge_upload_mb,
         "image_max_files": settings.local_image_max_files,
         "image_max_pixels": settings.local_image_max_pixels,
         "image_max_upload_mb": settings.local_image_upload_mb,
@@ -929,6 +996,7 @@ async def _stage_upload(file: UploadFile, user: User, batch_id: str = "") -> Job
         filename=file.filename,
         pages=pages,
         layout="mathpix",
+        requested_formats=requested_formats(settings.mathpix_formats),
         total=pages,
         size_bytes=size,
         directory=directory,
@@ -1046,6 +1114,189 @@ async def create_images_pdf(
     _persist(job)
     background.add_task(_run_images_to_pdf_job, job.id, source_paths)
     return job.as_dict()
+
+
+
+def _merge_job(job_id: str, user: User) -> Job:
+    job = _get_job(job_id, user)
+    if job.kind != "merge_pdf":
+        raise HTTPException(status_code=400, detail="This is not a Merge PDF job.")
+    return job
+
+
+def _save_merge_sources(job: Job, sources: list[dict]) -> None:
+    previous = (job.merge_sources, job.source_filenames, job.pages, job.total, job.size_bytes, job.merge_dirty, job.status)
+    job.merge_sources = sources
+    job.source_filenames = [item["filename"] for item in sources]
+    job.pages = job.total = sum(item["pages"] for item in sources)
+    job.size_bytes = sum(item["size_bytes"] for item in sources)
+    job.merge_dirty = True
+    job.status = "ready"
+    try:
+        _persist(job)
+    except Exception:
+        (job.merge_sources, job.source_filenames, job.pages, job.total, job.size_bytes, job.merge_dirty, job.status) = previous
+        raise
+
+
+def _append_merge_sources(job: Job, files: list[UploadFile]) -> None:
+    if not files or len(job.merge_sources) + len(files) > settings.merge_max_files:
+        raise HTTPException(status_code=400, detail=f"Choose between 1 and {settings.merge_max_files} PDFs in total.")
+    directory = job._file("sources")
+    directory.mkdir(parents=True, exist_ok=True)
+    staged = Path(tempfile.mkdtemp(prefix=".upload-", dir=directory))
+    additions = []
+    promoted = []
+    total = job.size_bytes
+    try:
+        for upload in files:
+            name = _safe_archive_name(upload.filename or "document.pdf", "document.pdf")
+            if not name.lower().endswith(".pdf"):
+                raise HTTPException(status_code=400, detail="Please upload .pdf files.")
+            source_id = uuid.uuid4().hex
+            path = staged / f"{source_id}.pdf"
+            size = 0
+            with path.open("wb") as handle:
+                while chunk := upload.file.read(1024 * 1024):
+                    size += len(chunk)
+                    total += len(chunk)
+                    if (settings.max_upload_bytes and size > settings.max_upload_bytes) or (settings.merge_upload_mb and total > settings.merge_upload_mb * 1024 * 1024):
+                        raise HTTPException(status_code=413, detail="The PDFs exceed the upload size limit.")
+                    handle.write(chunk)
+            with fitz.open(path) as document:
+                if not document.is_pdf or document.needs_pass or document.metadata.get("encryption") or not document.page_count:
+                    raise HTTPException(status_code=400, detail="Use non-empty, unencrypted PDF documents.")
+                additions.append({"id": source_id, "filename": name, "pages": document.page_count, "size_bytes": size})
+        for item in additions:
+            target = directory / f"{item['id']}.pdf"
+            (staged / target.name).replace(target)
+            promoted.append(target)
+        _save_merge_sources(job, [*job.merge_sources, *additions])
+    except Exception as exc:
+        for path in promoted:
+            path.unlink(missing_ok=True)
+        if isinstance(exc, HTTPException):
+            raise
+        raise HTTPException(status_code=400, detail=f"Could not add the PDFs: {exc}") from exc
+    finally:
+        shutil.rmtree(staged, ignore_errors=True)
+
+
+@app.post("/api/tools/merge-pdf")
+def stage_merge_pdf(files: list[UploadFile] = File(...), user: User = Depends(current_user)) -> dict:
+    job_id = uuid.uuid4().hex[:12]
+    name = _safe_archive_name(files[0].filename or "document.pdf", "document.pdf") if files else "document.pdf"
+    job = Job(id=job_id, filename=name, pages=0, kind="merge_pdf", user_id=user.id,
+              output_filename=_local_output_name(name, "-merged"), directory=settings.jobs_dir / job_id)
+    try:
+        with job.operation_lock:
+            _append_merge_sources(job, files)
+            with JOBS_LOCK:
+                JOBS[job.id] = job
+            _persist(job)
+    except Exception:
+        with JOBS_LOCK:
+            JOBS.pop(job.id, None)
+        shutil.rmtree(job.directory, ignore_errors=True)
+        raise
+    return job.as_dict()
+
+
+@app.post("/api/jobs/{job_id}/merge-sources")
+def append_merge_sources(job_id: str, files: list[UploadFile] = File(...), user: User = Depends(current_user)) -> dict:
+    job = _merge_job(job_id, user)
+    with job.operation_lock:
+        _merge_job(job_id, user)
+        _append_merge_sources(job, files)
+        return job.as_dict()
+
+
+class MergeOrder(BaseModel):
+    source_ids: list[str]
+
+
+@app.put("/api/jobs/{job_id}/merge-sources")
+def order_merge_sources(job_id: str, order: MergeOrder, user: User = Depends(current_user)) -> dict:
+    job = _merge_job(job_id, user)
+    with job.operation_lock:
+        _merge_job(job_id, user)
+        known = {item["id"]: item for item in job.merge_sources}
+        if len(set(order.source_ids)) != len(order.source_ids) or any(key not in known for key in order.source_ids):
+            raise HTTPException(status_code=400, detail="Source IDs must be unique and belong to this job.")
+        if order.source_ids != list(known):
+            _save_merge_sources(job, [known[key] for key in order.source_ids])
+            for key in known.keys() - set(order.source_ids):
+                job._file(f"sources/{key}.pdf").unlink(missing_ok=True)
+                job._file(f"previews/{key}.png").unlink(missing_ok=True)
+        return job.as_dict()
+
+
+@app.get("/api/jobs/{job_id}/merge-sources/{source_id}/preview.png")
+def merge_source_preview(job_id: str, source_id: str, user: User = Depends(current_user)) -> Response:
+    job = _merge_job(job_id, user)
+    with job.operation_lock:
+        _merge_job(job_id, user)
+        if source_id not in {item["id"] for item in job.merge_sources}:
+            raise HTTPException(status_code=404, detail="Source not found.")
+        path = job._file(f"previews/{source_id}.png")
+        try:
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with fitz.open(job._file(f"sources/{source_id}.pdf")) as document:
+                    page = document[0]
+                    zoom = 360 / max(page.rect.width, page.rect.height)
+                    path.write_bytes(page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False).tobytes("png"))
+            return Response(path.read_bytes(), media_type="image/png")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="Preview unavailable.") from exc
+
+
+@app.post("/api/jobs/{job_id}/merge")
+def generate_merge(job_id: str, user: User = Depends(current_user)) -> dict:
+    job = _merge_job(job_id, user)
+    with job.operation_lock:
+        _merge_job(job_id, user)
+        if len(job.merge_sources) < 2:
+            raise HTTPException(status_code=400, detail="Choose at least two PDFs to merge.")
+        fields = ("status", "started_at", "finished_at", "done", "output_pages", "merge_dirty", "error")
+        previous = {name: getattr(job, name) for name in fields}
+        staging = Path(tempfile.mkdtemp(prefix=".merge-run-", dir=job.directory))
+        output = job._file("document.pdf")
+        promoted = False
+        try:
+            job.status, job.started_at = "processing", _now()
+            _persist(job)
+            document_tools.merge_pdf(
+                [job._file(f"sources/{item['id']}.pdf") for item in job.merge_sources],
+                staging / "new.pdf",
+            )
+            if output.exists():
+                # A hard link keeps the previous inode available while the new
+                # verified document atomically replaces the public path.
+                os.link(output, staging / "previous.pdf")
+            (staging / "new.pdf").replace(output)
+            promoted = True
+            job.status, job.error, job.finished_at = "done", None, _now()
+            job.done = job.output_pages = job.pages
+            job.merge_dirty = False
+            _persist(job)
+        except Exception as exc:
+            if promoted:
+                if (staging / "previous.pdf").exists():
+                    (staging / "previous.pdf").replace(output)
+                else:
+                    output.unlink(missing_ok=True)
+            for name, value in previous.items():
+                setattr(job, name, value)
+            try:
+                _persist(job)
+            except Exception:
+                logging.exception("Could not persist restored merge job %s", job.id)
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+        return job.as_dict()
+
 
 
 @app.post("/api/tools/split-pdf")
@@ -1240,6 +1491,7 @@ async def convert(
             layout=layout,
             columns=columns,
             multi_column=multi_column,
+            formats=None,
             user=user,
         )
     return job.as_dict()
@@ -1350,7 +1602,7 @@ def _batch_jobs(batch_id: str, user: User) -> list[Job]:
     if not batch_id:
         return []
     with JOBS_LOCK:
-        jobs = [j for j in JOBS.values() if j.batch_id == batch_id and j.user_id == user.id]
+        jobs = [j for j in JOBS.values() if j.batch_id == batch_id and j.user_id == user.id and j.status != "cancelled"]
     return sorted(jobs, key=lambda j: j.created_at)
 
 
@@ -1382,33 +1634,32 @@ def _pause_one(job: Job) -> bool:
         was_queued = job.status == "queued"
         job.status = "paused"
         job.started_at = None
-    if was_queued:
-        # It has been dispatched and is blocked on a slot; the worker checks
-        # this the moment its slot opens and steps aside.
-        with CONTROL_LOCK:
-            PAUSE_REQUESTS.add(job.id)
+        if was_queued:
+            # Install the queue control before cancellation can purge it.
+            with CONTROL_LOCK:
+                PAUSE_REQUESTS.add(job.id)
     _persist(job)
     return True
 
 
 def _cancel_one(job: Job) -> bool:
-    """Abandon a job at any pre-terminal stage. Returns whether it changed."""
+    """Serialize acceptance with completion; retain a durable cleanup marker."""
     with JOBS_LOCK:
-        if job.status in TERMINAL:
+        if JOBS.get(job.id) is not job or job.status in TERMINAL:
             return False
-        running = job.status in CONVERTING
-    # Set the flag first: a worker that reads it before we write `cancelled`
-    # still unwinds, and a worker mid-conversion is polling it every interval.
-    _cancel_event(job.id).set()
-    if not running:
-        with JOBS_LOCK:
-            job.status = "cancelled"
-            job.error = None
-            job.finished_at = _now()
-        with CONTROL_LOCK:
-            PAUSE_REQUESTS.discard(job.id)
-        _persist(job)
-    return True
+        previous = (job.status, job.error, job.finished_at)
+        job.status = "cancelled"
+        job.error = None
+        job.finished_at = _now()
+        try:
+            db.save_job(job.user_id, job.id, job.created_at, job.to_record())
+        except Exception:
+            job.status, job.error, job.finished_at = previous
+            raise
+        _cancel_event(job.id).set()
+        if job.id not in WORKERS:
+            _finalise_cancelled(job.id)
+        return True
 
 
 @app.get("/api/batches/{batch_id}")
@@ -1472,10 +1723,15 @@ def pause_batch(batch_id: str, user: User = Depends(current_user)) -> dict:
 
 
 @app.post("/api/batches/{batch_id}/resume")
-def resume_batch(
-    batch_id: str, background: BackgroundTasks, user: User = Depends(current_user)
+async def resume_batch(
+    request: Request, batch_id: str, background: BackgroundTasks,
+    multi_column: bool | None = Form(default=None),
+    user: User = Depends(current_user),
 ) -> dict:
     """Re-queue every paused file in the batch."""
+    form = await request.form()
+    formats = _start_formats(str(form.get("formats") or "")) if "formats" in form else None
+    _require_mathpix_credential()
     jobs = _batch_jobs(batch_id, user)
     if not jobs:
         raise HTTPException(status_code=404, detail="Unknown batch id")
@@ -1484,6 +1740,11 @@ def resume_batch(
             continue
         pdf_path = (job.directory or Path()) / "source.pdf"
         if pdf_path.exists():
+            with JOBS_LOCK:
+                if formats is not None:
+                    job.requested_formats = formats
+                if multi_column is not None:
+                    job.multi_column = multi_column
             _dispatch(job, pdf_path, background)
     return _batch_view(batch_id, _batch_jobs(batch_id, user))
 
@@ -1511,18 +1772,28 @@ def pause_job(job_id: str, user: User = Depends(current_user)) -> dict:
 
 
 @app.post("/api/jobs/{job_id}/resume")
-def resume_job(
-    job_id: str, background: BackgroundTasks, user: User = Depends(current_user)
+async def resume_job(
+    request: Request, job_id: str, background: BackgroundTasks,
+    multi_column: bool | None = Form(default=None),
+    user: User = Depends(current_user),
 ) -> dict:
+    form = await request.form()
+    formats = _start_formats(str(form.get("formats") or "")) if "formats" in form else None
     job = _get_job(job_id, user)
     _require_pdf_to_docx(job)
     if job.status != "paused":
         raise HTTPException(status_code=409, detail="This file is not paused.")
+    _require_mathpix_credential()
     pdf_path = (job.directory or Path()) / "source.pdf"
     if not pdf_path.exists():
         raise HTTPException(
             status_code=409, detail="The uploaded PDF is no longer available — upload it again."
         )
+    with JOBS_LOCK:
+        if formats is not None:
+            job.requested_formats = formats
+        if multi_column is not None:
+            job.multi_column = multi_column
     _dispatch(job, pdf_path, background)
     return job.as_dict()
 
@@ -1872,7 +2143,7 @@ def job_download(
 ) -> FileResponse:
     job = _get_job(job_id, user)
     if format == "pdf":
-        if job.kind not in {"images_to_pdf", "split_pdf"}:
+        if job.kind not in {"images_to_pdf", "split_pdf", "merge_pdf"}:
             raise HTTPException(
                 status_code=400,
                 detail="Use format=mathpix-pdf for a Mathpix-generated PDF.",
@@ -1890,7 +2161,7 @@ def job_download(
         return FileResponse(
             path,
             media_type="application/pdf",
-            filename=job.output_filename or _local_output_name(job.filename),
+            filename=job.download_name(job.output_filename) or _local_output_name(job.filename),
         )
     choice = DOWNLOADS.get(format)
     if choice is None:
@@ -1925,7 +2196,7 @@ def job_artifact_download(
     return FileResponse(
         path,
         media_type=str(artifact.get("media_type") or "application/octet-stream"),
-        filename=str(artifact.get("filename") or path.name),
+        filename=job.download_name(str(artifact.get("filename") or path.name)),
     )
 
 
@@ -2014,7 +2285,7 @@ def job_delete(job_id: str, user: User = Depends(current_user)) -> dict:
 
 @app.delete("/api/history")
 def history_clear(
-    kind: Literal["pdf_to_docx", "images_to_pdf", "split_pdf"] | None = None,
+    kind: Literal["pdf_to_docx", "images_to_pdf", "split_pdf", "merge_pdf"] | None = None,
     user: User = Depends(current_user),
 ) -> dict:
     """Delete every one of this account's jobs that is not currently running."""

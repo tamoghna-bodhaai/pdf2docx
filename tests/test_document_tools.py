@@ -271,3 +271,32 @@ def test_split_artifact_promotion_restores_the_previous_complete_set(
     assert (destination / "range-1.pdf").read_bytes() == b"previous complete result"
     assert list(tmp_path.glob(".split-artifacts-*")) == []
     assert list(tmp_path.glob(".artifacts-old-*")) == []
+
+
+@pytest.mark.parametrize("ranges,merge,expected", [([(1, 1)], False, 1), ([(1, 1), (2, 2)], False, 3), ([(1, 1), (2, 2)], True, 1)])
+def test_split_artifact_counts_and_regeneration(tmp_path, ranges, merge, expected):
+    source = tmp_path / "source.pdf"
+    with fitz.open() as doc:
+        doc.new_page()
+        doc.new_page()
+        doc.save(source)
+    output = tmp_path / "artifacts"
+    document_tools.split_pdf_ranges(source, output, [(1, 1), (2, 2)], merge=False, stem="sample")
+    artifacts = document_tools.split_pdf_ranges(source, output, ranges, merge=merge, stem="sample")
+    assert len(artifacts) == expected
+    assert len(list(output.iterdir())) == expected
+    assert (output / "package.zip").exists() == (expected == 3)
+
+
+def test_split_download_names_and_zip_entries_omit_pages(tmp_path):
+    import zipfile
+    source = tmp_path / "source.pdf"
+    with fitz.open() as doc:
+        for _ in range(3):
+            doc.new_page()
+        doc.save(source)
+    output = tmp_path / "artifacts"
+    artifacts = document_tools.split_pdf_ranges(source, output, [(1, 2), (1, 2)], merge=False, stem="report")
+    assert [a["filename"] for a in artifacts] == ["report-1-2.pdf", "report-1-2-2.pdf", "report-ranges.zip"]
+    with zipfile.ZipFile(output / "package.zip") as archive:
+        assert archive.namelist() == ["report-1-2.pdf", "report-1-2-2.pdf"]

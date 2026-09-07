@@ -25,7 +25,7 @@ test("creates, restores, regenerates, and downloads local PDFs", async ({ page }
     await page.getByRole("button", { name }).click();
   }
   async function openDock() {
-    const trigger = page.getByRole("button", { name: "Workspace", exact: true });
+    const trigger = page.getByRole("button", { name: "Settings & export", exact: true });
     if (await trigger.isVisible() && await trigger.getAttribute("aria-expanded") === "false") await trigger.click();
   }
   async function closeDock() {
@@ -53,17 +53,14 @@ test("creates, restores, regenerates, and downloads local PDFs", async ({ page }
   await page.getByRole("radio", { name: "Landscape" }).click();
   await page.getByRole("button", { name: /Create PDF/ }).click();
   await expect(page).toHaveURL(/tool=images-to-pdf.*job=/);
-  await expect(page.getByText("No charge").first()).toBeVisible();
+
   await openDock();
-  await page.getByRole("button", { name: "Setup" }).click();
   await expect(page.getByText("done", { exact: true }).first()).toBeVisible();
   await page.reload();
   await expect(page.getByRole("heading", { name: "Images to PDF" })).toBeVisible();
   await openDock();
-  await page.getByRole("button", { name: "Setup" }).click();
   await expect(page.getByText("done", { exact: true }).first()).toBeVisible();
-  await page.getByRole("button", { name: "Files" }).click();
-  await page.getByText("Download", { exact: true }).first().click();
+  await closeDock();
   const imageDownload = page.waitForEvent("download");
   await page.getByRole("link", { name: "Download PDF" }).first().click();
   await expect((await imageDownload).suggestedFilename()).toMatch(/\.pdf$/);
@@ -74,34 +71,37 @@ test("creates, restores, regenerates, and downloads local PDFs", async ({ page }
   await page.locator('input[type="file"]').setInputFiles(sourcePdf);
   await expect(page).toHaveURL(/tool=split-pdf.*job=/);
   await openDock();
-  await page.getByRole("button", { name: "Setup" }).click();
-  await closeDock();
   await page.getByLabel("Start page").fill("1");
   await page.getByLabel("End page").fill("2");
   await expect(page.getByText("Pages 1–2 · 2 pages")).toBeVisible();
   await page.getByRole("button", { name: "Add range" }).click();
   await openDock();
-  await page.getByRole("button", { name: "Setup" }).click();
-  await page.getByRole("button", { name: "Extract pages" }).click();
+  await page.getByLabel("Tool settings").getByRole("button", { name: "Split PDF", exact: true }).click();
   await expect(page.getByRole("button", { name: "Regenerate PDF" })).toBeVisible();
-  await page.getByRole("button", { name: "Files" }).click();
-  await expect(page.getByText("source-pages-1-2.pdf").first()).toBeVisible();
-  await expect(page.getByText("source-pages-3-3.pdf").first()).toBeVisible();
-  await expect(page.getByText("source-ranges.zip").first()).toBeVisible();
+  await openDock();
+  await expect(page.getByRole("link", {name: "Download PDF 1", exact: true})).toBeVisible();
+  await expect(page.getByRole("link", {name: "Download PDF 2", exact: true})).toBeVisible();
+  await expect(page.getByRole("link", {name: "Download All ZIP"})).toBeVisible();
+  const individualDownload = page.waitForEvent("download");
+  await page.getByRole("link", {name: "Download PDF 1", exact: true}).click();
+  expect((await individualDownload).suggestedFilename()).toBe("source-1-2.pdf");
+  const allRangesDownload = page.waitForEvent("download");
+  await page.getByRole("link", {name: "Download All ZIP", exact: true}).click();
+  expect((await allRangesDownload).suggestedFilename()).toBe("source-ranges.zip");
 
-  await closeDock();
+
+  await openDock();
   await page.getByRole("button", { name: /Reorder range 2/ }).press("ArrowUp");
   await openDock();
-  await page.getByRole("button", { name: "Setup" }).click();
   await page.getByRole("checkbox", { name: /Merge ranges into one PDF/ }).check();
   await page.getByRole("button", { name: "Regenerate PDF" }).click();
-  await page.getByRole("button", { name: "Files" }).click();
-  await expect(page.getByText("source-selected-pages.pdf").first()).toBeVisible();
+  await openDock();
+  await expect(page.getByRole("link", {name: "Download split PDF"})).toBeVisible();
   const splitDownload = page.waitForEvent("download");
-  await page.getByRole("link", { name: "source-selected-pages.pdf" }).first().click();
+  await page.getByRole("link", { name: "Download split PDF" }).click();
   expect((await splitDownload).suggestedFilename()).toBe("source-selected-pages.pdf");
 
-  await page.getByRole("button", { name: "Setup" }).click();
+  await openDock();
   await page.getByRole("button", { name: "Delete", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "Delete source-selected-pages.pdf?" });
   await dialog.getByRole("button", { name: "Delete", exact: true }).click();
@@ -160,19 +160,23 @@ test("keeps the existing PDF batch and comparison workflow", async ({ page }, te
   await expect(page.getByRole("heading", { name: "PDF to DOCX" })).toBeVisible();
   await page.locator('input[type="file"]').setInputFiles([sourcePdf, sourcePdf]);
   await expect(page.getByText("2 files · 6 pages")).toBeVisible();
-  const workbench = page.getByRole("button", { name: "Workspace", exact: true });
+  const workbench = page.getByRole("button", { name: "Settings & export", exact: true });
   if (await workbench.isVisible()) await workbench.click();
   await page.getByRole("button", { name: "Convert all" }).click();
+  const closeSettings = page.getByRole("button", {name: "Close", exact: true});
+  if (await closeSettings.isVisible()) await closeSettings.click();
   await expect(page.getByText("done", { exact: true }).first()).toBeVisible();
   const archive = page.waitForEvent("download");
   await page.getByRole("link", { name: "Download batch ZIP" }).click();
   expect((await archive).suggestedFilename()).toBe("batch-mock-batch.zip");
-  if (await workbench.isVisible()) await page.getByRole("button", { name: "Close", exact: true }).click();
+
   for (const dismiss of await page.getByRole("button", { name: "Dismiss notification" }).all()) await dismiss.click();
-  await page.getByRole("button", { name: "Open", exact: true }).first().click();
+  await page.getByRole("button", { name: "Compare", exact: true }).first().click();
   await expect(page.getByRole("heading", { name: "report-a.pdf" })).toBeVisible();
   if (testInfo.project.name === "mobile") await page.getByRole("tab", { name: "Converted" }).click();
   await expect(page.getByRole("heading", { name: "Converted page" })).toBeVisible();
+  await page.getByRole("button", {name: /Back/}).click();
+  await expect(page.getByRole("region", {name: "Batch conversion"})).toBeVisible();
 });
 
 test("an expired or missing session returns to sign in", async ({ page }) => {

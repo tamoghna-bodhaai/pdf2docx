@@ -4,25 +4,29 @@ import { describe, expect, it, vi } from "vitest";
 import { api } from "@/lib/api/client";
 import { job } from "@/test/fixtures";
 import { renderWithQuery } from "@/test/render";
-import { ToolFrame } from "./tool-frame";
+import { WorkspaceContent } from "./workspace-content";
 
 describe("tool context dock", () => {
-  it("filters and clears history by tool and exposes selected artifacts in Files", async () => {
+  it("shows every history section and clears each separately", async () => {
     Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value() { this.open = true; } });
     Object.defineProperty(HTMLDialogElement.prototype, "close", { configurable: true, value() { this.open = false; } });
     const clearHistory = vi.spyOn(api, "clearHistory").mockResolvedValue({ deleted: 1 });
     const user = userEvent.setup();
     const split = job({ status: "done", output_filename: "report-pages-1-2.pdf", artifacts: [{ key: "range-1", filename: "report-pages-1-2.pdf", media_type: "application/pdf", pages: 2 }] });
     const image = job({ id: "image", kind: "images_to_pdf", status: "done", filename: "photo.png" });
-    const { rerender } = renderWithQuery(<ToolFrame panel="history" onPanel={vi.fn()} kind="split_pdf" title="Split PDF" eyebrow="No charge" description="" canvas={<div />} setup={<div />} jobs={[split, image]} selected={split} onOpen={vi.fn()} />);
+    renderWithQuery(<WorkspaceContent panel="history" kind="split_pdf" jobs={[split, image, job({id: "docx", kind: "pdf_to_docx", status: "done", filename: "paid.pdf"})]} selected={split} onOpen={vi.fn()}><div /></WorkspaceContent>);
 
     expect(screen.getAllByText("report-pages-1-2.pdf").length).toBeGreaterThan(0);
-    expect(screen.queryByText("photo.png")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Clear completed history" }));
+    expect(screen.getByText("photo.png")).toBeInTheDocument();
+    expect(screen.getByText("paid.pdf")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Clear Split PDF history" }));
     await user.click(screen.getByRole("button", { name: "Clear history" }));
     await waitFor(() => expect(clearHistory).toHaveBeenCalledWith("split_pdf"));
 
-    rerender(<ToolFrame panel="files" onPanel={vi.fn()} kind="split_pdf" title="Split PDF" eyebrow="No charge" description="" canvas={<div />} setup={<div />} jobs={[split, image]} selected={split} onOpen={vi.fn()} />);
-    expect(screen.getByRole("link", { name: /report-pages-1-2\.pdf/ })).toHaveAttribute("href", "/api/jobs/job-1/artifacts/range-1");
+    for (const [label, kind] of [["PDF to DOCX", "pdf_to_docx"], ["Images to PDF", "images_to_pdf"]]) {
+      await user.click(screen.getByRole("button", {name: `Clear ${label} history`}));
+      await user.click(screen.getByRole("button", {name: "Clear history"}));
+      await waitFor(() => expect(clearHistory).toHaveBeenCalledWith(kind));
+    }
   });
 });

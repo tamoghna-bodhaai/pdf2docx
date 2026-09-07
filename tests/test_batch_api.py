@@ -21,7 +21,7 @@ import time
 import fitz
 import pytest
 
-from app import main, pipeline
+from app import db, main, pipeline
 from app.mathpix_client import ConversionCancelled
 
 
@@ -57,6 +57,52 @@ def _statuses(client, batch_id):
 
 
 # -- upload -------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("formats,expected", [(None, ("docx",)), ("", ()), ("tex.zip", ("tex.zip",))])
+def test_immediate_conversion_resolves_optional_formats(client, monkeypatch, tmp_path, formats, expected):
+    _settings(monkeypatch, mathpix_app_key="a-key", data_dir=tmp_path, mathpix_formats=("docx",))
+    seen = []
+    monkeypatch.setattr(main, "_dispatch", lambda job, *args: seen.append(job.requested_formats))
+    data = {"start": "true"}
+    if formats is not None:
+        data["formats"] = formats
+    reply = client.post("/api/convert", data=data,
+                        files={"file": ("one.pdf", _one_page_pdf(), "application/pdf")})
+    assert reply.status_code == 200, reply.text
+    assert seen == [expected]
+
+
+@pytest.mark.parametrize("batch_control", [False, True])
+@pytest.mark.parametrize("formats,expected", [(None, ("docx",)), ("", ()), ("tex.zip", ("tex.zip",))])
+def test_resume_before_first_start_uses_selected_options(client, monkeypatch, tmp_path, batch_control, formats, expected):
+    uploaded = _upload(client, monkeypatch, tmp_path, 1, mathpix_formats=("docx",))
+    job_id = uploaded["jobs"][0]["id"]
+    path = (f"/api/batches/{uploaded['batch_id']}" if batch_control else f"/api/jobs/{job_id}")
+    assert client.post(path + "/pause").status_code == 200
+    seen = []
+    monkeypatch.setattr(main, "_dispatch", lambda job, *args: seen.append((job.requested_formats, job.multi_column)))
+    data = {"multi_column": "true"}
+    if formats is not None:
+        data["formats"] = formats
+    reply = client.post(path + "/resume", data=data)
+    assert reply.status_code == 200, reply.text
+    assert seen == [(expected, True)]
+
+
+@pytest.mark.parametrize("batch_control", [False, True])
+def test_resume_without_options_preserves_saved_empty_selection(client, monkeypatch, tmp_path, batch_control):
+    uploaded = _upload(client, monkeypatch, tmp_path, 1)
+    job_id = uploaded["jobs"][0]["id"]
+    job = main.JOBS[job_id]
+    job.requested_formats = ()
+    job.multi_column = True
+    path = (f"/api/batches/{uploaded['batch_id']}" if batch_control else f"/api/jobs/{job_id}")
+    client.post(path + "/pause")
+    seen = []
+    monkeypatch.setattr(main, "_dispatch", lambda job, *args: seen.append((job.requested_formats, job.multi_column)))
+    assert client.post(path + "/resume").status_code == 200
+    assert seen == [((), True)]
 
 
 def test_a_batch_uploads_as_one_group(client, monkeypatch, tmp_path):
@@ -159,19 +205,19 @@ def test_cancelling_a_pre_run_file_keeps_it_from_ever_converting(client, monkeyp
     target, other = (job["id"] for job in body["jobs"])
 
     assert client.post(f"/api/jobs/{target}/cancel").status_code == 200
-    assert _statuses(client, body["batch_id"])[target] == "cancelled"
+    assert target not in _statuses(client, body["batch_id"])
 
     calls = []
     monkeypatch.setattr(main, "convert_pdf", lambda **kw: calls.append(kw) or _raise_stop())
     client.post(f"/api/batches/{body['batch_id']}/start", data={"formats": "docx"})
 
     after = _statuses(client, body["batch_id"])
-    assert after[target] == "cancelled"
+    assert target not in after
     assert after[other] == "error"
     assert len(calls) == 1
 
 
-def test_cancelling_a_running_file_unwinds_it_and_leaves_it_retryable(
+def test_cancelling_a_running_file_unwinds_it_and_removes_its_files(
     client, monkeypatch, tmp_path
 ):
     body = _upload(client, monkeypatch, tmp_path, 1)
@@ -183,24 +229,11 @@ def test_cancelling_a_running_file_unwinds_it_and_leaves_it_retryable(
     monkeypatch.setattr(main, "convert_pdf", cancelled)
     client.post(f"/api/batches/{body['batch_id']}/start", data={"formats": "docx"})
 
-    job = client.get(f"/api/jobs/{job_id}").json()
-    assert job["status"] == "cancelled"
-    assert job["error"] is None
-    assert job["has_source"] is True
-    # The staging directory the abandoned run used is gone.
+    assert client.get(f"/api/jobs/{job_id}").status_code == 404
+    assert not (main.settings.jobs_dir / job_id).exists()
     assert not list(main.settings.jobs_dir.glob(".*-run-*"))
-
-    def succeeds(**kw):
-        markdown = kw["work_dir"] / "document.md"
-        markdown.write_text("# Recovered", encoding="utf-8")
-        (kw["work_dir"] / "detection.json").write_text('{"mode": "mathpix", "pages": []}')
-        return pipeline.ConversionResult(markdown_path=markdown, docx_path=None)
-
-    monkeypatch.setattr(main, "convert_pdf", succeeds)
-    reply = client.post(f"/api/jobs/{job_id}/start", data={"formats": "docx"})
-
-    assert reply.status_code == 200
-    assert client.get(f"/api/jobs/{job_id}").json()["status"] == "done"
+    assert not db.load_jobs()
+    assert client.post(f"/api/jobs/{job_id}/start", data={"formats": "docx"}).status_code == 404
 
 
 def test_the_running_conversion_sees_the_cancel_flag(client, monkeypatch, tmp_path):
@@ -218,7 +251,7 @@ def test_the_running_conversion_sees_the_cancel_flag(client, monkeypatch, tmp_pa
     monkeypatch.setattr(main, "convert_pdf", observe)
     client.post(f"/api/batches/{body['batch_id']}/start", data={"formats": "docx"})
 
-    assert client.get(f"/api/jobs/{job_id}").json()["status"] == "cancelled"
+    assert client.get(f"/api/jobs/{job_id}").status_code == 404
 
 
 # -- whole-batch controls -------------------------------------------------- #
@@ -345,3 +378,158 @@ def test_a_job_record_round_trips_its_batch_and_restart_state(tmp_path):
 
     job.status = "transcribing"
     assert main.Job.from_record(job.to_record()).status == "error"
+
+
+@pytest.mark.parametrize("late_result", ["success", "error"])
+def test_cancel_near_completion_blocks_callbacks_promotion_and_resurrection(client, monkeypatch, tmp_path, late_result):
+    body = _upload(client, monkeypatch, tmp_path, 1)
+    job_id = body["jobs"][0]["id"]
+    job = main.JOBS[job_id]
+    entered, release = threading.Event(), threading.Event()
+    def convert(**kw):
+        entered.set()
+        assert release.wait(5)
+        kw["on_progress"]("done", 1, 1)
+        assert job.status == "cancelled"
+        if late_result == "error":
+            raise RuntimeError("late failure")
+        markdown = kw["work_dir"] / "document.md"
+        markdown.write_text("finished")
+        return pipeline.ConversionResult(markdown_path=markdown, docx_path=None)
+    monkeypatch.setattr(main, "convert_pdf", convert)
+    with concurrent.futures.ThreadPoolExecutor() as pool:
+        future = pool.submit(client.post, f"/api/jobs/{job_id}/start", data={"formats": "docx"})
+        try:
+            assert entered.wait(5)
+            reply = client.post(f"/api/jobs/{job_id}/cancel")
+            assert reply.status_code == 200
+            assert reply.json()["status"] == "cancelled"
+            assert client.get(f"/api/jobs/{job_id}").status_code == 404
+            assert client.get(f"/api/jobs/{job_id}/download?format=source").status_code == 404
+            assert client.get("/api/history").json()["jobs"] == []
+            assert job.directory.exists()  # worker still owns the source
+            assert db.load_jobs()[0]["status"] == "cancelled"
+        finally:
+            release.set()
+        future.result(timeout=5)
+    main._persist(job)  # even a stale final writer cannot recreate it
+    assert db.load_jobs() == []
+    assert not job.directory.exists()
+    assert job_id not in main.CANCELLED
+    assert not list(tmp_path.rglob(".*-run-*"))
+
+
+def test_cancel_queued_worker_and_mixed_batch(client, monkeypatch, tmp_path):
+    body = _upload(client, monkeypatch, tmp_path, 2)
+    removed, retained = [main.JOBS[item["id"]] for item in body["jobs"]]
+    removed.status = "queued"
+    retained.status = "done"
+    response = client.post(f"/api/batches/{body['batch_id']}/cancel")
+    assert [item["id"] for item in response.json()["jobs"]] == [retained.id]
+    main._run_job(removed.id, removed.directory / "source.pdf")
+    main._persist(removed)
+    assert not removed.directory.exists()
+    assert {record["id"] for record in db.load_jobs()} == {retained.id}
+
+
+def test_cancel_whole_batch_can_return_empty(client, monkeypatch, tmp_path):
+    body = _upload(client, monkeypatch, tmp_path, 2)
+    reply = client.post(f"/api/batches/{body['batch_id']}/cancel")
+    assert reply.status_code == 200
+    assert reply.json()["jobs"] == []
+    assert client.get(f"/api/batches/{body['batch_id']}").status_code == 404
+
+
+def test_restart_purges_cancelled_records_and_artifacts(client, monkeypatch, tmp_path):
+    body = _upload(client, monkeypatch, tmp_path, 1)
+    job = main.JOBS[body["jobs"][0]["id"]]
+    job.status = "cancelled"
+    db.save_job(job.user_id, job.id, job.created_at, job.to_record())
+    for suffix in ("run", "previous"):
+        directory = job.directory.parent / f".{job.id}-{suffix}-interrupted"
+        directory.mkdir()
+        (directory / "partial.pdf").write_bytes(b"partial")
+    main.JOBS.clear()
+    main._recover_interrupted_promotions(job.directory.parent)
+    main._restore()
+    assert not main.JOBS
+    assert not db.load_jobs()
+    assert not job.directory.exists()
+    assert not list(job.directory.parent.glob(f".{job.id}-*"))
+
+
+def test_cancel_requires_ownership(client, other_client, monkeypatch, tmp_path):
+    body = _upload(client, monkeypatch, tmp_path, 1)
+    job_id = body["jobs"][0]["id"]
+    assert other_client.post(f"/api/jobs/{job_id}/cancel").status_code == 404
+    assert client.get(f"/api/jobs/{job_id}").status_code == 200
+
+
+def test_overlapping_queue_invocation_does_not_release_running_workers_files(client, monkeypatch, tmp_path):
+    body = _upload(client, monkeypatch, tmp_path, 1)
+    job = main.JOBS[body["jobs"][0]["id"]]
+    entered, release = threading.Event(), threading.Event()
+    def convert(**kw):
+        entered.set()
+        assert release.wait(5)
+        raise pipeline.ConversionCancelled("cancelled")
+    monkeypatch.setattr(main, "convert_pdf", convert)
+    job.status = "queued"
+    worker = threading.Thread(target=main._run_job, args=(job.id, job.directory / "source.pdf"))
+    worker.start()
+    try:
+        assert entered.wait(5)
+        main._run_job(job.id, job.directory / "source.pdf")
+        assert main.WORKERS[job.id] == 1
+        assert client.post(f"/api/jobs/{job.id}/cancel").status_code == 200
+        assert job.directory.exists()
+    finally:
+        release.set()
+        worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert not job.directory.exists()
+
+
+def test_failed_cleanup_keeps_marker_until_restart_can_finish(client, monkeypatch, tmp_path):
+    body = _upload(client, monkeypatch, tmp_path, 1)
+    job = main.JOBS[body["jobs"][0]["id"]]
+    with monkeypatch.context() as patch:
+        patch.setattr(main.shutil, "rmtree", lambda *args, **kwargs: None)
+        assert client.post(f"/api/jobs/{job.id}/cancel").status_code == 200
+        assert client.get(f"/api/jobs/{job.id}").status_code == 404
+        assert db.load_jobs()[0]["status"] == "cancelled"
+    main.JOBS.clear()
+    main._restore()
+    assert not db.load_jobs()
+    assert not job.directory.exists()
+    main._clear_control(job.id)
+
+
+def test_failed_cancellation_remains_accessible_and_retryable(client, monkeypatch, tmp_path):
+    body = _upload(client, monkeypatch, tmp_path, 1)
+    job = main.JOBS[body["jobs"][0]["id"]]
+    with monkeypatch.context() as patch:
+        def unavailable(*args):
+            raise OSError("database unavailable")
+        patch.setattr(db, "save_job", unavailable)
+        with pytest.raises(OSError):
+            main._cancel_one(job)
+    assert client.get(f"/api/jobs/{job.id}").json()["status"] == "ready"
+    assert not main._should_cancel(job.id)
+    assert client.post(f"/api/jobs/{job.id}/cancel").status_code == 200
+
+
+def test_history_eviction_cannot_remove_pending_cancellation(client, monkeypatch, tmp_path):
+    body = _upload(client, monkeypatch, tmp_path, 2)
+    pending, other = [main.JOBS[item["id"]] for item in body["jobs"]]
+    main.WORKERS[pending.id] = 1
+    try:
+        assert main._cancel_one(pending)
+        monkeypatch.setattr(db, "overflow", lambda owner: [pending.to_record()])
+        main._persist(other)
+        assert pending.directory.exists()
+        assert any(record["id"] == pending.id for record in db.load_jobs())
+    finally:
+        main.WORKERS.pop(pending.id)
+        main._finalise_cancelled(pending.id)
+    assert not pending.directory.exists()

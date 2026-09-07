@@ -90,6 +90,22 @@ class Throttle:
         with self._lock:
             self._failures.pop(key, None)
 
+    def admit(self, key: str) -> bool:
+        """Atomically reserve an attempt before doing expensive password work."""
+        cutoff = time.monotonic() - self.window
+        with self._lock:
+            recent = [stamp for stamp in self._failures.get(key, []) if stamp > cutoff]
+            if len(recent) >= self.limit:
+                return False
+            if key not in self._failures and len(self._failures) >= self.capacity:
+                for stale in [name for name, stamps in self._failures.items()
+                              if not any(stamp > cutoff for stamp in stamps)]:
+                    del self._failures[stale]
+                if len(self._failures) >= self.capacity:
+                    return False
+            self._failures[key] = [*recent, time.monotonic()]
+            return True
+
     def reset(self) -> None:
         with self._lock:
             self._failures.clear()
@@ -98,15 +114,8 @@ class Throttle:
         return len(self._failures)
 
 
-# Sign-ins, keyed by address. The limit is a ceiling on work rather than a
-# tripwire: `authenticate` checks the password before consulting it, so a
-# correct one always gets in and clears the count. An earlier version refused
-# first, which meant five typos locked the right password out for a quarter of
-# an hour — the single most common way this sign-in form "failed" for someone
-# holding valid credentials. What the throttle still has to do is bound the
-# scrypt work an attacker can force (~16 MB and real CPU per verification) and
-# hold online guessing to a rate that a password of the required length
-# survives, which a limit at this height does.
+# Sign-ins are limited before verification, including concurrent attempts.
+# A successful admitted sign-in clears failures; exhausted windows must expire.
 SIGN_IN = Throttle(limit=20, window=15 * 60)
 
 # Wrong invite codes, keyed by client address. An invite code is short enough to
@@ -332,30 +341,22 @@ def register(email: str, password: str) -> User:
 
 
 def authenticate(email: str, password: str) -> User:
-    """Check a sign-in, counting failures against the throttle.
-
-    The password is verified before the throttle is consulted, so a correct one
-    is never refused for the sake of earlier typos — it succeeds and wipes the
-    count. The throttle only ever refuses once the ceiling is reached, which
-    caps the scrypt work a stranger can force without punishing the account
-    holder for mistyping.
-    """
+    """Reserve a bounded attempt, then verify known and unknown accounts alike."""
     address = email.strip()
+    key = _throttle_key(address)
+    if not SIGN_IN.admit(key):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many failed sign-ins. Try again in a few minutes.",
+        )
     row = db.user_by_email(address)
     # Hash regardless of whether the account exists, so the response time does
     # not say which addresses are registered. A row with no password hash —
     # left by an account created before sign-in required one — takes the dummy
     # for the same reason.
     stored = (row["password_hash"] if row else None) or _DUMMY_PASSWORD_HASH
-    if row is not None and row["password_hash"] and verify_password(password, stored):
-        SIGN_IN.clear(_throttle_key(address))
+    valid = verify_password(password, stored)
+    if row is not None and row["password_hash"] and valid:
+        SIGN_IN.clear(key)
         return User.from_row(row)
-
-    if SIGN_IN.blocked(_throttle_key(address)):
-        raise HTTPException(
-            status_code=429,
-            detail="Too many failed sign-ins. Try again in a few minutes.",
-        )
-    SIGN_IN.record(_throttle_key(address))
     raise HTTPException(status_code=401, detail="Wrong email or password.")
-

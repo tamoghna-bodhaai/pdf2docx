@@ -1,4 +1,4 @@
-export type JobKind = "pdf_to_docx" | "images_to_pdf" | "split_pdf";
+export type JobKind = "pdf_to_docx" | "images_to_pdf" | "split_pdf" | "merge_pdf";
 export type JobStatus =
   | "ready" | "paused" | "queued" | "rendering" | "transcribing"
   | "building" | "processing" | "done" | "error" | "cancelled";
@@ -12,7 +12,11 @@ export interface JobArtifact {
   pages: number | null;
 }
 
+export interface MergeSource { id: string; filename: string; pages: number; size_bytes: number }
+
 export interface JobDto {
+  merge_sources?: MergeSource[];
+  merge_dirty?: boolean;
   id: string;
   filename: string;
   kind: JobKind;
@@ -71,6 +75,8 @@ export interface ConfigDto {
   history_limit: number;
   local_tools_available: boolean;
   accepted_image_types: string[];
+  merge_max_files?: number;
+  merge_max_upload_mb?: number;
   image_max_files: number;
   image_max_pixels: number;
   image_max_upload_mb: number;

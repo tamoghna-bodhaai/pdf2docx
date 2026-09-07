@@ -1,8 +1,10 @@
 /* eslint-disable @next/next/no-img-element -- authenticated, on-demand page previews cannot use the static optimizer */
 "use client";
 
+import { visibleArtifacts } from "@/lib/api/artifacts";
 import { FormEvent, KeyboardEvent, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { WorkspaceContent } from "@/components/workspace-content";
 import { ToolFrame } from "@/components/tool-frame";
 import { DeleteJobButton } from "@/components/delete-job-button";
 import { Progress } from "@/components/progress";
@@ -24,12 +26,7 @@ function parsed(range: EditableRange): PageRange | null {
   return Number.isInteger(start) && Number.isInteger(end) ? { start, end } : null;
 }
 
-export function SplitRangeForm({ job, mergeValue, onMergeChange, externalSubmit = false }: {
-  job: JobDto;
-  mergeValue?: boolean;
-  onMergeChange?: (merge: boolean) => void;
-  externalSubmit?: boolean;
-}) {
+function useSplitController(job: JobDto) {
   const client = useQueryClient();
   const [ranges, setRanges] = useState<EditableRange[]>(() => initialRanges(job));
   const [localMerge, setLocalMerge] = useState(job.merge_ranges);
@@ -39,8 +36,9 @@ export function SplitRangeForm({ job, mergeValue, onMergeChange, externalSubmit 
   const [announcement, setAnnouncement] = useState("");
   const inputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const orderSnapshot = useRef<EditableRange[] | null>(null);
-  const merge = mergeValue ?? localMerge;
-  const setMerge = onMergeChange ?? setLocalMerge;
+  const merge = ranges.length > 1 && localMerge;
+  const setMerge = setLocalMerge;
+  const [allPages, setAllPages] = useState(false);
   function validate() {
     const next: Record<string, string> = {};
     ranges.forEach((range) => {
@@ -53,25 +51,27 @@ export function SplitRangeForm({ job, mergeValue, onMergeChange, externalSubmit 
   }
   const mutation = useMutation({
     mutationFn: () => api.split(job.id, ranges.map(parsed).filter((range): range is PageRange => Boolean(range)), merge),
-    onSuccess: (updated) => { client.setQueryData(["job", job.id], updated); client.invalidateQueries({ queryKey: ["history"] }); setServerError(""); },
+    onSuccess: (updated) => { client.setQueryData(["job", job.id], updated); client.invalidateQueries({ queryKey: ["history"] }); setServerError(""); document.dispatchEvent(new CustomEvent("open-settings")); },
     onError: (cause) => setServerError(cause instanceof ApiError ? cause.message : "The ranges could not be extracted."),
   });
   function submit(event: FormEvent) {
-    event.preventDefault(); const next = validate(); setErrors(next);
+    event.preventDefault(); if (mutation.isPending) return; const next = validate(); setErrors(next);
     const [firstKey] = Object.keys(next);
     if (firstKey) { inputRefs.current[firstKey]?.focus(); return; }
     mutation.mutate();
   }
   function update(id: string, field: "start" | "end", value: string) {
+    if (mutation.isPending) return;
     setRanges((current) => current.map((range) => range.id === id ? { ...range, [field]: value } : range));
     setErrors((current) => { const next = { ...current }; delete next[`${id}-${field}`]; delete next[`${id}-start`]; return next; });
   }
   function move(from: number, to: number) {
-    if (to < 0 || to >= ranges.length || from === to) return;
+    if (mutation.isPending || to < 0 || to >= ranges.length || from === to) return;
     setRanges((current) => { const next = [...current]; const [item] = next.splice(from, 1); if (item) next.splice(to, 0, item); return next; });
     setAnnouncement(`Range ${from + 1} moved to position ${to + 1}.`);
   }
   function beginReorder(index: number) {
+    if (mutation.isPending) return;
     if (!orderSnapshot.current) orderSnapshot.current = ranges;
     setDragged(index);
   }
@@ -94,30 +94,49 @@ export function SplitRangeForm({ job, mergeValue, onMergeChange, externalSubmit 
     const start = previous && previous.end < job.pages ? previous.end + 1 : 1;
     setRanges((current) => [...current, { id: `range-${Date.now()}-${current.length}`, start: String(start), end: String(job.pages) }]);
   }
-  const valid = ranges.map(parsed).filter((range): range is PageRange => Boolean(range));
+  const valid = ranges.map(parsed).filter((range): range is PageRange => Boolean(range && range.start >= 1 && range.end <= job.pages && range.start <= range.end));
   const seen = new Set<number>(); const duplicates = new Set<number>();
   valid.forEach(({ start, end }) => { for (let page = start; page <= end; page += 1) { if (seen.has(page)) duplicates.add(page); seen.add(page); } });
   const total = valid.reduce((sum, range) => sum + Math.max(0, range.end - range.start + 1), 0);
-  return <form id={`split-ranges-${job.id}`} className={styles.rangeWorkbench} onSubmit={submit} noValidate aria-busy={mutation.isPending}>
-    <div className={styles.thumbnailGrid} aria-label={`${job.pages} source pages`}>{Array.from({ length: job.pages }, (_, index) => index + 1).map((page) => {
-      const memberships = valid.flatMap((range, rangeIndex) => page >= range.start && page <= range.end ? [rangeIndex + 1] : []);
-      return <figure className={`${styles.pdfThumbnail} ${memberships.length ? styles.selectedPage : ""}`} key={page}><div><img src={api.pageUrl(job.id, page, 160)} loading="lazy" alt={`Page ${page} preview`} onError={(event) => { event.currentTarget.hidden = true; event.currentTarget.parentElement?.classList.add(styles.previewError); }} />{memberships.length > 0 && <span>{memberships.join(",")}</span>}</div><figcaption>Page {page}</figcaption></figure>;
-    })}</div>
+  function thumbnail(page: number) { return <figure className={styles.pdfThumbnail} key={page}><div><img src={api.pageUrl(job.id, page, 160)} loading="lazy" alt={`Page ${page} preview`} onError={(event) => { event.currentTarget.hidden = true; event.currentTarget.parentElement?.classList.add(styles.previewError); }} /></div><figcaption>Page {page}</figcaption></figure>; }
+  const canvas = <><div className={styles.boardSummary}><strong>Output previews</strong><button type="button" aria-pressed={allPages} onClick={() => setAllPages(value => !value)}>{allPages ? "Grouped outputs" : "All pages"}</button></div>
+    {allPages ? <div className={styles.thumbnailGrid}>{Array.from({length: job.pages}, (_, index) => thumbnail(index + 1))}</div> : <div className={styles.outputGroups}>{ranges.map((range, index) => {
+      const value = parsed(range); const valid = value && value.start >= 1 && value.end <= job.pages && value.start <= value.end;
+      return <section className={styles.outputGroup} key={range.id}><button type="button" onClick={() => { document.getElementById("context-dock")?.dispatchEvent(new CustomEvent("open-settings", {bubbles: true})); window.setTimeout(() => inputRefs.current[`${range.id}-start`]?.focus(), 50); }}>Range {index + 1}{valid ? ` · Pages ${value.start}–${value.end}` : " · Invalid range"}</button>{valid ? <div className={styles.groupPages}>{thumbnail(value.start)}{value.end !== value.start && <><span aria-label="through">…</span>{thumbnail(value.end)}</>}</div> : <p role="status">Enter a valid range to preview this output.</p>}</section>;
+    })}</div>}
+
+  </>;
+  const editor = <form id={`split-ranges-${job.id}`} className={styles.rangeWorkbench} onSubmit={submit} noValidate aria-busy={mutation.isPending}><fieldset disabled={mutation.isPending} className={styles.controllerFields}>
     <section className={styles.rangeEditor} aria-labelledby="range-editor-title"><div className={styles.rangeEditorHeading}><div><p className="eyebrow">Output order</p><h2 id="range-editor-title">Page ranges</h2></div><button type="button" onClick={addRange}>Add range</button></div>
       {duplicates.size > 0 && <p className={styles.duplicateWarning} role="status">{duplicates.size} page{duplicates.size === 1 ? " is" : "s are"} selected more than once. Duplicates will be preserved.</p>}
       {ranges.length === 1 && valid[0] && <p className={styles.rangeSummary} aria-live="polite">Pages {valid[0].start}–{valid[0].end} · {total} page{total === 1 ? "" : "s"}</p>}
       <ol className={styles.rangeList} onKeyDown={(event) => { if (event.key === "Escape" && dragged !== null) { event.preventDefault(); cancelReorder(); } }} onPointerMove={(event) => { if (dragged === null) return; const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-range-index]"); const index = Number(target?.dataset.rangeIndex); if (Number.isInteger(index) && index !== dragged) { move(dragged, index); setDragged(index); } }} onPointerUp={finishReorder} onPointerCancel={cancelReorder}>{ranges.map((range, index) => {
         const value = parsed(range); const count = value && value.end >= value.start ? value.end - value.start + 1 : 0;
         const startError = errors[`${range.id}-start`]; const endError = errors[`${range.id}-end`];
-        return <li className={styles.rangeRow} data-range-index={index} draggable onDragStart={() => beginReorder(index)} onDragOver={(event) => event.preventDefault()} onDragEnter={() => { if (dragged !== null) move(dragged, index); setDragged(index); }} onDrop={finishReorder} onDragEnd={() => { if (orderSnapshot.current) cancelReorder(); }} key={range.id}><button className={styles.dragHandle} type="button" aria-label={`Reorder range ${index + 1}. Use arrow keys to move.`} onPointerDown={(event) => { event.currentTarget.setPointerCapture?.(event.pointerId); beginReorder(index); }} onPointerUp={finishReorder} onPointerCancel={cancelReorder} onKeyDown={(event) => onReorderKey(event, index)}>⠿</button><strong>Range {index + 1}</strong><label>Start page<input ref={(node) => { inputRefs.current[`${range.id}-start`] = node; }} aria-label={index === 0 ? "Start page" : `Range ${index + 1} start page`} type="text" inputMode="numeric" value={range.start} aria-invalid={Boolean(startError)} onChange={(event) => update(range.id, "start", event.target.value)} onBlur={() => setErrors(validate())} /></label><span aria-hidden="true">–</span><label>End page<input ref={(node) => { inputRefs.current[`${range.id}-end`] = node; }} aria-label={index === 0 ? "End page" : `Range ${index + 1} end page`} type="text" inputMode="numeric" value={range.end} aria-invalid={Boolean(endError)} onChange={(event) => update(range.id, "end", event.target.value)} onBlur={() => setErrors(validate())} /></label><small>{count} page{count === 1 ? "" : "s"}</small><details className={styles.cardMenu}><summary aria-label={`Actions for range ${index + 1}`}>•••</summary><div><button type="button" disabled={index === 0} onClick={() => move(index, index - 1)}>Move earlier</button><button type="button" disabled={index === ranges.length - 1} onClick={() => move(index, index + 1)}>Move later</button><button type="button" disabled={ranges.length === 1} onClick={() => setRanges((current) => current.filter((item) => item.id !== range.id))}>Remove</button></div></details>{(startError || endError) && <span className={styles.fieldError}>{startError || endError}</span>}</li>;
+        return <li className={styles.rangeRow} data-range-index={index} draggable={!mutation.isPending} onDragStart={() => beginReorder(index)} onDragOver={(event) => event.preventDefault()} onDragEnter={() => { if (dragged !== null) move(dragged, index); setDragged(index); }} onDrop={finishReorder} onDragEnd={() => { if (orderSnapshot.current) cancelReorder(); }} key={range.id}><button className={styles.dragHandle} type="button" aria-label={`Reorder range ${index + 1}. Use arrow keys to move.`} onPointerDown={(event) => { event.currentTarget.setPointerCapture?.(event.pointerId); beginReorder(index); }} onPointerUp={finishReorder} onPointerCancel={cancelReorder} onKeyDown={(event) => onReorderKey(event, index)}>⠿</button><strong>Range {index + 1}</strong><label>Start page<input ref={(node) => { inputRefs.current[`${range.id}-start`] = node; }} aria-label={index === 0 ? "Start page" : `Range ${index + 1} start page`} type="text" inputMode="numeric" value={range.start} aria-invalid={Boolean(startError)} aria-describedby={startError ? `${range.id}-error` : undefined} onChange={(event) => update(range.id, "start", event.target.value)} onBlur={() => setErrors(validate())} /></label><span aria-hidden="true">–</span><label>End page<input ref={(node) => { inputRefs.current[`${range.id}-end`] = node; }} aria-label={index === 0 ? "End page" : `Range ${index + 1} end page`} type="text" inputMode="numeric" value={range.end} aria-invalid={Boolean(endError)} aria-describedby={endError ? `${range.id}-error` : undefined} onChange={(event) => update(range.id, "end", event.target.value)} onBlur={() => setErrors(validate())} /></label><small>{count} page{count === 1 ? "" : "s"}</small><details className={styles.cardMenu}><summary aria-label={`Actions for range ${index + 1}`}>•••</summary><div><button type="button" disabled={index === 0} onClick={() => move(index, index - 1)}>Move earlier</button><button type="button" disabled={index === ranges.length - 1} onClick={() => move(index, index + 1)}>Move later</button><button type="button" disabled={ranges.length === 1} onClick={() => setRanges((current) => current.filter((item) => item.id !== range.id))}>Remove</button></div></details>{(startError || endError) && <span id={`${range.id}-error`} className={styles.fieldError}>{startError || endError}</span>}</li>;
       })}</ol>
       {serverError && <p className={styles.error} role="alert">{serverError}</p>}<p className="sr-only" aria-live="polite">{announcement}</p>
     </section>
-    {!externalSubmit && <div className={styles.splitSubmit}><label className={styles.mergeToggle}><input type="checkbox" checked={merge} onChange={(event) => setMerge(event.target.checked)} /><span><strong>Merge ranges into one PDF</strong><small>{merge ? "One PDF in range order" : "Individual PDFs plus a Download All ZIP"}</small></span></label><button className="primary" type="submit" disabled={mutation.isPending}>{mutation.isPending ? "Creating files…" : job.has_pdf ? "Regenerate PDF" : "Extract pages"}</button></div>}
-  </form>;
+    {ranges.length > 1 && <label className={styles.mergeToggle}><input type="checkbox" checked={merge} onChange={(event) => setMerge(event.target.checked)} /><span><strong>Merge ranges into one PDF</strong><small>{merge ? "One PDF in range order" : "Individual PDFs plus a Download All ZIP"}</small></span></label>}
+    </fieldset></form>;
+  const artifacts = visibleArtifacts(job);
+  const pdfArtifacts = artifacts.filter(item => item.media_type === "application/pdf");
+  const downloads = [...artifacts].sort((a, b) => Number(b.media_type === "application/zip") - Number(a.media_type === "application/zip"));
+  const footer = <><div className="output-downloads">{downloads.map(artifact => <a className={`download-link ${artifacts.length === 1 || artifact.media_type === "application/zip" ? "primary" : ""}`} download href={api.artifactUrl(job.id, artifact.key)} key={artifact.key}>{artifact.media_type === "application/zip" ? "Download All ZIP" : pdfArtifacts.length === 1 ? "Download split PDF" : `Download PDF ${pdfArtifacts.findIndex(item => item.key === artifact.key) + 1}`}</a>)}</div><p>{merge ? 1 : ranges.length} output{!merge && ranges.length !== 1 ? "s" : ""} · {total} pages</p><button className={job.has_pdf ? "secondary" : "primary"} type="submit" form={`split-ranges-${job.id}`} disabled={mutation.isPending}>{mutation.isPending ? "Creating files…" : job.has_pdf ? "Regenerate PDF" : "Split PDF"}</button></>;
+  return {canvas, editor, footer};
 }
 
-export function SplitPdfTool({ config, restoredJob, onCreated, onDeleted, panel = "setup", onPanel = () => undefined, jobs = [], onOpen = () => undefined }: {
+export function SplitRangeForm({job}: {job: JobDto}) {
+  const controller = useSplitController(job);
+  return <>{controller.canvas}{controller.editor}{controller.footer}</>;
+}
+
+function SplitWorkspace({job, panel, jobs, onOpen, onReset}: {job: JobDto; panel: DockPanel; jobs: JobDto[]; onOpen: (job: JobDto) => void; onReset: () => void}) {
+  const controller = useSplitController(job);
+  return <ToolFrame title="Split PDF" description="Select, reorder, and package as many page ranges as you need." canvas={<WorkspaceContent panel={panel} kind="split_pdf" jobs={jobs} selected={job} onOpen={onOpen}>{controller.canvas}</WorkspaceContent>} settings={<div className={styles.setupPanel}><div><h2>{job.filename}</h2><p>{job.pages} source pages</p></div>{controller.editor}<DeleteJobButton job={job} onDeleted={onReset} /><button type="button" onClick={onReset}>Choose another PDF</button></div>} actionFooter={controller.footer} />;
+}
+
+export function SplitPdfTool({ config, restoredJob, onCreated, onDeleted, panel = "setup", jobs = [], onOpen = () => undefined }: {
   config: ConfigDto; restoredJob?: JobDto; onCreated?: (job: JobDto) => void; onDeleted?: () => void;
   panel?: DockPanel; onPanel?: (panel: DockPanel) => void; jobs?: JobDto[]; onOpen?: (job: JobDto) => void;
 }) {
@@ -125,7 +144,6 @@ export function SplitPdfTool({ config, restoredJob, onCreated, onDeleted, panel 
   const [jobId, setJobId] = useState(restoredJob?.kind === "split_pdf" ? restoredJob.id : "");
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState("");
-  const [merge, setMerge] = useState(restoredJob?.merge_ranges ?? false);
   const job = useQuery({ queryKey: ["job", jobId], queryFn: () => api.job(jobId), enabled: Boolean(jobId), initialData: restoredJob?.kind === "split_pdf" ? restoredJob : undefined });
   const upload = useMutation({
     mutationFn: (file: File) => api.uploadSplitPdf(file, setProgress),
@@ -139,7 +157,7 @@ export function SplitPdfTool({ config, restoredJob, onCreated, onDeleted, panel 
     upload.mutate(file);
   }
   const currentJob = job.data;
-  const canvas = <>{!jobId && <UploadZone accept="application/pdf,.pdf" multiple={false} title="Drop your PDF here" buttonLabel="Choose PDF" hint={`One readable, unencrypted PDF · ${config.max_upload_mb ? `up to ${config.max_upload_mb} MB` : "no size limit"}`} disabled={upload.isPending} onFiles={choose} />}{progress !== null && progress < 100 && <Progress value={progress} label={`Uploading… ${progress}%`} />}{error && <p className={styles.error} role="alert">{error}</p>}{currentJob && <SplitRangeForm job={currentJob} mergeValue={merge} onMergeChange={setMerge} externalSubmit />}</>;
-  const setup = <div className={styles.setupPanel}><div><p className="eyebrow">Document setup</p><h2>{currentJob ? currentJob.filename : "Choose a source"}</h2><p>{currentJob ? `${currentJob.pages} pages available. Ranges may overlap and their order controls the output.` : "Upload a PDF to build one or more page ranges."}</p></div>{currentJob && <><label className={styles.mergeToggle}><input type="checkbox" checked={merge} onChange={(event) => setMerge(event.target.checked)} /><span><strong>Merge ranges into one PDF</strong><small>{merge ? "One PDF in range order" : "Individual PDFs plus a Download All ZIP"}</small></span></label><button className="primary" type="submit" form={`split-ranges-${currentJob.id}`}>{currentJob.has_pdf ? "Regenerate PDF" : "Extract pages"}</button><div className={styles.setupFacts}><span>Source<strong>{currentJob.pages} pages</strong></span><span>Cost<strong>No charge</strong></span></div><DeleteJobButton job={currentJob} onDeleted={() => { setJobId(""); setProgress(null); onDeleted?.(); }} /><button type="button" onClick={() => { setJobId(""); setProgress(null); }}>Choose another PDF</button></>}</div>;
-  return <ToolFrame panel={panel} onPanel={onPanel} kind="split_pdf" eyebrow="No charge" title="Split PDF" description="Select, reorder, and package as many page ranges as you need." canvas={canvas} setup={setup} jobs={jobs} selected={currentJob} onOpen={onOpen} />;
+  if (currentJob) return <SplitWorkspace key={currentJob.id} job={currentJob} panel={panel} jobs={jobs} onOpen={onOpen} onReset={() => {setJobId(""); setProgress(null); onDeleted?.();}} />;
+  const canvas = <><UploadZone accept="application/pdf,.pdf" multiple={false} title="Drop your PDF here" buttonLabel="Choose PDF" hint={`One readable, unencrypted PDF · ${config.max_upload_mb ? `up to ${config.max_upload_mb} MB` : "no size limit"}`} disabled={upload.isPending} onFiles={choose} />{progress !== null && progress < 100 && <Progress value={progress} label={`Uploading… ${progress}%`} />}{error && <p className={styles.error} role="alert">{error}</p>}</>;
+  return <ToolFrame title="Split PDF" description="Select, reorder, and package as many page ranges as you need." canvas={<WorkspaceContent panel={panel} kind="split_pdf" jobs={jobs} onOpen={onOpen}>{canvas}</WorkspaceContent>} settings={<p>Upload a PDF to build one or more page ranges.</p>} actionFooter={<button className="primary" disabled>Split PDF</button>} />;
 }

@@ -48,6 +48,6 @@ describe("legacy history links", () => {
       "/?tool=pdf-to-docx&job=docx-job&panel=history",
       { scroll: false },
     ));
-    await waitFor(() => expect(screen.getByRole("navigation", { name: "Workspace panels" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("navigation", { name: "Workspace navigation" })).toBeInTheDocument());
   });
 });

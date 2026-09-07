@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import sqlite3
+from unittest.mock import Mock
 
 import pytest
 
@@ -133,6 +134,8 @@ def test_an_unknown_address_uses_the_prebuilt_dummy_hash(
         "hash_password",
         lambda _password: pytest.fail("authentication built a new dummy hash"),
     )
+    verify = Mock(wraps=auth.verify_password)
+    monkeypatch.setattr(auth, "verify_password", verify)
 
     reply = anonymous.post(
         "/api/auth/login",
@@ -140,6 +143,7 @@ def test_an_unknown_address_uses_the_prebuilt_dummy_hash(
     )
 
     assert reply.status_code == 401
+    verify.assert_called_once_with("wrong", auth._DUMMY_PASSWORD_HASH)
 
 
 def test_signing_in_is_case_insensitive_about_the_address(anonymous) -> None:
@@ -160,24 +164,33 @@ def test_repeated_failures_are_throttled(anonymous) -> None:
     assert anonymous.post("/api/auth/login", json=body).status_code == 429
 
 
-def test_the_right_password_is_never_refused_for_earlier_typos(anonymous) -> None:
-    """The throttle caps work; it does not lock out whoever knows the password.
-
-    This is the regression the sign-in form was actually failing on. Refusing
-    before checking meant a handful of typos made the correct password useless
-    for a quarter of an hour, which is indistinguishable — from the outside —
-    from authentication being broken.
-    """
+def test_exhausted_login_window_skips_verification_until_expiry(anonymous, monkeypatch) -> None:
     _signup(anonymous)
     wrong = {"email": "new@example.com", "password": "wrong"}
-    for _ in range(auth.SIGN_IN.limit * 2):
+    for _ in range(auth.SIGN_IN.limit):
         anonymous.post("/api/auth/login", json=wrong)
     assert auth.SIGN_IN.blocked("new@example.com")
 
     right = {"email": "new@example.com", "password": "a good password"}
+    verify = Mock(wraps=auth.verify_password)
+    monkeypatch.setattr(auth, "verify_password", verify)
+    assert anonymous.post("/api/auth/login", json=wrong).status_code == 429
+    assert anonymous.post("/api/auth/login", json=right).status_code == 429
+    verify.assert_not_called()
+    later = auth.time.monotonic() + auth.SIGN_IN.window + 1
+    monkeypatch.setattr(auth.time, "monotonic", lambda: later)
     assert anonymous.post("/api/auth/login", json=right).status_code == 200
     # And getting in wipes the count, so the next typo starts from zero.
     assert not auth.SIGN_IN.blocked("new@example.com")
+
+
+def test_concurrent_sign_in_admission_is_bounded():
+    from concurrent.futures import ThreadPoolExecutor
+
+    throttle = auth.Throttle(limit=3, window=60, capacity=1)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert sum(pool.map(lambda _: throttle.admit("same"), range(20))) == 3
+    assert not throttle.admit("different")
 
 
 def test_a_successful_sign_in_clears_the_failures(anonymous) -> None:

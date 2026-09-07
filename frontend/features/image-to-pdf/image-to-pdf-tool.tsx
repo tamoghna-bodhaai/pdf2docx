@@ -3,6 +3,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
+import { WorkspaceContent } from "@/components/workspace-content";
 import { ToolFrame } from "@/components/tool-frame";
 import { DeleteJobButton } from "@/components/delete-job-button";
 import { Progress } from "@/components/progress";
@@ -14,11 +15,18 @@ import styles from "@/features/tools/tools.module.css";
 
 interface ImageItem { id: string; file: File; url: string; landscape: boolean }
 
+function compactName(name: string) {
+  if (name.length <= 24) return name;
+  const number = name.match(/\d+(?!.*\d)/)?.[0];
+  const tail = name.slice(-16);
+  return number && !tail.includes(number) ? `${name.slice(0, 6)}…${number}…${name.slice(-12)}` : `${name.slice(0, 7)}…${tail}`;
+}
+
 function formatSize(bytes: number) {
   return bytes < 1_048_576 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / 1_048_576).toFixed(1)} MB`;
 }
 
-export function ImageToPdfTool({ config, restoredJob, selectedJobId, onCreated, onDeleted, panel = "setup", onPanel = () => undefined, jobs = [], onOpen = () => undefined }: {
+export function ImageToPdfTool({ config, restoredJob, selectedJobId, onCreated, onDeleted, panel = "setup", jobs = [], onOpen = () => undefined }: {
   config: ConfigDto; restoredJob?: JobDto; onCreated?: (job: JobDto) => void; onDeleted?: () => void;
   selectedJobId?: string | null;
   panel?: DockPanel; onPanel?: (panel: DockPanel) => void; jobs?: JobDto[]; onOpen?: (job: JobDto) => void;
@@ -62,6 +70,7 @@ export function ImageToPdfTool({ config, restoredJob, selectedJobId, onCreated, 
   });
 
   function addFiles(files: File[]) {
+    if (create.isPending) return;
     setError("");
     const accepted = files.filter((file) => config.accepted_image_types.includes(file.type) || /\.(jpe?g|png|webp)$/i.test(file.name));
     if (accepted.length !== files.length) { setError("Use JPEG, PNG, or WebP images."); return; }
@@ -75,15 +84,17 @@ export function ImageToPdfTool({ config, restoredJob, selectedJobId, onCreated, 
     setImages((current) => [...current, ...next]);
   }
   function remove(index: number) {
+    if (create.isPending) return;
     setImages((current) => { const item = current[index]; if (item) { URL.revokeObjectURL(item.url); urls.current.delete(item.url); } return current.filter((_, position) => position !== index); });
   }
   function move(from: number, to: number) {
-    if (to < 0 || to >= images.length || from === to) return;
+    if (create.isPending || to < 0 || to >= images.length || from === to) return;
     const name = images[from]?.file.name;
     setImages((current) => { const next = [...current]; const [item] = next.splice(from, 1); if (item) next.splice(to, 0, item); return next; });
     setAnnouncement(`${name} moved to page ${to + 1}.`);
   }
   function beginReorder(index: number) {
+    if (create.isPending) return;
     if (!orderSnapshot.current) orderSnapshot.current = images;
     setDragged(index);
   }
@@ -109,18 +120,19 @@ export function ImageToPdfTool({ config, restoredJob, selectedJobId, onCreated, 
     {error && <p className={styles.error} role="alert">{error}</p>}
     {!activeJobId && images.length > 0 && <><div className={styles.boardSummary}><span>{images.length} image{images.length === 1 ? "" : "s"}</span><span>{formatSize(bytes)} combined</span></div><ol className={styles.imageBoard} aria-label="PDF pages" onKeyDown={(event) => { if (event.key === "Escape" && dragged !== null) { event.preventDefault(); cancelReorder(); } }} onPointerMove={(event) => { if (dragged === null) return; const target = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-image-index]"); const index = Number(target?.dataset.imageIndex); if (Number.isInteger(index) && index !== dragged) { move(dragged, index); setDragged(index); } }} onPointerUp={finishReorder} onPointerCancel={cancelReorder}>{images.map((item, index) => {
       const pageOrientation = orientation === "auto" ? item.landscape ? "landscape" : "portrait" : orientation;
-      return <li className={styles.imageCard} data-image-index={index} draggable onDragStart={() => beginReorder(index)} onDragOver={(event) => event.preventDefault()} onDragEnter={() => { if (dragged !== null) move(dragged, index); setDragged(index); }} onDrop={finishReorder} onDragEnd={() => { if (orderSnapshot.current) cancelReorder(); }} key={item.id}>
-        <span className={styles.pageNumber}>{index + 1}</span><button className={styles.dragHandle} type="button" aria-label={`Reorder ${item.file.name}. Use arrow keys to move.`} onKeyDown={(event) => reorderKey(event, index)} onPointerDown={(event) => { event.currentTarget.setPointerCapture?.(event.pointerId); beginReorder(index); }} onPointerUp={finishReorder} onPointerCancel={cancelReorder}>⠿</button>
-        <div className={`${styles.pageSilhouette} ${styles[pageOrientation]}`}><img src={item.url} alt={`Preview of ${item.file.name}`} onLoad={(event) => { const landscape = event.currentTarget.naturalWidth > event.currentTarget.naturalHeight; setImages((current) => current.map((entry) => entry.id === item.id ? { ...entry, landscape } : entry)); }} /></div>
-        <strong title={item.file.name}>{item.file.name}</strong><small>{formatSize(item.file.size)} · Page {index + 1}</small>
-        <details className={styles.cardMenu}><summary aria-label={`Actions for ${item.file.name}`}>•••</summary><div><button type="button" disabled={index === 0} onClick={() => move(index, index - 1)}>Move earlier</button><button type="button" disabled={index === images.length - 1} onClick={() => move(index, index + 1)}>Move later</button><button type="button" onClick={() => remove(index)}>Remove</button></div></details>
+      return <li className={styles.imageCard} data-image-index={index} draggable={!create.isPending} onDragStart={() => beginReorder(index)} onDragOver={(event) => event.preventDefault()} onDragEnter={() => { if (dragged !== null) move(dragged, index); setDragged(index); }} onDrop={finishReorder} onDragEnd={() => { if (orderSnapshot.current) cancelReorder(); }} key={item.id}>
+        <span className={styles.pageNumber}>{index + 1}</span><button className={styles.dragHandle} type="button" disabled={create.isPending} aria-label={`Reorder ${item.file.name}. Use arrow keys to move.`} onKeyDown={(event) => reorderKey(event, index)} onPointerDown={(event) => { event.currentTarget.setPointerCapture?.(event.pointerId); beginReorder(index); }} onPointerUp={finishReorder} onPointerCancel={cancelReorder}>⠿</button>
+        <div className={styles.previewArea}><div className={`${styles.pageSilhouette} ${styles[pageOrientation]}`}><img src={item.url} alt={`Preview of ${item.file.name}`} onLoad={(event) => { const landscape = event.currentTarget.naturalWidth > event.currentTarget.naturalHeight; setImages((current) => current.map((entry) => entry.id === item.id ? { ...entry, landscape } : entry)); }} /></div></div>
+        <strong tabIndex={0} aria-label={item.file.name} title={item.file.name}>{compactName(item.file.name)}<span className={styles.fullName}>{item.file.name}</span></strong><small>{formatSize(item.file.size)} · Page {index + 1}</small>
+        <details className={styles.cardMenu}><summary aria-label={`Actions for ${item.file.name}`}>•••</summary><div><p>{item.file.name}</p><button type="button" disabled={create.isPending || index === 0} onClick={() => move(index, index - 1)}>Move earlier</button><button type="button" disabled={create.isPending || index === images.length - 1} onClick={() => move(index, index + 1)}>Move later</button><button type="button" disabled={create.isPending} onClick={() => remove(index)}>Remove</button></div></details>
       </li>;
-    })}<li className={styles.addTile}><label><input type="file" accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple onChange={(event) => { addFiles(Array.from(event.target.files || [])); event.target.value = ""; }} /><span>＋</span><strong>Add images</strong></label></li></ol></>}
+    })}<li className={styles.addTile}><label><input type="file" disabled={create.isPending} accept="image/jpeg,image/png,image/webp,.jpg,.jpeg,.png,.webp" multiple onChange={(event) => { addFiles(Array.from(event.target.files || [])); event.target.value = ""; }} /><span>＋</span><strong>Add images</strong></label></li></ol></>}
     <p className="sr-only" aria-live="polite">{announcement}</p>
     {progress !== null && progress < 100 && <Progress value={progress} label={`Uploading… ${progress}%`} />}
-    {currentJob && <section className={styles.canvasResult} aria-live="polite"><span className={styles.resultDocument}>PDF</span><h2>{currentJob.output_filename || "PDF result"}</h2><p>{currentJob.output_pages || currentJob.pages} pages · {currentJob.page_orientation} orientation · No charge</p>{currentJob.error && <p className={styles.error}>{currentJob.error}</p>}</section>}
+    {currentJob && <section className={styles.canvasResult} aria-live="polite"><span className={styles.resultDocument}>PDF</span><h2>{currentJob.output_filename || "PDF result"}</h2><p>{currentJob.output_pages || currentJob.pages} pages · {currentJob.page_orientation} orientation</p>{currentJob.has_pdf && <a className="primary download-link" href={api.downloadUrl(currentJob.id, "pdf")} download>Download PDF</a>}{currentJob.error && <p className={styles.error}>{currentJob.error}</p>}</section>}
   </>;
   const visibleOrientation = currentJob?.page_orientation ?? orientation;
-  const setup = <div className={styles.setupPanel}><div><p className="eyebrow">Page setup</p><h2>Orientation</h2><p>Every image is proportionally fitted to A4 with 36-point margins and no cropping.</p></div><fieldset className={styles.segmented}><legend>Page orientation</legend>{(["auto", "portrait", "landscape"] as PageOrientation[]).map((value) => <label key={value}><input type="radio" name="orientation" value={value} checked={visibleOrientation === value} disabled={Boolean(activeJobId)} onChange={() => setOrientation(value)} /><span>{value[0].toUpperCase() + value.slice(1)}</span></label>)}</fieldset>{!activeJobId ? <button className="primary" type="button" disabled={!images.length || create.isPending} onClick={() => create.mutate()}>{create.isPending ? "Creating PDF…" : `Create PDF${images.length ? ` · ${images.length} pages` : ""}`}</button> : currentJob && <><div className={styles.setupFacts}><span>Status<strong>{currentJob.status}</strong></span><span>Cost<strong>No charge</strong></span></div><DeleteJobButton job={currentJob} onDeleted={() => { setJobId(""); setProgress(null); onDeleted?.(); }} /><button type="button" onClick={() => { setJobId(""); setProgress(null); onDeleted?.(); }}>Create another</button></>}</div>;
-  return <ToolFrame panel={panel} onPanel={onPanel} kind="images_to_pdf" eyebrow="No charge" title="Images to PDF" description="Arrange images on a visual page board, then export one polished A4 document." canvas={canvas} setup={setup} jobs={jobs} selected={currentJob} onOpen={onOpen} />;
+  const setup = <div className={styles.setupPanel}><div><p className="eyebrow">Page setup</p><h2>Orientation</h2><p>Every image is proportionally fitted to A4 with 36-point margins and no cropping.</p></div><fieldset className={styles.segmented}><legend>Page orientation</legend>{(["auto", "portrait", "landscape"] as PageOrientation[]).map((value) => <label key={value}><input type="radio" name="orientation" value={value} checked={visibleOrientation === value} disabled={Boolean(activeJobId) || create.isPending} onChange={() => setOrientation(value)} /><span>{value[0].toUpperCase() + value.slice(1)}</span></label>)}</fieldset>{currentJob && <><div className={styles.setupFacts}><span>Status<strong>{currentJob.status}</strong></span></div><DeleteJobButton job={currentJob} onDeleted={() => { setJobId(""); setProgress(null); onDeleted?.(); }} /><button type="button" onClick={() => { setJobId(""); setProgress(null); onDeleted?.(); }}>Create another</button></>}</div>;
+  const actionFooter = !activeJobId ? <button className="primary" type="button" disabled={!images.length || create.isPending} onClick={() => create.mutate()}>{create.isPending ? "Creating PDF…" : `Create PDF${images.length ? ` · ${images.length} pages` : ""}`}</button> : currentJob?.has_pdf ? <a className="primary download-link" href={api.downloadUrl(currentJob.id, "pdf")} download>Download PDF</a> : null;
+  return <ToolFrame title="Images to PDF" description="Arrange images on a visual page board, then export one polished A4 document." canvas={<WorkspaceContent panel={panel} kind="images_to_pdf" jobs={jobs} selected={currentJob} onOpen={onOpen}>{canvas}</WorkspaceContent>} settings={setup} actionFooter={actionFooter} />;
 }

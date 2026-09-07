@@ -251,7 +251,7 @@ def _collect_mathpix_result(
         # Mathpix counts finished pages; fall back to its percentage when a
         # response carries one but not the other.
         done = state.num_pages_completed or int(round(state.percent_done / 100.0 * total))
-        on_progress("transcribing", min(max(done, 0), total), total)
+        on_progress("processing" if state.status == "pending" else "transcribing", min(max(done, 0), total), total)
 
     status = client.poll(file_id, report, deadline, should_cancel=should_cancel)
     on_progress("transcribing", total, total)
@@ -478,7 +478,6 @@ def convert_pdf_mathpix(
     client = mathpix.MathpixClient()
 
     on_progress("rendering", total, total)
-    on_progress("transcribing", 0, total)
     # Checked before the upload: nothing has left the machine yet and Mathpix has
     # not billed, so a cancel here costs nothing.
     if should_cancel is not None and should_cancel():

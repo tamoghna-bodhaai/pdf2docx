@@ -579,3 +579,18 @@ def test_re_fitting_a_job_that_has_no_export_refuses(tmp_path, monkeypatch):
     (work / mathpix_client.RAW_DIR).mkdir(parents=True)
     with pytest.raises(FileNotFoundError):
         pipeline.refit_docx(work)
+
+
+def test_pending_service_job_is_waiting_until_ocr_starts(monkeypatch, tmp_path):
+    prepare(monkeypatch)
+    def poll(self, file_id, on_status, deadline, should_cancel=None):
+        for payload in ({"status": "pending"}, {"status": "split", "num_pages_completed": 1}, {"status": "completed", "percent_done": 100}):
+            state = parse_status_response(payload, file_id)
+            on_status(state)
+        return state
+    monkeypatch.setattr(FakeClient, "poll", poll)
+    stages = []
+    pipeline.convert_pdf_mathpix(pdf_path=source_pdf(tmp_path), work_dir=tmp_path / "work", on_progress=lambda *args: stages.append(args))
+    assert ("processing", 0, 2) in stages
+    assert ("transcribing", 1, 2) in stages
+    assert stages.index(("processing", 0, 2)) < stages.index(("transcribing", 1, 2))

@@ -1,3 +1,4 @@
+import { images } from "./image-fixtures";
 import { expect, test, type Page } from "@playwright/test";
 
 const config = {
@@ -71,12 +72,13 @@ async function screenshot(page: Page, name: string) {
   // Next's development-only corner badge animates independently of the app and
   // does not exist in the static export. Keep it out of product baselines.
   await page.addStyleTag({ content: "nextjs-portal { display: none !important; }" });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await expect(page).toHaveScreenshot(name, { animations: "disabled", fullPage: true });
 }
 
 test.describe("visual contracts", () => {
   test.describe.configure({ mode: "serial" });
-  for (const width of [375, 768, 1280]) {
+  for (const width of [375, 768, 1024, 1280, 1920]) {
     for (const theme of ["light", "dark"] as const) {
       test(`legacy states at ${width}px in ${theme} mode`, async ({ page }) => {
         const state = await mockWorkspace(page);
@@ -95,8 +97,8 @@ test.describe("visual contracts", () => {
         await expect(page.getByRole("heading", { name: "Images to PDF" })).toBeVisible();
         await screenshot(page, `images-workspace-${width}-${theme}.png`);
         await page.locator('input[type="file"]').setInputFiles(Array.from({ length: 8 }, (_, index) => ({
-          name: `scanned-research-page-${String(index + 1).padStart(2, "0")}-with-a-long-filename.png`,
-          mimeType: "image/png", buffer: pixel,
+          name: `scanned-research-page-${String(index + 1).padStart(2, "0")}-with-a-long-filename.jpg`,
+          mimeType: "image/jpeg", buffer: Buffer.from(images[index % images.length], "base64"),
         })));
         await expect(page.getByRole("list", { name: "PDF pages" })).toBeVisible();
         await expect(page.locator('img:not([alt])')).toHaveCount(0);
@@ -106,10 +108,20 @@ test.describe("visual contracts", () => {
         await expect(page.getByRole("heading", { name: "Split PDF" })).toBeVisible();
         await screenshot(page, `split-workspace-${width}-${theme}.png`);
         await page.locator('input[type="file"]').setInputFiles({ name: "quarterly-archive-with-a-deliberately-long-source-name.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF visual") });
+        await expect(page.getByText("Output previews")).toBeVisible();
+        await screenshot(page, `split-outputs-${width}-${theme}.png`);
+        if (width < 1024) await page.getByRole("button", {name: "Settings & export"}).click();
         await expect(page.getByRole("heading", { name: "Page ranges" })).toBeVisible();
         await expect(page.getByRole("textbox", { name: "Start page", exact: true })).toBeEnabled();
         await expect(page.locator('img:not([alt])')).toHaveCount(0);
         await screenshot(page, `split-ranges-${width}-${theme}.png`);
+
+        await page.route("**/api/jobs/visual-split", route => route.fulfill({json: {
+          ...splitVisualJob(), page_ranges: [{start: 4, end: 8}],
+        }}));
+        await page.goto("/?tool=split-pdf&job=visual-split");
+        await expect(page.getByRole("button", {name: "Range 1 · Pages 4–8"})).toBeVisible();
+        await screenshot(page, `split-single-range-${width}-${theme}.png`);
 
         await page.goto("/?tool=pdf-to-docx&panel=setup");
 
@@ -123,8 +135,6 @@ test.describe("visual contracts", () => {
         state.status = "done";
         await page.goto("/?tool=history");
         await expect(page).toHaveURL(/tool=pdf-to-docx.*panel=history/);
-        const dockTrigger = page.getByRole("button", { name: "Workspace" });
-        if (await dockTrigger.isVisible()) await dockTrigger.click();
         await expect(page.getByText("research-notes.pdf").first()).toBeVisible();
         await screenshot(page, `history-${width}-${theme}.png`);
 
@@ -134,7 +144,7 @@ test.describe("visual contracts", () => {
         await screenshot(page, `dialog-${width}-${theme}.png`);
         await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
 
-        await page.goto("/?tool=pdf-to-docx&job=visual-1");
+        await page.goto("/?tool=pdf-to-docx&job=visual-1&panel=viewer");
         await expect(page.getByRole("heading", { name: "research-notes.pdf" })).toBeVisible();
         if (width <= 900) await page.getByRole("tab", { name: "Converted" }).click();
         await expect(page.getByRole("heading", { name: "Converted page" })).toBeVisible();
@@ -143,3 +153,32 @@ test.describe("visual contracts", () => {
     }
   }
 });
+
+for (const width of [375, 1280]) {
+  for (const theme of ["light", "dark"] as const) {
+    test(`split downloads remain reachable at ${width}px in ${theme} mode`, async ({page}) => {
+      await mockWorkspace(page);
+      await page.setViewportSize({width, height: 812});
+      await page.addInitScript(selected => localStorage.setItem("pdf2docx-theme", selected), theme);
+      const pdfs = Array.from({length: 12}, (_, index) => ({key: `range-${index + 1}`, filename: `quarterly-archive-pages-${index + 1}.pdf`, media_type: "application/pdf", pages: 1}));
+      const zip = {key: "package", filename: "quarterly-archive-ranges.zip", media_type: "application/zip", pages: null};
+      await page.route("**/api/jobs/visual-split", route => route.fulfill({json: {...splitVisualJob(), status: "done", has_pdf: true, artifacts: [...pdfs, zip]}}));
+      await page.goto("/?tool=split-pdf&job=visual-split&panel=files");
+      await expect(page.getByText("Output previews")).toBeVisible();
+      if (width < 1024) await page.getByRole("button", {name: "Settings & export"}).click();
+      const downloads = page.locator(".action-footer .output-downloads");
+      await expect(downloads.getByRole("link")).toHaveCount(13);
+      expect(await downloads.evaluate(node => node.scrollHeight > node.clientHeight)).toBe(true);
+      await expect(page.getByRole("button", {name: "Regenerate PDF"})).toBeInViewport();
+      await screenshot(page, `split-downloads-${width}-${theme}.png`);
+      await page.route("**/api/jobs/visual-split", route => route.fulfill({json: {...splitVisualJob(), status: "done", has_pdf: true, page_ranges: [{start: 1, end: 1}], artifacts: [pdfs[0], zip]}}));
+      await page.reload();
+      await expect(page.getByText("Output previews")).toBeVisible();
+      if (width < 1024) await page.getByRole("button", {name: "Settings & export"}).click();
+      await expect(page.getByRole("link", {name: "Download split PDF"})).toBeVisible();
+      await expect(page.getByText(/ZIP/)).toHaveCount(0);
+      await expect(page.getByRole("checkbox", {name: /Merge ranges/})).toHaveCount(0);
+      await screenshot(page, `split-legacy-download-${width}-${theme}.png`);
+    });
+  }
+}

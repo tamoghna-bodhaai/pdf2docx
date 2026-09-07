@@ -331,7 +331,16 @@ def _safe_image_name(target: str, index: int) -> str:
     query is dropped and only the last path segment is considered — and that
     segment still has to be a plain filename with a known suffix.
     """
-    path = unquote(urlsplit(target).path)
+    try:
+        url = urlsplit(target)
+        trusted = (url.scheme == "https" and url.hostname == "cdn.mathpix.com"
+                   and url.port in (None, 443) and url.username is None
+                   and url.password is None and "\\" not in target)
+    except ValueError:
+        trusted = False
+    if not trusted:
+        raise MathpixError("Preview images must come from the Mathpix HTTPS CDN.")
+    path = unquote(url.path)
     candidate = Path(path).name.strip()
     if not candidate or candidate in {".", ".."}:
         raise MathpixError(f"images[{index}] has no usable filename: {target!r}")
@@ -591,7 +600,8 @@ class MathpixClient:
                 return match.group(0)
             try:
                 name = _safe_image_name(target, len(downloaded))
-                response = httpx.get(target, timeout=self.timeout, follow_redirects=True)
+                # Never follow a CDN redirect to an untrusted destination.
+                response = httpx.get(target, timeout=self.timeout, follow_redirects=False)
                 response.raise_for_status()
                 data = response.content
             except (MathpixError, httpx.HTTPError):

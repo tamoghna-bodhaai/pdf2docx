@@ -19,6 +19,8 @@ and are labelled “No charge” throughout the interface.
    copy of the DOCX fitted to its own measure as `document.docx`.
 4. Downloads images referenced by Mathpix Markdown into `mathpix/images/` and
    rewrites only the local preview Markdown to those local paths.
+   Downloads are restricted to `https://cdn.mathpix.com` and do not follow
+   redirects; other references are left unchanged and counted as failed downloads.
 5. Splits the preview Markdown on Mathpix page breaks so source-page navigation
    and rendered Markdown stay aligned.
 6. Deletes the remote Mathpix upload after exports and preview images are stored,
@@ -337,9 +339,11 @@ their records.
 
 Two things are rate limited, both in memory: sign-ins, counted per email address
 over a quarter hour, and wrong invite codes, counted per caller over an hour.
-The sign-in limit is a ceiling on work rather than a lockout — the password is
-checked before the limit is consulted, so a correct one always gets in and
-resets the count. Typing it wrong a few times never costs you the right one.
+Sign-ins reserve an attempt before password verification, so concurrent guesses
+cannot bypass the limit or force unlimited hashing work. A successful sign-in
+clears earlier failures, but after 20 failures the window must expire before
+any password can be checked. Unknown addresses receive the same verification
+work as registered accounts.
 
 ## Exports
 
@@ -457,6 +461,11 @@ route are reachable signed out.
 | `POST` | `/api/convert` | Stage a multipart PDF; optional `start=true` starts it immediately. |
 | `POST` | `/api/convert/batch` | Stage several PDFs under one batch id. |
 | `POST` | `/api/tools/images-to-pdf` | Compose ordered multipart `files`; optional `orientation` is `auto`, `portrait`, or `landscape`. |
+| `POST` | `/api/tools/merge-pdf` | Stage multipart `files` as an editable merge job. |
+| `POST` | `/api/jobs/{id}/merge-sources` | Append multipart `files` atomically. |
+| `PUT` | `/api/jobs/{id}/merge-sources` | Save JSON `source_ids` in order; omitted sources are deleted. |
+| `GET` | `/api/jobs/{id}/merge-sources/{source_id}/preview.png` | Cached first-page preview. |
+| `POST` | `/api/jobs/{id}/merge` | Generate the merged PDF from saved sources. |
 | `POST` | `/api/tools/split-pdf` | Stage one multipart PDF and return its exact page count. |
 | `POST` | `/api/jobs/{id}/split` | Create or replace outputs from JSON `ranges` and boolean `merge`; legacy `start_page`/`end_page` remain accepted. |
 | `POST` | `/api/jobs/{id}/start` | Start or rerun with Mathpix. Optional CSV `formats`; empty requests preview-only, omitted uses the configured default. Optional `multi_column` lays the document out in the source page's columns. |
@@ -571,3 +580,18 @@ npm run test:e2e
 Tests use generated PDFs and fake Mathpix clients; they require no provider
 credentials. CI runs the Python suite, frontend lint/type checks and unit tests,
 the production static export, and desktop/mobile Playwright workflows.
+
+### Merge PDF
+
+Choose **Merge PDF** to upload and arrange complete PDFs. Drag a card's grip with
+mouse or touch, use arrow keys on the grip, or choose **Move earlier/later** from
+its actions. Completed changes save immediately. Saved merges can be reopened to
+add, remove, reorder, and regenerate sources; duplicate filenames are supported.
+A previous successful download remains available when sources change or a merge
+fails. Processing runs locally without Mathpix.
+
+`PDF2DOCX_MERGE_MAX_FILES` defaults to **30**; `PDF2DOCX_MERGE_UPLOAD_MB` defaults
+to **50 MB combined** (0 disables the combined size limit). The existing
+`PDF2DOCX_MAX_UPLOAD_MB` limit also applies to each PDF. One PDF can be staged,
+but merging requires at least two. Encrypted PDFs must be unlocked beforehand.
+Sources and cached previews are removed when their history job is deleted.

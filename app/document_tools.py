@@ -275,7 +275,7 @@ def split_pdf_ranges(
                 occurrences[pair] = occurrences.get(pair, 0) + 1
                 repeat = occurrences[pair]
                 suffix = f"-{repeat}" if repeat > 1 else ""
-                filename = f"{stem}-pages-{start}-{end}{suffix}.pdf"
+                filename = f"{stem}-{start}-{end}{suffix}.pdf"
                 path = staged / f"range-{ordinal}.pdf"
                 split_pdf(source_file, path, start, end)
                 artifacts.append({
@@ -283,14 +283,15 @@ def split_pdf_ranges(
                     "media_type": "application/pdf", "pages": end - start + 1,
                 })
                 packaged.append((path, filename))
-            package_name = f"{stem}-ranges.zip"
-            with zipfile.ZipFile(staged / "package.zip", "w", zipfile.ZIP_DEFLATED) as archive:
-                for path, filename in packaged:
-                    archive.write(path, filename)
-            artifacts.append({
-                "key": "package", "filename": package_name,
-                "media_type": "application/zip", "pages": None,
-            })
+            if len(packaged) > 1:
+                package_name = f"{stem}-ranges.zip"
+                with zipfile.ZipFile(staged / "package.zip", "w", zipfile.ZIP_DEFLATED) as archive:
+                    for path, filename in packaged:
+                        archive.write(path, filename)
+                artifacts.append({
+                    "key": "package", "filename": package_name,
+                    "media_type": "application/zip", "pages": None,
+                })
 
         backup = destination.with_name(f".{destination.name}-old-{uuid.uuid4().hex}")
         if destination.exists():
@@ -309,3 +310,42 @@ def split_pdf_ranges(
         raise DocumentToolError(f"Could not create the requested PDF artifacts: {exc}") from exc
     finally:
         shutil.rmtree(staged, ignore_errors=True)
+
+
+def merge_pdf(sources: Iterable[str | Path], output_path: str | Path) -> Path:
+    """Concatenate complete PDFs, rebasing bookmarks, then atomically publish."""
+    paths = [Path(source) for source in sources]
+    if len(paths) < 2:
+        raise DocumentToolError("Choose at least two PDFs to merge.")
+    target = Path(output_path)
+    staged = _temporary_output(target)
+    try:
+        with fitz.open() as merged:
+            bookmarks = []
+            count = 0
+            for path in paths:
+                with fitz.open(path) as source:
+                    if not source.is_pdf or source.needs_pass or source.metadata.get("encryption") or not source.page_count:
+                        raise DocumentToolError("Use non-empty, unencrypted PDF documents.")
+                    merged.insert_pdf(source, links=True, annots=True)
+                    for level, title, page, destination in source.get_toc(simple=False):
+                        destination = deepcopy(destination)
+                        destination.pop("xref", None)
+                        if destination.get("kind") == fitz.LINK_GOTO and isinstance(destination.get("page"), int):
+                            destination["page"] += count
+                        bookmarks.append([level, title, page + count if page > 0 else page, destination])
+                    count += source.page_count
+            if bookmarks:
+                merged.set_toc(bookmarks)
+            merged.save(staged, garbage=4, deflate=True)
+        with fitz.open(staged) as result:
+            if result.page_count != count:
+                raise DocumentToolError("The merged PDF is incomplete.")
+        staged.replace(target)
+        return target
+    except DocumentToolError:
+        raise
+    except Exception as exc:
+        raise DocumentToolError(f"Could not merge the PDFs: {exc}") from exc
+    finally:
+        staged.unlink(missing_ok=True)

@@ -34,7 +34,8 @@ def _pdf_bytes(pages: int = 5) -> bytes:
     return content
 
 
-def test_config_advertises_local_tool_limits_without_mathpix(client) -> None:
+def test_config_advertises_local_tool_limits_without_mathpix(client, monkeypatch) -> None:
+    monkeypatch.setattr(main, "settings", replace(main.settings, mathpix_app_key=""))
     body = client.get("/api/config").json()
 
     assert body["local_tools_available"] is True
@@ -153,7 +154,7 @@ def test_split_upload_reports_pages_then_regenerates_one_owned_job(client) -> No
     assert first.status_code == 200, first.text
     assert first.json()["page_range"] == {"start": 2, "end": 4}
     assert first.json()["output_pages"] == 3
-    assert first.json()["output_filename"] == "report-pages-2-4.pdf"
+    assert first.json()["output_filename"] == "report-2-4.pdf"
 
     second = client.post(
         f"/api/jobs/{job['id']}/split", data={"start_page": 5, "end_page": 5}
@@ -186,14 +187,14 @@ def test_multiple_split_ranges_create_ordered_artifacts_and_a_zip(client) -> Non
     job = response.json()
     assert job["page_ranges"] == [{"start": 4, "end": 5}, {"start": 2, "end": 2}]
     assert [item["filename"] for item in job["artifacts"]] == [
-        "report-pages-4-5.pdf", "report-pages-2-2.pdf", "report-ranges.zip"
+        "report-4-5.pdf", "report-2-2.pdf", "report-ranges.zip"
     ]
     first = client.get(f"/api/jobs/{job['id']}/artifacts/range-1")
     with fitz.open(stream=first.content, filetype="pdf") as document:
         assert [page.get_text().strip() for page in document] == ["Page 4", "Page 5"]
     package = client.get(f"/api/jobs/{job['id']}/artifacts/package")
     with zipfile.ZipFile(io.BytesIO(package.content)) as archive:
-        assert archive.namelist() == ["report-pages-4-5.pdf", "report-pages-2-2.pdf"]
+        assert archive.namelist() == ["report-4-5.pdf", "report-2-2.pdf"]
 
 
 def test_merged_and_repeated_ranges_preserve_configured_order_and_names(client) -> None:
@@ -207,7 +208,7 @@ def test_merged_and_repeated_ranges_preserve_configured_order_and_names(client) 
         {"start": 2, "end": 2}, {"start": 2, "end": 2}
     ])}).json()
     assert [item["filename"] for item in separate["artifacts"][:2]] == [
-        "report-pages-2-2.pdf", "report-pages-2-2-2.pdf"
+        "report-2-2.pdf", "report-2-2-2.pdf"
     ]
 
     merged = client.post(path, data={
@@ -352,7 +353,7 @@ def test_split_regeneration_claims_the_job_until_metadata_and_output_agree(
 
     job = client.get(f"/api/jobs/{staged['id']}").json()
     assert job["page_range"] == {"start": 1, "end": 2}
-    assert job["output_filename"] == "report-pages-1-2.pdf"
+    assert job["output_filename"] == "report-1-2.pdf"
     with fitz.open(
         stream=client.get(f"/api/jobs/{staged['id']}/download?format=pdf").content,
         filetype="pdf",
@@ -445,3 +446,19 @@ def test_an_interrupted_local_composition_is_restored_as_retryable_error(tmp_pat
     assert restored.status == "error"
     assert "server restarted" in (restored.error or "")
     assert restored.as_dict()["kind"] == "images_to_pdf"
+
+
+def test_legacy_split_downloads_use_concise_names(client):
+    staged = client.post("/api/tools/split-pdf", files={"file": ("report.pdf", _pdf_bytes(), "application/pdf")}).json()
+    job_id = staged["id"]
+    client.post(f"/api/jobs/{job_id}/split", data={"start_page": 1, "end_page": 2})
+    job = main.JOBS[job_id]
+    job.output_filename = "report-pages-1-2.pdf"
+    job.artifacts[0]["filename"] = "report-pages-1-2.pdf"
+    restored = client.get(f"/api/jobs/{job_id}").json()
+    assert restored["output_filename"] == "report-1-2.pdf"
+    assert restored["artifacts"][0]["filename"] == "report-1-2.pdf"
+    for endpoint in ("download?format=pdf", "artifacts/range-1"):
+        response = client.get(f"/api/jobs/{job_id}/{endpoint}")
+        assert response.status_code == 200
+        assert 'filename="report-1-2.pdf"' in response.headers["content-disposition"]

@@ -195,6 +195,9 @@ class Settings:
     local_image_max_pixels: int = _int("PDF2DOCX_IMAGE_MAX_PIXELS", 40_000_000)
     local_image_upload_mb: int = _int("PDF2DOCX_IMAGE_MAX_UPLOAD_MB", 50)
 
+    merge_max_files: int = _int("PDF2DOCX_MERGE_MAX_FILES", 30)
+    merge_upload_mb: int = _int("PDF2DOCX_MERGE_UPLOAD_MB", 50)
+
     # Batch conversion. `batch_max_files` caps how many PDFs one upload may
     # stage; `batch_workers` is how many of a batch's files convert at once —
     # every file is still a per-page Mathpix charge, so this is deliberately a

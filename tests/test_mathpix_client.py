@@ -426,6 +426,35 @@ def test_the_same_image_is_downloaded_once_however_often_it_is_referenced(tmp_pa
 # -- pages ----------------------------------------------------------------------- #
 
 
+@pytest.mark.parametrize("target", [
+    "http://127.0.0.1/private.png", "http://169.254.169.254/metadata.png",
+    "https://example.com/a.png", "https://cdn.mathpix.com.evil.test/a.png",
+    "https://cdn.mathpix.com@127.0.0.1/a.png", "http://cdn.mathpix.com/a.png",
+    "https://cdn.mathpix.com:8443/a.png", "https://user@cdn.mathpix.com/a.png",
+])
+def test_untrusted_image_destinations_are_never_requested(target, tmp_path, monkeypatch):
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: pytest.fail("untrusted request"))
+    markdown = f"![]({target})"
+    text, applied = client().download_images(markdown, tmp_path)
+    assert text == markdown
+    assert applied.images_failed == 1
+    assert applied.images_downloaded == 0
+
+
+def test_image_redirects_are_not_followed(tmp_path, monkeypatch):
+    def redirected(url, **kwargs):
+        assert kwargs["follow_redirects"] is False
+        return httpx.Response(302, headers={"location": "http://127.0.0.1/private.png"},
+                              request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx, "get", redirected)
+    markdown = "![](https://cdn.mathpix.com/a.png)"
+    text, applied = client().download_images(markdown, tmp_path)
+    assert text == markdown
+    assert applied.images_downloaded == 0
+    assert applied.images_failed == 1
+
+
 def test_pages_split_on_mathpix_own_break():
     assert split_pages("one\n\n\\pagebreak\n\ntwo") == ["one", "two"]
 

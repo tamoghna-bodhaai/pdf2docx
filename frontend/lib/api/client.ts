@@ -111,6 +111,16 @@ export const api = {
     body.append("orientation", orientation);
     return upload<JobDto>("/api/tools/images-to-pdf", body, onProgress);
   },
+  uploadMergePdfs: (files: File[], id?: string, onProgress?: (percent: number) => void) => {
+    const body = new FormData();
+    files.forEach(file => body.append("files", file));
+    return upload<JobDto>(id ? `/api/jobs/${encodeURIComponent(id)}/merge-sources` : "/api/tools/merge-pdf", body, onProgress);
+  },
+  orderMergeSources: (id: string, sourceIds: string[]) => request<JobDto>(
+    `/api/jobs/${encodeURIComponent(id)}/merge-sources`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ source_ids: sourceIds }) },
+  ),
+  merge: (id: string) => request<JobDto>(`/api/jobs/${encodeURIComponent(id)}/merge`, { method: "POST" }),
+  mergePreviewUrl: (id: string, sourceId: string) => `/api/jobs/${encodeURIComponent(id)}/merge-sources/${encodeURIComponent(sourceId)}/preview.png`,
   uploadSplitPdf: (file: File, onProgress?: (percent: number) => void) => {
     const body = new FormData();
     body.append("file", file);
@@ -122,8 +132,8 @@ export const api = {
   startJob: (id: string, formats: string[], multiColumn: boolean) => request<JobDto>(
     `/api/jobs/${encodeURIComponent(id)}/start`, { method: "POST", body: form({ formats: formats.join(","), multi_column: multiColumn }) },
   ),
-  jobAction: (id: string, action: "pause" | "resume" | "cancel") => request<JobDto>(
-    `/api/jobs/${encodeURIComponent(id)}/${action}`, { method: "POST" },
+  jobAction: (id: string, action: "pause" | "resume" | "cancel", formats?: string[], multiColumn?: boolean) => request<JobDto>(
+    `/api/jobs/${encodeURIComponent(id)}/${action}`, { method: "POST", body: action === "resume" ? form({ formats: formats?.join(","), multi_column: multiColumn }) : undefined },
   ),
   batchAction: (id: string, action: "start" | "pause" | "resume" | "cancel", formats: string[] = [], multiColumn = false) => request<BatchDto>(
     `/api/batches/${encodeURIComponent(id)}/${action}`,

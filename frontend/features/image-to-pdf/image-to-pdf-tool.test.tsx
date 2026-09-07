@@ -36,7 +36,7 @@ describe("ordered image list", () => {
     const view = renderWithQuery(<ImageToPdfTool config={{ ...config, image_max_upload_mb: 0 }} />);
     const picker = view.container.querySelector<HTMLInputElement>('input[type="file"]')!;
     fireEvent.change(picker, { target: { files: [new File(["content"], "large.png", { type: "image/png" })] } });
-    expect(screen.getByText("large.png")).toBeInTheDocument();
+    expect(screen.getByTitle("large.png")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Create PDF/ })).toBeEnabled();
   });
 
@@ -77,6 +77,6 @@ describe("ordered image list", () => {
     await user.click(screen.getByRole("button", { name: /Create PDF/ }));
     expect(revoke).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Create another" }));
-    expect(screen.getByText("first.png")).toBeInTheDocument();
+    expect(screen.getByTitle("first.png")).toBeInTheDocument();
   });
 });
