@@ -2,7 +2,8 @@ import fs from "fs";
 import path from "path";
 import { Exam, Submission } from "./types";
 
-const DATA_DIR = path.join(process.cwd(), "data");
+// Vercel filesystem is read-only except /tmp — use /tmp for persistent writes when deployed
+const DATA_DIR = process.env.VERCEL ? path.join("/tmp", "data") : path.join(process.cwd(), "data");
 const EXAMS_FILE = path.join(DATA_DIR, "exams.json");
 const SUBMISSIONS_FILE = path.join(DATA_DIR, "submissions.json");
 

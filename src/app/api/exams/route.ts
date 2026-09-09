@@ -69,14 +69,17 @@ export async function POST(req: NextRequest) {
     let answerKeyName: string | null = null;
     let answerKeyJson: Record<string,string> | null = null;
 
-    // Save question paper if provided
+    // Save question paper if provided - use /tmp on Vercel (read-only FS)
     if (questionPaper && questionPaper.size > 0) {
       const ext = questionPaper.name.split(".").pop() || "pdf";
       const filename = `${id}-qp.${ext}`;
-      const dir = path.join(process.cwd(), "public", "uploads", "question-papers");
+      const dir = process.env.VERCEL
+        ? path.join("/tmp", "uploads", "question-papers")
+        : path.join(process.cwd(), "public", "uploads", "question-papers");
       fs.mkdirSync(dir, { recursive: true });
       const buffer = Buffer.from(await questionPaper.arrayBuffer());
       fs.writeFileSync(path.join(dir, filename), buffer);
+      // On Vercel files are served via /api/uploads fallback; keep same URL for local
       questionPaperUrl = `/uploads/question-papers/${filename}`;
       questionPaperName = questionPaper.name;
     }
@@ -87,7 +90,9 @@ export async function POST(req: NextRequest) {
     if (answerKeyFile && answerKeyFile.size > 0) {
       const ext = answerKeyFile.name.split(".").pop() || "pdf";
       const filename = `${id}-ak.${ext}`;
-      const dir = path.join(process.cwd(), "public", "uploads", "answer-keys");
+      const dir = process.env.VERCEL
+        ? path.join("/tmp", "uploads", "answer-keys")
+        : path.join(process.cwd(), "public", "uploads", "answer-keys");
       fs.mkdirSync(dir, { recursive: true });
       answerKeyBuffer = Buffer.from(await answerKeyFile.arrayBuffer());
       fs.writeFileSync(path.join(dir, filename), answerKeyBuffer);

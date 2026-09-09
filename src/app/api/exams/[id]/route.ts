@@ -29,17 +29,29 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     writeSubmissions(remaining);
   }
 
-  // Best-effort file cleanup (ignore errors for MVP)
+  // Best-effort file cleanup (ignore errors for MVP) - handle both /tmp (Vercel) and public (local)
   try {
     const fs = await import("fs");
     const path = await import("path");
     const toDelete: string[] = [];
-    if (deletedExam.questionPaperUrl) toDelete.push(path.join(process.cwd(), "public", deletedExam.questionPaperUrl.replace(/^\//, "")));
-    if (deletedExam.answerKeyUrl) toDelete.push(path.join(process.cwd(), "public", deletedExam.answerKeyUrl.replace(/^\//, "")));
+    const isVercel = !!process.env.VERCEL;
+    const baseCandidates = (url: string) => {
+      const rel = url.replace(/^\//, "");
+      // url is like /uploads/... -> map to both possible bases
+      if (rel.startsWith("uploads/")) {
+        return [
+          path.join(process.cwd(), "public", rel),
+          path.join("/tmp", rel),
+        ];
+      }
+      return [path.join(process.cwd(), "public", rel), path.join("/tmp", rel)];
+    };
+    if (deletedExam.questionPaperUrl) toDelete.push(...baseCandidates(deletedExam.questionPaperUrl));
+    if (deletedExam.answerKeyUrl) toDelete.push(...baseCandidates(deletedExam.answerKeyUrl));
     // also delete student sheets for this exam
     for (const s of subs) {
       if (s.examId === id && s.imageUrl) {
-        toDelete.push(path.join(process.cwd(), "public", s.imageUrl.replace(/^\//, "")));
+        toDelete.push(...baseCandidates(s.imageUrl));
       }
     }
     for (const p of toDelete) {

@@ -92,9 +92,10 @@ async function visionLLMExtraction(
   cfg: import("./llm").LLMConfig,
   sheetType: SheetType = "bubble"
 ): Promise<VisionExtractionResult> {
-  // imagePath is like /uploads/student-sheets/xxx.jpeg -> on disk at public/uploads/...
+  // imagePath is like /uploads/student-sheets/xxx.jpeg -> on disk at public/uploads/... or /tmp/uploads/... on Vercel
   const candidates = [
     path.join(process.cwd(), "public", imagePath.replace(/^\//, "")),
+    path.join("/tmp", imagePath.replace(/^\//, "")),
     path.join(process.cwd(), imagePath.replace(/^\//, "")),
   ];
   let buffer: Buffer | null = null;

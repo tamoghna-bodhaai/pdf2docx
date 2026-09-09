@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import fs from "fs";
@@ -46,7 +46,9 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: `Only ${MAX_SHEETS_PER_EXAM - subs.length} slots remaining (you tried to upload ${rawFiles.length})` }, { status: 400 });
   }
 
-  const dir = path.join(process.cwd(), "public", "uploads", "student-sheets");
+  const dir = process.env.VERCEL
+    ? path.join("/tmp", "uploads", "student-sheets")
+    : path.join(process.cwd(), "public", "uploads", "student-sheets");
   fs.mkdirSync(dir, { recursive: true });
 
   const now = new Date().toISOString();
@@ -109,54 +111,72 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     writeSubmissions(allForUpdate);
   }
 
-  // Fire background processing for each submission asynchronously
-  for (const sub of created) {
-    const delay = 1500 + Math.random() * 2000;
-    setTimeout(async () => {
-      try {
-        let current = readSubmissions();
-        let idx = current.findIndex(s => s.id === sub.id);
-        if (idx === -1) return;
-        current[idx].status = "PROCESSING";
-        current[idx].updatedAt = new Date().toISOString();
-        writeSubmissions(current);
+  // Background grading — use Next.js `after()` so Vercel keeps the function alive after 201 response
+  // Falls back to fire-and-forget locally; on Vercel `after` ensures OpenRouter Vision completes even with MOCK_VISION=false
+  const processAll = async () => {
+    await Promise.all(
+      created.map(
+        (sub) =>
+          new Promise<void>((resolve) => {
+            const delay = 1500 + Math.random() * 2000;
+            setTimeout(async () => {
+              try {
+                let current = readSubmissions();
+                let idx = current.findIndex((s) => s.id === sub.id);
+                if (idx === -1) return resolve();
+                current[idx].status = "PROCESSING";
+                current[idx].updatedAt = new Date().toISOString();
+                writeSubmissions(current);
 
-        // Pass exam's sheetType (or upload override) to vision extractor — same pipeline, different prompt
-        const result = await extractAnswerSheet(sub.imageUrl, exam.questionCount, effectiveSheetType as any);
+                const result = await extractAnswerSheet(sub.imageUrl, exam.questionCount, effectiveSheetType as any);
 
-        // Re-fetch exam inside background task to get latest scheme (in case it changed after upload)
-        const latestExam = getExam(examId) ?? exam;
-        const scheme = getMarkingScheme(latestExam);
-        const grading = gradeSubmission(result.answers, latestExam.answerKeyJson!, scheme);
-        const hasUncertain = result.uncertain_questions.length > 0 || Object.values(result.answers).some(v => v === "UNCERTAIN" || v === "MULTIPLE");
+                const latestExam = getExam(examId) ?? exam;
+                const scheme = getMarkingScheme(latestExam);
+                const grading = gradeSubmission(result.answers, latestExam.answerKeyJson!, scheme);
+                const hasUncertain =
+                  result.uncertain_questions.length > 0 ||
+                  Object.values(result.answers).some((v) => v === "UNCERTAIN" || v === "MULTIPLE");
 
-        current = readSubmissions();
-        idx = current.findIndex(s => s.id === sub.id);
-        if (idx === -1) return;
-        current[idx].studentName = result.student_name;
-        current[idx].rollNumber = result.roll_number;
-        current[idx].extractedAnswers = result.answers;
-        current[idx].uncertainQuestions = result.uncertain_questions;
-        current[idx].score = grading.score;
-        current[idx].correct = grading.correct;
-        current[idx].incorrect = grading.incorrect;
-        current[idx].blank = grading.blank;
-        current[idx].details = grading.details;
-        current[idx].status = hasUncertain ? "REVIEW_REQUIRED" : "COMPLETED";
-        current[idx].updatedAt = new Date().toISOString();
-        writeSubmissions(current);
-      } catch (e:any) {
-        console.error("Processing failed for", sub.id, e);
-        let current = readSubmissions();
-        const idx = current.findIndex(s => s.id === sub.id);
-        if (idx !== -1) {
-          (current[idx] as any).status = "FAILED";
-          (current[idx] as any).error = e.message || "Vision extraction failed";
-          current[idx].updatedAt = new Date().toISOString();
-          writeSubmissions(current);
-        }
-      }
-    }, delay);
+                current = readSubmissions();
+                idx = current.findIndex((s) => s.id === sub.id);
+                if (idx === -1) return resolve();
+                current[idx].studentName = result.student_name;
+                current[idx].rollNumber = result.roll_number;
+                current[idx].extractedAnswers = result.answers;
+                current[idx].uncertainQuestions = result.uncertain_questions;
+                current[idx].score = grading.score;
+                current[idx].correct = grading.correct;
+                current[idx].incorrect = grading.incorrect;
+                current[idx].blank = grading.blank;
+                current[idx].details = grading.details;
+                current[idx].status = hasUncertain ? "REVIEW_REQUIRED" : "COMPLETED";
+                current[idx].updatedAt = new Date().toISOString();
+                writeSubmissions(current);
+              } catch (e: any) {
+                console.error("Processing failed for", sub.id, e);
+                let current = readSubmissions();
+                const idx = current.findIndex((s) => s.id === sub.id);
+                if (idx !== -1) {
+                  (current[idx] as any).status = "FAILED";
+                  (current[idx] as any).error = e.message || "Vision extraction failed";
+                  current[idx].updatedAt = new Date().toISOString();
+                  writeSubmissions(current);
+                }
+              } finally {
+                resolve();
+              }
+            }, delay);
+          })
+      )
+    );
+  };
+
+  try {
+    // `after` is the Vercel/Next.js primitive to run after response — keeps function alive
+    after(processAll);
+  } catch {
+    // Fallback for older Next or local dev where `after` is not available
+    void processAll();
   }
 
   // For backwards compat: single file returns object, batch returns array
