@@ -1,0 +1,1107 @@
+[
+  {
+    "id": "274342ec-17b8-41b4-868e-1f0008d0cef3",
+    "examId": "cefa0722-5384-44e2-b4d9-4ab849e6434d",
+    "imageUrl": "/uploads/student-sheets/274342ec-17b8-41b4-868e-1f0008d0cef3.jpeg",
+    "originalName": "ansclick.jpeg",
+    "studentName": "Vikram Singh",
+    "rollNumber": "6",
+    "extractedAnswers": {
+      "1": "D",
+      "2": "B",
+      "3": "C",
+      "4": "D",
+      "5": "A",
+      "6": "C",
+      "7": "B",
+      "8": "C",
+      "9": "B",
+      "10": "B",
+      "11": "D",
+      "12": "C",
+      "13": "B",
+      "14": "D",
+      "15": "D",
+      "16": "D",
+      "17": "C",
+      "18": "B",
+      "19": "B",
+      "20": "D",
+      "21": "D",
+      "22": "B",
+      "23": "B",
+      "24": "C",
+      "25": "A"
+    },
+    "uncertainQuestions": [],
+    "status": "COMPLETED",
+    "score": 25,
+    "correct": 10,
+    "incorrect": 15,
+    "blank": 0,
+    "details": [
+      {
+        "question": 1,
+        "studentAnswer": "D",
+        "correctAnswer": "D",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 2,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 3,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 4,
+        "studentAnswer": "D",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 5,
+        "studentAnswer": "A",
+        "correctAnswer": "A",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 6,
+        "studentAnswer": "C",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 7,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 8,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 9,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 10,
+        "studentAnswer": "B",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 11,
+        "studentAnswer": "D",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 12,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 13,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 14,
+        "studentAnswer": "D",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 15,
+        "studentAnswer": "D",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 16,
+        "studentAnswer": "D",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 17,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 18,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 19,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 20,
+        "studentAnswer": "D",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 21,
+        "studentAnswer": "D",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 22,
+        "studentAnswer": "B",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 23,
+        "studentAnswer": "B",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 24,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 25,
+        "studentAnswer": "A",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      }
+    ],
+    "createdAt": "2026-09-09T07:25:55.992Z",
+    "updatedAt": "2026-09-09T07:25:58.524Z"
+  },
+  {
+    "id": "3b421900-3baa-41bb-b666-e4acd7eefbc9",
+    "examId": "2245e317-d6ae-4d20-8db6-10b9b75de57b",
+    "imageUrl": "/uploads/student-sheets/3b421900-3baa-41bb-b666-e4acd7eefbc9.jpeg",
+    "originalName": "ansclick.jpeg",
+    "studentName": "Santosh Nag",
+    "rollNumber": null,
+    "extractedAnswers": {
+      "1": "A",
+      "2": "B",
+      "3": "C",
+      "4": "B",
+      "5": "B",
+      "6": "C",
+      "7": "B",
+      "8": "C",
+      "9": "B",
+      "10": "C",
+      "11": "B",
+      "12": "C",
+      "13": "C",
+      "14": "E",
+      "15": "E",
+      "16": "D",
+      "17": "D",
+      "18": "C",
+      "19": "B",
+      "20": "A",
+      "21": "A",
+      "22": "B",
+      "23": "C",
+      "24": "B",
+      "25": "BLANK"
+    },
+    "uncertainQuestions": [
+      "16"
+    ],
+    "status": "REVIEW_REQUIRED",
+    "score": 16,
+    "correct": 8,
+    "incorrect": 16,
+    "blank": 1,
+    "details": [
+      {
+        "question": 1,
+        "studentAnswer": "A",
+        "correctAnswer": "D",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 2,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 3,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 4,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 5,
+        "studentAnswer": "B",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 6,
+        "studentAnswer": "C",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 7,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 8,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 9,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 10,
+        "studentAnswer": "C",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 11,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 12,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 13,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 14,
+        "studentAnswer": "E",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 15,
+        "studentAnswer": "E",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 16,
+        "studentAnswer": "D",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 17,
+        "studentAnswer": "D",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 18,
+        "studentAnswer": "C",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 19,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 20,
+        "studentAnswer": "A",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 21,
+        "studentAnswer": "A",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 22,
+        "studentAnswer": "B",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 23,
+        "studentAnswer": "C",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 24,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 25,
+        "studentAnswer": "BLANK",
+        "correctAnswer": "B",
+        "result": "Blank",
+        "marks": 0
+      }
+    ],
+    "createdAt": "2026-09-09T07:35:10.751Z",
+    "updatedAt": "2026-09-09T07:39:21.409Z"
+  },
+  {
+    "id": "46a332dc-d5b7-478e-85cf-39eae64bc024",
+    "examId": "2245e317-d6ae-4d20-8db6-10b9b75de57b",
+    "imageUrl": "/uploads/student-sheets/46a332dc-d5b7-478e-85cf-39eae64bc024.jpeg",
+    "originalName": "ansclick.jpeg",
+    "studentName": "Santosh Nag",
+    "rollNumber": null,
+    "extractedAnswers": {
+      "1": "A",
+      "2": "B",
+      "3": "C",
+      "4": "B",
+      "5": "B",
+      "6": "C",
+      "7": "B",
+      "8": "B",
+      "9": "B",
+      "10": "C",
+      "11": "B",
+      "12": "C",
+      "13": "C",
+      "14": "E",
+      "15": "E",
+      "16": "D",
+      "17": "D",
+      "18": "C",
+      "19": "B",
+      "20": "A",
+      "21": "A",
+      "22": "B",
+      "23": "C",
+      "24": "B",
+      "25": "BLANK"
+    },
+    "uncertainQuestions": [],
+    "status": "COMPLETED",
+    "score": 11,
+    "correct": 7,
+    "incorrect": 17,
+    "blank": 1,
+    "details": [
+      {
+        "question": 1,
+        "studentAnswer": "A",
+        "correctAnswer": "D",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 2,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 3,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 4,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 5,
+        "studentAnswer": "B",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 6,
+        "studentAnswer": "C",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 7,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 8,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 9,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 10,
+        "studentAnswer": "C",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 11,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 12,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 13,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 14,
+        "studentAnswer": "E",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 15,
+        "studentAnswer": "E",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 16,
+        "studentAnswer": "D",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 17,
+        "studentAnswer": "D",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 18,
+        "studentAnswer": "C",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 19,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 20,
+        "studentAnswer": "A",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 21,
+        "studentAnswer": "A",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 22,
+        "studentAnswer": "B",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 23,
+        "studentAnswer": "C",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 24,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 25,
+        "studentAnswer": "BLANK",
+        "correctAnswer": "B",
+        "result": "Blank",
+        "marks": 0
+      }
+    ],
+    "createdAt": "2026-09-09T07:36:19.952Z",
+    "updatedAt": "2026-09-09T07:39:02.521Z"
+  },
+  {
+    "id": "33820d9d-c149-4357-b8b6-d34ae7f0fa6c",
+    "examId": "2245e317-d6ae-4d20-8db6-10b9b75de57b",
+    "imageUrl": "/uploads/student-sheets/33820d9d-c149-4357-b8b6-d34ae7f0fa6c.jpeg",
+    "originalName": "examp2.jpeg",
+    "studentName": "Priam Chakraborty",
+    "rollNumber": null,
+    "extractedAnswers": {
+      "1": "A",
+      "2": "UNCERTAIN",
+      "3": "C",
+      "4": "B",
+      "5": "B",
+      "6": "C",
+      "7": "A",
+      "8": "A",
+      "9": "B",
+      "10": "BLANK",
+      "11": "C",
+      "12": "E",
+      "13": "D",
+      "14": "BLANK",
+      "15": "B",
+      "16": "B",
+      "17": "A",
+      "18": "A",
+      "19": "A",
+      "20": "A",
+      "21": "D",
+      "22": "E",
+      "23": "UNCERTAIN",
+      "24": "C",
+      "25": "D"
+    },
+    "uncertainQuestions": [
+      "2",
+      "23"
+    ],
+    "status": "REVIEW_REQUIRED",
+    "score": -3,
+    "correct": 4,
+    "incorrect": 19,
+    "blank": 2,
+    "details": [
+      {
+        "question": 1,
+        "studentAnswer": "A",
+        "correctAnswer": "D",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 2,
+        "studentAnswer": "UNCERTAIN",
+        "correctAnswer": "B",
+        "result": "Uncertain",
+        "marks": -1
+      },
+      {
+        "question": 3,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 4,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 5,
+        "studentAnswer": "B",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 6,
+        "studentAnswer": "C",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 7,
+        "studentAnswer": "A",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 8,
+        "studentAnswer": "A",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 9,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 10,
+        "studentAnswer": "BLANK",
+        "correctAnswer": "A",
+        "result": "Blank",
+        "marks": 0
+      },
+      {
+        "question": 11,
+        "studentAnswer": "C",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 12,
+        "studentAnswer": "E",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 13,
+        "studentAnswer": "D",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 14,
+        "studentAnswer": "BLANK",
+        "correctAnswer": "A",
+        "result": "Blank",
+        "marks": 0
+      },
+      {
+        "question": 15,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 16,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 17,
+        "studentAnswer": "A",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 18,
+        "studentAnswer": "A",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 19,
+        "studentAnswer": "A",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 20,
+        "studentAnswer": "A",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 21,
+        "studentAnswer": "D",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 22,
+        "studentAnswer": "E",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 23,
+        "studentAnswer": "UNCERTAIN",
+        "correctAnswer": "A",
+        "result": "Uncertain",
+        "marks": -1
+      },
+      {
+        "question": 24,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 25,
+        "studentAnswer": "D",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      }
+    ],
+    "createdAt": "2026-09-09T07:42:46.519Z",
+    "updatedAt": "2026-09-09T07:42:52.604Z"
+  },
+  {
+    "id": "d95dbc67-ed67-4d89-8bf8-1f1a1318699b",
+    "examId": "94e32570-032f-4e35-81d3-32a4bc66ffa3",
+    "imageUrl": "/uploads/student-sheets/d95dbc67-ed67-4d89-8bf8-1f1a1318699b.jpeg",
+    "originalName": "ansclick.jpeg",
+    "studentName": "Santosh Nag",
+    "rollNumber": null,
+    "extractedAnswers": {
+      "1": "A",
+      "2": "B",
+      "3": "C",
+      "4": "B",
+      "5": "B",
+      "6": "C",
+      "7": "B",
+      "8": "B",
+      "9": "B",
+      "10": "C",
+      "11": "B",
+      "12": "C",
+      "13": "C",
+      "14": "E",
+      "15": "E",
+      "16": "D",
+      "17": "D",
+      "18": "C",
+      "19": "B",
+      "20": "A",
+      "21": "A",
+      "22": "B",
+      "23": "C",
+      "24": "B",
+      "25": "BLANK"
+    },
+    "uncertainQuestions": [],
+    "status": "COMPLETED",
+    "score": 9,
+    "correct": 7,
+    "incorrect": 17,
+    "blank": 1,
+    "details": [
+      {
+        "question": 1,
+        "studentAnswer": "A",
+        "correctAnswer": "D",
+        "result": "Incorrect",
+        "marks": 0
+      },
+      {
+        "question": 2,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 1
+      },
+      {
+        "question": 3,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 1
+      },
+      {
+        "question": 4,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 1
+      },
+      {
+        "question": 5,
+        "studentAnswer": "B",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": 0
+      },
+      {
+        "question": 6,
+        "studentAnswer": "C",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": 0
+      },
+      {
+        "question": 7,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": 0
+      },
+      {
+        "question": 8,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": 0
+      },
+      {
+        "question": 9,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": 0
+      },
+      {
+        "question": 10,
+        "studentAnswer": "C",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": 0
+      },
+      {
+        "question": 11,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 12,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 13,
+        "studentAnswer": "C",
+        "correctAnswer": "C",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 14,
+        "studentAnswer": "E",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 15,
+        "studentAnswer": "E",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 16,
+        "studentAnswer": "D",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 17,
+        "studentAnswer": "D",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 18,
+        "studentAnswer": "C",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 19,
+        "studentAnswer": "B",
+        "correctAnswer": "B",
+        "result": "Correct",
+        "marks": 4
+      },
+      {
+        "question": 20,
+        "studentAnswer": "A",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 21,
+        "studentAnswer": "A",
+        "correctAnswer": "B",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 22,
+        "studentAnswer": "B",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 23,
+        "studentAnswer": "C",
+        "correctAnswer": "A",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 24,
+        "studentAnswer": "B",
+        "correctAnswer": "C",
+        "result": "Incorrect",
+        "marks": -1
+      },
+      {
+        "question": 25,
+        "studentAnswer": "BLANK",
+        "correctAnswer": "B",
+        "result": "Blank",
+        "marks": 0
+      }
+    ],
+    "createdAt": "2026-09-09T08:51:35.612Z",
+    "updatedAt": "2026-09-09T08:51:42.014Z"
+  }
+]
