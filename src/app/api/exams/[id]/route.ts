@@ -64,6 +64,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   }
   if (body.status) exams[idx].status = body.status;
 
+  // Allow updating sheetType
+  if (body.sheetType && ["bubble","handwritten","auto"].includes(String(body.sheetType))) {
+    exams[idx].sheetType = body.sheetType as any;
+  }
+
   // Allow updating markingScheme (variable marking)
   let markingSchemeChanged = false;
   if (body.markingScheme) {

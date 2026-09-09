@@ -40,9 +40,42 @@ export default function ScanPage() {
     return ()=> clearInterval(iv);
   },[id]);
 
-  const addFiles = (files: FileList | null) => {
+  const [dragActive, setDragActive] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  const handleDragEnter = (e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    dragCounterRef.current++;
+    if (e.dataTransfer?.types?.includes("Files")) setDragActive(true);
+  };
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+    if (e.dataTransfer?.types?.includes("Files")) setDragActive(true);
+  };
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    dragCounterRef.current = Math.max(0, dragCounterRef.current - 1);
+    if (dragCounterRef.current === 0) setDragActive(false);
+  };
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault(); e.stopPropagation();
+    dragCounterRef.current = 0;
+    setDragActive(false);
+    if (subs.length >= MAX_SHEETS) { alert(`Maximum ${MAX_SHEETS} sheets reached`); return; }
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) {
+      addFiles(files);
+      // also check if we exceed remaining
+      if (subs.length + files.length > MAX_SHEETS) {
+        // addFiles will trim and alert; extra guard not needed
+      }
+    }
+  };
+
+  const addFiles = (files: FileList | File[] | null) => {
     if (!files) return;
-    const arr = Array.from(files);
+    const arr = Array.from(files as any) as File[];
     // allow images (including HEIC on iPhone), pdf
     const valid = arr.filter(f => {
       const name = f.name.toLowerCase();
@@ -85,6 +118,18 @@ export default function ScanPage() {
     if (cameraInputRef.current) cameraInputRef.current.value="";
   };
 
+  const [updatingSheetType, setUpdatingSheetType] = useState(false);
+  const updateSheetType = async (newType: string) => {
+    setUpdatingSheetType(true);
+    try {
+      const res = await fetch(`/api/exams/${id}`, { method:"PATCH", headers:{ "Content-Type":"application/json"}, body: JSON.stringify({ sheetType: newType })});
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.error || "Failed");
+      setExam(data);
+    } catch(e:any){ alert(e.message); }
+    finally { setUpdatingSheetType(false); }
+  };
+
   const submitBatch = async () => {
     if (previews.length === 0) return;
     if (subs.length >= MAX_SHEETS) { alert(`Maximum ${MAX_SHEETS} sheets reached`); return; }
@@ -96,6 +141,8 @@ export default function ScanPage() {
     setUploadProgress(`Uploading ${previews.length} sheet${previews.length>1?'s':''}...`);
     const fd = new FormData();
     previews.forEach(p => fd.append("file", p.file));
+    // Pass exam sheetType so vision uses correct prompt (bubble / handwritten / auto)
+    if (exam?.sheetType) fd.append("sheetType", exam.sheetType);
     try{
       const res = await fetch(`/api/exams/${id}/submissions`, {method:"POST", body: fd});
       const data = await res.json();
@@ -123,6 +170,22 @@ export default function ScanPage() {
               const schemeShort = exam.markingScheme && exam.markingScheme.length>1 ? exam.markingScheme.map((s:any)=>`Q${s.from}-${s.to} +${s.marks}/-${s.negativeMarks}`).join(" • ") : `${exam.marksPerQuestion}×${exam.questionCount}=${max}`;
               return <p className="text-xs text-slate-500 truncate">{exam.questionCount} Q • Max {max} • {schemeShort} • {subs.length}/{MAX_SHEETS} sheets</p>;
             })()}
+            <div className="flex items-center gap-1.5 mt-1">
+              <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${exam.sheetType==="handwritten"?"bg-amber-50 text-amber-700 border-amber-200": exam.sheetType==="auto"?"bg-indigo-50 text-indigo-700 border-indigo-200":"bg-slate-100 text-slate-600 border-slate-200"}`}>
+                {exam.sheetType==="handwritten" ? "✍️ Handwritten list (1.a 2.b)" : exam.sheetType==="auto" ? "🔀 Auto (bubble + handwritten)" : "⭕ Bubble OMR"}
+              </span>
+              <select
+                value={exam.sheetType || "bubble"}
+                onChange={e=>updateSheetType(e.target.value)}
+                disabled={updatingSheetType}
+                className="text-[10px] border border-slate-200 rounded-full px-1.5 py-0.5 bg-white text-slate-600 disabled:opacity-50"
+                title="Change sheet type (same grading, different Vision prompt)"
+              >
+                <option value="auto">Auto</option>
+                <option value="bubble">Bubble</option>
+                <option value="handwritten">Handwritten</option>
+              </select>
+            </div>
           </div>
           <Link href={`/exam/${id}/results`} className="text-xs bg-slate-900 hover:bg-black text-white px-4 py-2 rounded-full font-medium shrink-0 min-h-[36px] flex items-center">View Results</Link>
         </div>
@@ -138,12 +201,28 @@ export default function ScanPage() {
           </div>
         )}
 
-        {/* Progress */}
-        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-sm">
+        {/* Progress — drag & drop enabled */}
+        <div
+          onDragEnter={handleDragEnter}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`relative bg-white rounded-2xl p-4 sm:p-5 border shadow-sm transition ${dragActive ? "border-indigo-400 ring-2 ring-indigo-300 bg-indigo-50/40" : "border-slate-200"}`}
+        >
+          {dragActive && (
+            <div className="absolute inset-0 z-20 bg-indigo-500/10 backdrop-blur-[1px] rounded-2xl border-2 border-dashed border-indigo-400 flex flex-col items-center justify-center pointer-events-none">
+              <span className="text-2xl">📥</span>
+              <span className="text-sm font-semibold text-indigo-700 mt-1">Drop sheets here</span>
+              <span className="text-xs text-indigo-600">JPG, PNG, PDF, HEIC — up to 50 at once</span>
+            </div>
+          )}
           <div className="flex justify-between items-center gap-3">
             <h2 className="font-semibold text-sm text-slate-900">Scan Student Sheets</h2>
             <span className={`text-xs px-2.5 py-1 rounded-full font-medium border ${remaining<10?"bg-amber-50 text-amber-700 border-amber-200":"bg-slate-100 text-slate-600 border-slate-200"}`}>{subs.length}/{MAX_SHEETS} uploaded • {remaining} left</span>
           </div>
+          {exam.sheetType==="handwritten" && <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">✍️ Handwritten mode — students write <code className="bg-amber-100 px-1 rounded">1.a 2.b 3.c</code> / <code className="bg-amber-100 px-1 rounded">1:a 2:c</code> on plain paper. Same Vision pipeline, handwritten prompt. Upload photo of the list.</p>}
+          {exam.sheetType==="auto" && <p className="mt-2 text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">🔀 Auto mode — bubble OMR <em>or</em> handwritten list (<code className="bg-indigo-100 px-1 rounded">1.a 2.b</code>) both work. Vision detects per photo.</p>}
+          {exam.sheetType==="bubble" && <p className="mt-2 text-[11px] text-slate-500">⭕ Bubble OMR mode — fill circles. Switch to Handwritten above if students write <code className="bg-slate-100 px-1 rounded">1.a 2.b</code> on paper.</p>}
 
           {previews.length === 0 ? (
             <div className="mt-4 space-y-3">
@@ -163,10 +242,14 @@ export default function ScanPage() {
                 </button>
               </div>
 
-              {/* Desktop big drop zone */}
-              <button type="button" onClick={()=> fileInputRef.current?.click()} className="hidden sm:flex border-2 border-dashed border-slate-200 hover:border-indigo-300 rounded-xl py-6 flex-col items-center justify-center cursor-pointer hover:bg-indigo-50/30 transition bg-slate-50/50 w-full">
-                <span className="text-sm font-medium text-slate-600">Or drag & drop / click to batch select</span>
-                <span className="text-xs text-slate-400 mt-1">Select up to 50 sheets at once — all will be processed in background</span>
+              {/* Desktop big drop zone — also a real drop target (outer card handles drops, this is visual cue) */}
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="hidden sm:flex border-2 border-dashed border-slate-200 hover:border-indigo-300 rounded-xl py-6 flex-col items-center justify-center cursor-pointer hover:bg-indigo-50/30 transition bg-slate-50/50 w-full"
+              >
+                <span className="text-sm font-medium text-slate-600">Drag & drop sheets here or click to browse</span>
+                <span className="text-xs text-slate-400 mt-1">Up to 50 at once — bubble OMR or handwritten list (1.a 2.b) — background processing</span>
               </button>
 
               <p className="text-xs text-slate-400 text-center leading-relaxed">Batch supported — select many sheets at once. Each is processed in background; you don&apos;t need to wait.</p>
@@ -178,6 +261,9 @@ export default function ScanPage() {
                 <p className="text-sm font-medium text-slate-700">{previews.length} sheet{previews.length>1?'s':''} selected</p>
                 <button onClick={clearAll} className="text-xs text-slate-500 hover:text-slate-700 underline">Clear all</button>
               </div>
+              <p className="text-[11px] text-slate-500 bg-slate-50 border border-dashed border-slate-200 rounded-lg px-3 py-2 text-center">
+                You can drag & drop more sheets anywhere on this card — or tap <span className="font-medium">Add more</span>
+              </p>
 
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3 max-h-[50vh] overflow-y-auto pr-1">
                 {previews.map((p, idx) => (

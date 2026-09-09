@@ -1,25 +1,97 @@
-import { VisionExtractionResult } from "./types";
+import { VisionExtractionResult, SheetType } from "./types";
 import fs from "fs";
 import path from "path";
 import { getLLMConfig, getChatCompletionsUrl } from "./llm";
 
 /**
- * Abstraction: extractAnswerSheet(imageBuffer, questionCount)
- * Supports OpenAI and OpenRouter (any OpenAI-compatible endpoint) via src/lib/llm.ts
- * If no API key is set or MOCK_VISION=true, uses deterministic mock for demo/testing.
+ * Abstraction: extractAnswerSheet(imagePath, questionCount, sheetType)
+ * Supports both bubble OMR and handwritten list (e.g. "1.a 2.b ...").
+ * sheetType: "bubble" | "handwritten" | "auto"  (auto = detect)
+ * Uses same LLM backend; just switches system prompt.
+ * If no API key or MOCK_VISION=true, uses deterministic mock for demo/testing.
  */
 
-export async function extractAnswerSheet(imagePath: string, questionCount: number): Promise<VisionExtractionResult> {
+export async function extractAnswerSheet(
+  imagePath: string,
+  questionCount: number,
+  sheetType: SheetType = "bubble"
+): Promise<VisionExtractionResult> {
   const cfg = getLLMConfig();
   if (!cfg) {
-    console.warn("[vision] No LLM config — using MOCK extraction (demo data). Set OPENROUTER_API_KEY and MOCK_VISION=false for real sheets.");
+    console.warn(`[vision] No LLM config — using MOCK extraction (${sheetType}) (demo data). Set OPENROUTER_API_KEY and MOCK_VISION=false for real sheets.`);
     return mockExtraction(questionCount, imagePath);
   }
   // Live mode: do NOT silently fall back to mock — surface error so teacher knows Vision LLM failed
-  return await visionLLMExtraction(imagePath, questionCount, cfg);
+  return await visionLLMExtraction(imagePath, questionCount, cfg, sheetType);
 }
 
-async function visionLLMExtraction(imagePath: string, questionCount: number, cfg: import("./llm").LLMConfig): Promise<VisionExtractionResult> {
+function buildSystemPrompt(questionCount: number, sheetType: SheetType): string {
+  const base = `Extract:
+1. Student name (handwritten at top, e.g. "Santosh Nag")
+2. Roll number if visible
+3. Marked answer for every question (1..${questionCount})`;
+
+  const format = `Allowed answers: A, B, C, D, E, BLANK, MULTIPLE, UNCERTAIN
+- E is valid if sheet has A-E options (otherwise ignore)
+- Do not guess. If answer cannot be confidently determined, return UNCERTAIN.
+- If no answer is visible, return BLANK.
+Return only structured JSON with keys: student_name, roll_number, answers, uncertain_questions.
+answers must have keys "1" to "${questionCount}".
+uncertain_questions is array of question numbers where answer is UNCERTAIN or MULTIPLE.`;
+
+  if (sheetType === "bubble") {
+    return `You are reading a student's MCQ bubble answer sheet (OMR — circles/bubbles filled).
+${base}
+- If more than one bubble is filled for same question, return MULTIPLE.
+- If no bubble is filled, return BLANK.
+${format}`;
+  }
+
+  if (sheetType === "handwritten") {
+    return `You are reading a student's handwritten MCQ answer list on plain paper.
+Students write answers as a numbered list, e.g.:
+  "1. a  2. b  3. c  4. d"
+  "1:a 2:c 3:b ..."
+  "1) A  2) B"
+  "Q1 - A , Q2 - C"
+  or two columns, one answer per line.
+
+${base}
+- Handwriting may be cursive/print, upper or lower case (a/b/c/d). Normalize to uppercase A/B/C/D.
+- Separators vary: ".", ")", ":", "-", "," or space. Example "1.a" means Q1=A, "12 - c" means Q12=C.
+- If a question number is missing/skipped, treat as BLANK.
+- If handwriting is illegible/crossed-out/with two letters, return UNCERTAIN (use MULTIPLE only if two distinct options are clearly written).
+- Be tolerant of numbering styles but strict about letter: only A-E are valid options.
+${format}`;
+  }
+
+  // auto: detect
+  return `You are reading a student's MCQ answer sheet. It may be EITHER:
+(A) a bubble/OMR sheet (filled circles), OR
+(B) a handwritten answer list on plain paper (e.g. "1. a  2. b  3. c ...", "1:a 2:c", "Q1 - A").
+
+First determine the sheet type, then:
+${base}
+
+For BUBBLE sheets:
+- If more than one bubble filled for same question, return MULTIPLE.
+- If no bubble filled, return BLANK.
+
+For HANDWRITTEN lists:
+- Students write "1. a  2. b ..." with separators ".", ")", ":", "-", ",", space. Normalize a/b/c/d -> A/B/C/D.
+- Missing number -> BLANK. Illegible/crossed-out/two letters -> UNCERTAIN.
+- Only A-E are valid option letters.
+
+${format}
+Always return JSON with the same schema regardless of sheet type.`;
+}
+
+async function visionLLMExtraction(
+  imagePath: string,
+  questionCount: number,
+  cfg: import("./llm").LLMConfig,
+  sheetType: SheetType = "bubble"
+): Promise<VisionExtractionResult> {
   // imagePath is like /uploads/student-sheets/xxx.jpeg -> on disk at public/uploads/...
   const candidates = [
     path.join(process.cwd(), "public", imagePath.replace(/^\//, "")),
@@ -44,20 +116,7 @@ async function visionLLMExtraction(imagePath: string, questionCount: number, cfg
   // For PDF, we'd need to convert to image; for MVP send as image or skip
   // Simplified: assume image
 
-  const systemPrompt = `You are reading a student's MCQ bubble answer sheet.
-Extract:
-1. Student name (handwritten at top, e.g. "Santosh Nag")
-2. Roll number if visible
-3. Marked answer for every question (1..${questionCount})
-
-Allowed answers: A, B, C, D, E, BLANK, MULTIPLE, UNCERTAIN
-- E is valid if sheet has A-E options (otherwise ignore)
-- Do not guess. If bubble cannot be confidently determined, return UNCERTAIN.
-- If more than one bubble is filled for same question, return MULTIPLE.
-- If no bubble is filled, return BLANK.
-Return only structured JSON with keys: student_name, roll_number, answers, uncertain_questions.
-answers must have keys "1" to "${questionCount}".
-uncertain_questions is array of question numbers where answer is UNCERTAIN or MULTIPLE.`;
+  const systemPrompt = buildSystemPrompt(questionCount, sheetType);
 
   const url = getChatCompletionsUrl(cfg.baseUrl);
   const res = await fetch(url, {
@@ -70,7 +129,7 @@ uncertain_questions is array of question numbers where answer is UNCERTAIN or MU
         {
           role: "user",
           content: [
-            { type: "text", text: `Expected number of questions: ${questionCount}. Extract the answers.` },
+            { type: "text", text: `Expected number of questions: ${questionCount}. Sheet type hint: ${sheetType} (if auto, detect whether bubble OMR or handwritten list). Extract the answers.` },
             { type: "image_url", image_url: { url: `data:${mime};base64,${base64}` } },
           ],
         },
@@ -168,7 +227,7 @@ export function validateVisionResult(result: VisionExtractionResult, questionCou
   const keys = Object.keys(result.answers);
   if (keys.length !== questionCount) return false;
   for (const v of Object.values(result.answers)) {
-    if (!["A","B","C","D","BLANK","MULTIPLE","UNCERTAIN"].includes(v)) return false;
+    if (!["A","B","C","D","E","BLANK","MULTIPLE","UNCERTAIN"].includes(v)) return false;
   }
   return true;
 }

@@ -46,7 +46,8 @@
         "marks": 4,
         "negativeMarks": 1
       }
-    ]
+    ],
+    "sheetType": "bubble"
   },
   {
     "id": "2245e317-d6ae-4d20-8db6-10b9b75de57b",
@@ -95,7 +96,8 @@
         "marks": 4,
         "negativeMarks": 1
       }
-    ]
+    ],
+    "sheetType": "bubble"
   },
   {
     "id": "94e32570-032f-4e35-81d3-32a4bc66ffa3",
@@ -150,6 +152,7 @@
       "25": "B"
     },
     "createdAt": "2026-09-09T08:51:04.289Z",
-    "status": "scanning"
+    "status": "scanning",
+    "sheetType": "auto"
   }
 ]

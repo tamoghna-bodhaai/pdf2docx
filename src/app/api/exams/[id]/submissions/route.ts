@@ -90,6 +90,25 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
   const examIdx = exams.findIndex(e => e.id === examId);
   if (examIdx !== -1) { exams[examIdx].status = "scanning"; writeExams(exams); }
 
+  // Determine sheetType for vision (prefer per-upload override, else exam setting; default auto/bubble)
+  // Allow client to send sheetType via FormData for mixed batches (optional)
+  let uploadSheetType: string | null = null;
+  try {
+    const st = (formData.get("sheetType") as string | null)?.trim().toLowerCase();
+    if (st && ["bubble","handwritten","auto"].includes(st)) uploadSheetType = st;
+  } catch {}
+  const effectiveSheetType = (uploadSheetType as any) || (exam as any).sheetType || "bubble";
+
+  // Persist sheetType on submissions for traceability
+  if (effectiveSheetType) {
+    const allForUpdate = readSubmissions();
+    for (const c of created) {
+      const i = allForUpdate.findIndex(s=>s.id===c.id);
+      if (i!==-1) { (allForUpdate[i] as any).sheetType = effectiveSheetType; }
+    }
+    writeSubmissions(allForUpdate);
+  }
+
   // Fire background processing for each submission asynchronously
   for (const sub of created) {
     const delay = 1500 + Math.random() * 2000;
@@ -102,7 +121,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         current[idx].updatedAt = new Date().toISOString();
         writeSubmissions(current);
 
-        const result = await extractAnswerSheet(sub.imageUrl, exam.questionCount);
+        // Pass exam's sheetType (or upload override) to vision extractor — same pipeline, different prompt
+        const result = await extractAnswerSheet(sub.imageUrl, exam.questionCount, effectiveSheetType as any);
 
         // Re-fetch exam inside background task to get latest scheme (in case it changed after upload)
         const latestExam = getExam(examId) ?? exam;

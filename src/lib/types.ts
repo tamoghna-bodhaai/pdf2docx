@@ -1,5 +1,6 @@
 export type ExamStatus = "draft" | "answer_key_ready" | "scanning" | "completed";
 export type SubmissionStatus = "UPLOADED" | "PROCESSING" | "COMPLETED" | "REVIEW_REQUIRED" | "FAILED";
+export type SheetType = "bubble" | "handwritten" | "auto";
 
 export interface MarkingSchemeSection {
   from: number;
@@ -16,6 +17,7 @@ export interface Exam {
   marksPerQuestion: number; // deprecated: kept for backwards compat, use markingScheme
   negativeMarks: number; // deprecated
   markingScheme: MarkingSchemeSection[];
+  sheetType: SheetType; // "bubble" (OMR), "handwritten" (1.a 2.b list), "auto" (detect)
   questionPaperUrl: string | null;
   questionPaperName: string | null;
   answerKeyUrl: string | null;
@@ -34,6 +36,7 @@ export interface Submission {
   rollNumber: string | null;
   extractedAnswers: Record<string, string> | null;
   uncertainQuestions: string[];
+  sheetType?: SheetType; // how this sheet was interpreted; defaults to exam sheetType
   status: SubmissionStatus;
   score: number | null;
   correct: number | null;

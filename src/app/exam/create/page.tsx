@@ -8,6 +8,7 @@ type Section = { from: number; to: number; marks: number; negativeMarks: number 
 export default function CreateExamPage() {
   const router = useRouter();
   const [form, setForm] = useState({ name:"", subject:"", questionCount:"30", marksPerQuestion:"1", negativeMarks:"0" });
+  const [sheetType, setSheetType] = useState<"bubble"|"handwritten"|"auto">("auto");
   const [mode, setMode] = useState<"uniform"|"variable">("uniform");
   const [sections, setSections] = useState<Section[]>([{ from:1, to:30, marks:1, negativeMarks:0 }]);
   const [qpFile, setQpFile] = useState<File | null>(null);
@@ -142,6 +143,7 @@ export default function CreateExamPage() {
     fd.append("name", form.name);
     fd.append("subject", form.subject);
     fd.append("questionCount", form.questionCount);
+    fd.append("sheetType", sheetType);
     if(mode==="uniform"){
       fd.append("marksPerQuestion", form.marksPerQuestion);
       fd.append("negativeMarks", form.negativeMarks);
@@ -189,6 +191,31 @@ export default function CreateExamPage() {
               <span className="text-sm font-medium text-slate-700">Total Questions *</span>
               <input type="number" min={1} max={200} value={form.questionCount} onChange={e=>setForm({...form, questionCount:e.target.value})} className="w-full border border-slate-200 rounded-xl px-3 py-3 sm:py-2.5 text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none" required />
             </label>
+
+            {/* Sheet Type — bubble vs handwritten uses same Vision pipeline, different prompt */}
+            <div className="border border-slate-200 rounded-xl p-3 sm:p-4 bg-white space-y-2">
+              <span className="text-sm font-semibold text-slate-800">Answer Sheet Format</span>
+              <p className="text-xs text-slate-500">Same Vision grading pipeline — only the extraction prompt changes. Handwritten = plain paper list like <code className="bg-slate-100 px-1 rounded">1.a 2.b 3.c</code>. Upload a photo either way.</p>
+              <div className="grid grid-cols-3 gap-2">
+                {([
+                  { id:"auto", label:"Auto (Both)", desc:"Detect" },
+                  { id:"bubble", label:"Bubble OMR", desc:"Circles" },
+                  { id:"handwritten", label:"Handwritten", desc:"1.a 2.b" },
+                ] as const).map(o=>(
+                  <button
+                    key={o.id}
+                    type="button"
+                    onClick={()=>setSheetType(o.id)}
+                    className={`border rounded-xl px-2 py-2.5 text-center transition ${sheetType===o.id ? "bg-indigo-600 text-white border-indigo-600 shadow" : "bg-slate-50 border-slate-200 hover:border-indigo-200 hover:bg-white text-slate-700"}`}
+                  >
+                    <span className="block text-xs font-semibold leading-none">{o.label}</span>
+                    <span className={`block text-[11px] mt-1 ${sheetType===o.id?"text-indigo-100":"text-slate-500"}`}>{o.desc}</span>
+                  </button>
+                ))}
+              </div>
+              {sheetType==="handwritten" && <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">Students write options by hand (e.g. <code className="bg-amber-100 px-1 rounded">1. a  2. c  3. b</code>, <code className="bg-amber-100 px-1 rounded">1:a 2:b</code>, <code className="bg-amber-100 px-1 rounded">Q1 - A</code>) — upload the photo. Lower/upper case both ok.</p>}
+              {sheetType==="auto" && <p className="text-[11px] text-slate-500">Auto detects bubble OMR vs handwritten list per photo. Best for mixed classes.</p>}
+            </div>
 
             {/* Marking Scheme Mode */}
             <div className="border border-slate-200 rounded-xl p-3 sm:p-4 bg-slate-50/50 space-y-3">

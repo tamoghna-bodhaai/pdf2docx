@@ -5,7 +5,7 @@ import fs from "fs";
 import { readExams, writeExams } from "@/lib/db";
 import { extractAnswerKey } from "@/lib/answerKeyExtractor";
 import { validateMarkingScheme, normalizeMarkingScheme } from "@/lib/markingScheme";
-import { MarkingSchemeSection } from "@/lib/types";
+import { MarkingSchemeSection, SheetType } from "@/lib/types";
 
 export async function GET() {
   const exams = readExams().sort((a,b)=> new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime());
@@ -21,6 +21,8 @@ export async function POST(req: NextRequest) {
     let marksPerQuestion = parseFloat(String(formData.get("marksPerQuestion") || "1"));
     let negativeMarks = parseFloat(String(formData.get("negativeMarks") || "0"));
     const markingSchemeRaw = String(formData.get("markingScheme") || "").trim();
+    const sheetTypeRaw = String(formData.get("sheetType") || "auto").trim().toLowerCase();
+    const sheetType: SheetType = (["bubble","handwritten","auto"].includes(sheetTypeRaw) ? sheetTypeRaw : "auto") as SheetType;
     const questionPaper = formData.get("questionPaper") as File | null;
     const answerKeyFile = formData.get("answerKey") as File | null;
     const manualAnswerKey = String(formData.get("manualAnswerKey") || "").trim();
@@ -138,6 +140,7 @@ export async function POST(req: NextRequest) {
       marksPerQuestion,
       negativeMarks,
       markingScheme,
+      sheetType,
       questionPaperUrl,
       questionPaperName,
       answerKeyUrl,

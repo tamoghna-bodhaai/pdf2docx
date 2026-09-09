@@ -21,16 +21,19 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   const exam = getExam(sub.examId);
   if (!exam || !exam.answerKeyJson) return NextResponse.json({ error: "Exam or answer key missing" }, { status: 400 });
 
-  // Allow editing studentName, rollNumber, extractedAnswers
+  // Allow editing studentName, rollNumber, extractedAnswers, sheetType
   if (body.studentName !== undefined) subs[idx].studentName = body.studentName || null;
   if (body.rollNumber !== undefined) subs[idx].rollNumber = body.rollNumber || null;
+  if (body.sheetType && ["bubble","handwritten","auto"].includes(String(body.sheetType))) {
+    (subs[idx] as any).sheetType = body.sheetType;
+  }
 
   if (body.extractedAnswers) {
     // Validate
     const cleaned: Record<string,string> = {};
     for (const [k,v] of Object.entries(body.extractedAnswers)) {
       const val = String(v).toUpperCase();
-      if (!["A","B","C","D","BLANK","MULTIPLE","UNCERTAIN"].includes(val)) {
+      if (!["A","B","C","D","E","BLANK","MULTIPLE","UNCERTAIN"].includes(val)) {
         return NextResponse.json({ error: `Invalid answer ${val}` }, { status: 400 });
       }
       cleaned[String(parseInt(k,10))] = val;
@@ -70,6 +73,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     // Trigger async reprocess
     const { extractAnswerSheet } = await import("@/lib/visionExtractor");
     const submissionId = id;
+    const retrySheetType = (subs[idx] as any).sheetType || (exam as any).sheetType || "bubble";
     setTimeout(async () => {
       try {
         let current = readSubmissions();
@@ -78,7 +82,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         current[sIdx].status = "PROCESSING";
         current[sIdx].updatedAt = new Date().toISOString();
         writeSubmissions(current);
-        const result = await extractAnswerSheet(current[sIdx].imageUrl, exam.questionCount);
+        const result = await extractAnswerSheet(current[sIdx].imageUrl, exam.questionCount, retrySheetType as any);
         const currentExamId = (current[sIdx] as any).examId ?? sub.examId;
         const latestExam = getExam(currentExamId) ?? exam;
         const scheme2 = getMarkingScheme(latestExam);

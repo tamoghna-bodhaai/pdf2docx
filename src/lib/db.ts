@@ -17,6 +17,10 @@ function migrateExam(exam: any): Exam {
     // legacy fallback
     exam.markingScheme = [{ from: 1, to: exam.questionCount, marks: exam.marksPerQuestion ?? 1, negativeMarks: exam.negativeMarks ?? 0 }];
   }
+  if (!exam.sheetType || !["bubble", "handwritten", "auto"].includes(exam.sheetType)) {
+    // legacy exams were bubble-only; keep behavior stable
+    exam.sheetType = "bubble";
+  }
   // ensure deprecated fields stay in sync for backwards compat display
   // keep them as first section values if uniform, otherwise use first? keep legacy as computed avg not needed; sync not required
   return exam as Exam;
