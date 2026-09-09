@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: omicheckr
+    env: node
+    plan: free
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: 20.19.0
+      - key: MOCK_VISION
+        value: false
+      - key: OPENROUTER_MODEL
+        value: google/gemini-3.5-flash-lite
+      - key: OPENROUTER_VISION_MODEL
+        value: google/gemini-3.5-flash-lite
+      - key: OPENROUTER_APP_NAME
+        value: OmiCheckr
+      # Set these as secrets in Render Dashboard -> Environment (sync: false to avoid committing)
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_SITE_URL
+        sync: false
