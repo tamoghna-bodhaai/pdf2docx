@@ -169,31 +169,31 @@ export default function ScanPage() {
     finally{ setUploading(false)}
   };
 
-  if(!exam) return <div className="p-8 text-center text-sm text-slate-500">Loading...</div>;
+  if(!exam) return <div className="p-8 text-center text-sm text-stone-500">Loading...</div>;
 
   const remaining = MAX_SHEETS - subs.length;
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white sticky top-0 z-10">
+    <div className="min-h-screen bg-[#eef3ee]">
+      <header className="border-b border-stone-200 bg-white sticky top-0 z-10">
         <div className="max-w-2xl mx-auto px-3 sm:px-4 py-3 flex items-center justify-between gap-3">
           <div className="min-w-0">
-            <Link href="/" className="inline-flex items-center gap-1 text-sm font-semibold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-full px-3.5 py-1.5 mb-2 transition" title="Back to home">← Home</Link>
-            <p className="font-bold text-sm text-slate-900 truncate">{exam.name}</p>
+            <Link href="/" className="inline-flex items-center gap-1 text-sm font-semibold text-stone-700 hover:text-stone-900 bg-stone-100 hover:bg-stone-200 border border-stone-200 rounded-full px-3.5 py-1.5 mb-2 transition" title="Back to home">← Home</Link>
+            <p className="font-bold text-sm text-stone-900 truncate">{exam.name}</p>
             {(() => {
               const max = exam.markingScheme ? exam.markingScheme.reduce((s:number,a:any)=> s + (a.to-a.from+1)*a.marks,0) : exam.questionCount * exam.marksPerQuestion;
               const schemeShort = exam.markingScheme && exam.markingScheme.length>1 ? exam.markingScheme.map((s:any)=>`Q${s.from}-${s.to} +${s.marks}/-${s.negativeMarks}`).join(" • ") : `${exam.marksPerQuestion}×${exam.questionCount}=${max}`;
-              return <p className="text-xs text-slate-500 truncate">{exam.questionCount} Q • Max {max} • {schemeShort} • {subs.length}/{MAX_SHEETS} sheets</p>;
+              return <p className="text-xs text-stone-500 truncate">{exam.questionCount} Q • Max {max} • {schemeShort} • {subs.length}/{MAX_SHEETS} sheets</p>;
             })()}
             <div className="flex items-center gap-1.5 mt-1">
-              <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${exam.sheetType==="handwritten"?"bg-amber-50 text-amber-700 border-amber-200": exam.sheetType==="auto"?"bg-indigo-50 text-indigo-700 border-indigo-200":"bg-slate-100 text-slate-600 border-slate-200"}`}>
+              <span className={`text-[10px] px-2 py-0.5 rounded-full border font-medium ${exam.sheetType==="handwritten"?"bg-amber-50 text-amber-700 border-amber-200": exam.sheetType==="auto"?"bg-[#fff1e7] text-[#9a3412] border-[#fecbb8]":"bg-stone-100 text-stone-600 border-stone-200"}`}>
                 {exam.sheetType==="handwritten" ? "✍️ Handwritten list (1.a 2.b)" : exam.sheetType==="auto" ? "🔀 Auto (bubble + handwritten)" : "⭕ Bubble OMR"}
               </span>
               <select
                 value={exam.sheetType || "bubble"}
                 onChange={e=>updateSheetType(e.target.value)}
                 disabled={updatingSheetType}
-                className="text-[10px] border border-slate-200 rounded-full px-1.5 py-0.5 bg-white text-slate-600 disabled:opacity-50"
+                className="text-[10px] border border-stone-200 rounded-full px-1.5 py-0.5 bg-white text-stone-600 disabled:opacity-50"
                 title="Change sheet type (same grading, different Vision prompt)"
               >
                 <option value="auto">Auto</option>
@@ -202,7 +202,7 @@ export default function ScanPage() {
               </select>
             </div>
           </div>
-          <Link href={`/exam/${id}/results`} className="text-xs bg-slate-900 hover:bg-black text-white px-4 py-2 rounded-full font-medium shrink-0 min-h-[36px] flex items-center">View Results</Link>
+          <Link href={`/exam/${id}/results`} className="text-xs bg-stone-900 hover:bg-stone-900 text-white px-4 py-2 rounded-full font-medium shrink-0 min-h-[36px] flex items-center">View Results</Link>
         </div>
       </header>
 
@@ -222,22 +222,22 @@ export default function ScanPage() {
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
-          className={`relative bg-white rounded-2xl p-4 sm:p-5 border shadow-sm transition ${dragActive ? "border-indigo-400 ring-2 ring-indigo-300 bg-indigo-50/40" : "border-slate-200"}`}
+          className={`relative bg-white rounded-2xl p-4 sm:p-5 border shadow-sm transition ${dragActive ? "border-[#9a3412] ring-2 ring-[#fecbb8] bg-[#fff1e7]/40" : "border-stone-200"}`}
         >
           {dragActive && (
-            <div className="absolute inset-0 z-20 bg-indigo-500/10 backdrop-blur-[1px] rounded-2xl border-2 border-dashed border-indigo-400 flex flex-col items-center justify-center pointer-events-none">
+            <div className="absolute inset-0 z-20 bg-[#9a3412]/10 backdrop-blur-[1px] rounded-2xl border-2 border-dashed border-[#9a3412] flex flex-col items-center justify-center pointer-events-none">
               <span className="text-2xl">📥</span>
-              <span className="text-sm font-semibold text-indigo-700 mt-1">Drop sheets here</span>
-              <span className="text-xs text-indigo-600">JPG, PNG, PDF, HEIC — up to 50 at once</span>
+              <span className="text-sm font-semibold text-[#9a3412] mt-1">Drop sheets here</span>
+              <span className="text-xs text-[#9a3412]">JPG, PNG, PDF, HEIC — up to 50 at once</span>
             </div>
           )}
           <div className="flex justify-between items-center gap-3">
-            <h2 className="font-semibold text-sm text-slate-900">Scan Student Sheets</h2>
-            <span className={`text-xs px-2.5 py-1 rounded-full font-medium border ${remaining<10?"bg-amber-50 text-amber-700 border-amber-200":"bg-slate-100 text-slate-600 border-slate-200"}`}>{subs.length}/{MAX_SHEETS} uploaded • {remaining} left</span>
+            <h2 className="font-semibold text-sm text-stone-900">Scan Student Sheets</h2>
+            <span className={`text-xs px-2.5 py-1 rounded-full font-medium border ${remaining<10?"bg-amber-50 text-amber-700 border-amber-200":"bg-stone-100 text-stone-600 border-stone-200"}`}>{subs.length}/{MAX_SHEETS} uploaded • {remaining} left</span>
           </div>
           {exam.sheetType==="handwritten" && <p className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">✍️ Handwritten mode — students write <code className="bg-amber-100 px-1 rounded">1.a 2.b 3.c</code> / <code className="bg-amber-100 px-1 rounded">1:a 2:c</code> on plain paper. Same Vision pipeline, handwritten prompt. Upload photo of the list.</p>}
-          {exam.sheetType==="auto" && <p className="mt-2 text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">🔀 Auto mode — bubble OMR <em>or</em> handwritten list (<code className="bg-indigo-100 px-1 rounded">1.a 2.b</code>) both work. Vision detects per photo.</p>}
-          {exam.sheetType==="bubble" && <p className="mt-2 text-[11px] text-slate-500">⭕ Bubble OMR mode — fill circles. Switch to Handwritten above if students write <code className="bg-slate-100 px-1 rounded">1.a 2.b</code> on paper.</p>}
+          {exam.sheetType==="auto" && <p className="mt-2 text-xs text-[#9a3412] bg-[#fff1e7] border border-[#fecbb8] rounded-lg px-3 py-2">🔀 Auto mode — bubble OMR <em>or</em> handwritten list (<code className="bg-[#ffe4d6] px-1 rounded">1.a 2.b</code>) both work. Vision detects per photo.</p>}
+          {exam.sheetType==="bubble" && <p className="mt-2 text-[11px] text-stone-500">⭕ Bubble OMR mode — fill circles. Switch to Handwritten above if students write <code className="bg-stone-100 px-1 rounded">1.a 2.b</code> on paper.</p>}
 
           {previews.length === 0 ? (
             <div className="mt-4 space-y-3">
@@ -245,15 +245,15 @@ export default function ScanPage() {
               <input ref={cameraInputRef} type="file" accept="image/*,image/heic,image/heif" capture="environment" className="hidden" tabIndex={-1} onChange={e=> { addFiles(e.target.files); e.currentTarget.value=""; }} />
               <input ref={fileInputRef} type="file" accept="image/*,image/heic,image/heif,application/pdf,.jpg,.jpeg,.png,.pdf,.heic,.heif,.webp" multiple className="hidden" tabIndex={-1} onChange={e=> { addFiles(e.target.files); e.currentTarget.value=""; }} />
               <div className="grid grid-cols-2 gap-3">
-                <button type="button" onClick={()=> cameraInputRef.current?.click()} className="bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 text-white rounded-xl py-5 sm:py-6 flex flex-col items-center justify-center cursor-pointer transition min-h-[88px] w-full">
+                <button type="button" onClick={()=> cameraInputRef.current?.click()} className="bg-[#9a3412] hover:bg-[#7c2d12] active:bg-[#7c2d12] text-white rounded-xl py-5 sm:py-6 flex flex-col items-center justify-center cursor-pointer transition min-h-[88px] w-full">
                   <span className="text-lg">📷</span>
                   <span className="text-sm font-medium mt-1">Take Photo</span>
                   <span className="text-[11px] opacity-80">Camera</span>
                 </button>
-                <button type="button" onClick={()=> fileInputRef.current?.click()} className="border-2 border-dashed border-slate-300 hover:border-indigo-300 rounded-xl py-5 sm:py-6 flex flex-col items-center justify-center cursor-pointer hover:bg-slate-50 transition bg-white min-h-[88px] w-full">
+                <button type="button" onClick={()=> fileInputRef.current?.click()} className="border-2 border-dashed border-stone-300 hover:border-[#fecbb8] rounded-xl py-5 sm:py-6 flex flex-col items-center justify-center cursor-pointer hover:bg-[#eef3ee] transition bg-white min-h-[88px] w-full">
                   <span className="text-lg">📁</span>
-                  <span className="text-sm font-medium mt-1 text-slate-700">Upload Files</span>
-                  <span className="text-[11px] text-slate-500">JPG PNG PDF HEIC — batch</span>
+                  <span className="text-sm font-medium mt-1 text-stone-700">Upload Files</span>
+                  <span className="text-[11px] text-stone-500">JPG PNG PDF HEIC — batch</span>
                 </button>
               </div>
 
@@ -261,72 +261,72 @@ export default function ScanPage() {
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="hidden sm:flex border-2 border-dashed border-slate-200 hover:border-indigo-300 rounded-xl py-6 flex-col items-center justify-center cursor-pointer hover:bg-indigo-50/30 transition bg-slate-50/50 w-full"
+                className="hidden sm:flex border-2 border-dashed border-stone-200 hover:border-[#fecbb8] rounded-xl py-6 flex-col items-center justify-center cursor-pointer hover:bg-[#fff1e7]/30 transition bg-[#eef3ee]/50 w-full"
               >
-                <span className="text-sm font-medium text-slate-600">Drag & drop sheets here or click to browse</span>
-                <span className="text-xs text-slate-400 mt-1">Up to 50 at once — bubble OMR or handwritten list (1.a 2.b) — background processing</span>
+                <span className="text-sm font-medium text-stone-600">Drag & drop sheets here or click to browse</span>
+                <span className="text-xs text-stone-400 mt-1">Up to 50 at once — bubble OMR or handwritten list (1.a 2.b) — background processing</span>
               </button>
 
-              <p className="text-xs text-slate-400 text-center leading-relaxed">Batch supported — select many sheets at once. Each is processed in background; you don&apos;t need to wait.</p>
+              <p className="text-xs text-stone-400 text-center leading-relaxed">Batch supported — select many sheets at once. Each is processed in background; you don&apos;t need to wait.</p>
               <p className="text-[11px] text-amber-600 text-center bg-amber-50 border border-amber-200 rounded-lg py-2 px-3 sm:hidden">If picker doesn&apos;t open, use Upload Files → allow camera/gallery permission.</p>
             </div>
           ) : (
             <div className="mt-4 space-y-3">
               <div className="flex items-center justify-between">
-                <p className="text-sm font-medium text-slate-700">{previews.length} sheet{previews.length>1?'s':''} selected</p>
-                <button onClick={clearAll} className="text-xs text-slate-500 hover:text-slate-700 underline">Clear all</button>
+                <p className="text-sm font-medium text-stone-700">{previews.length} sheet{previews.length>1?'s':''} selected</p>
+                <button onClick={clearAll} className="text-xs text-stone-500 hover:text-stone-700 underline">Clear all</button>
               </div>
-              <p className="text-[11px] text-slate-500 bg-slate-50 border border-dashed border-slate-200 rounded-lg px-3 py-2 text-center">
+              <p className="text-[11px] text-stone-500 bg-[#eef3ee] border border-dashed border-stone-200 rounded-lg px-3 py-2 text-center">
                 You can drag & drop more sheets anywhere on this card — or tap <span className="font-medium">Add more</span>
               </p>
 
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 sm:gap-3 max-h-[50vh] overflow-y-auto pr-1">
                 {previews.map((p, idx) => (
-                  <div key={idx} className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50 relative group">
+                  <div key={idx} className="border border-stone-200 rounded-xl overflow-hidden bg-[#eef3ee] relative group">
                     {p.file.type === "application/pdf" || p.file.name.toLowerCase().endsWith(".pdf") || !p.url ? (
-                      <div className="py-8 sm:py-10 text-center bg-slate-100">
+                      <div className="py-8 sm:py-10 text-center bg-stone-100">
                         <p className="text-lg">{p.file.name.toLowerCase().endsWith(".pdf") ? "📄" : "🖼️"}</p>
-                        <p className="text-xs font-medium text-slate-700 px-2 truncate">{p.file.name}</p>
-                        <p className="text-[11px] text-slate-400">{(p.file.size/1024).toFixed(0)} KB { !p.url ? "• preview N/A" : ""}</p>
+                        <p className="text-xs font-medium text-stone-700 px-2 truncate">{p.file.name}</p>
+                        <p className="text-[11px] text-stone-400">{(p.file.size/1024).toFixed(0)} KB { !p.url ? "• preview N/A" : ""}</p>
                       </div>
                     ) : (
                       <img src={p.url} alt={`preview ${idx+1}`} className="w-full h-28 sm:h-32 object-cover" />
                     )}
-                    <div className="px-2 py-1.5 bg-white border-t border-slate-100">
-                      <p className="text-xs font-medium text-slate-700 truncate">{p.file.name}</p>
-                      <p className="text-[11px] text-slate-400">{(p.file.size/1024).toFixed(0)} KB</p>
+                    <div className="px-2 py-1.5 bg-white border-t border-stone-100">
+                      <p className="text-xs font-medium text-stone-700 truncate">{p.file.name}</p>
+                      <p className="text-[11px] text-stone-400">{(p.file.size/1024).toFixed(0)} KB</p>
                     </div>
-                    <button onClick={()=>removePreview(idx)} className="absolute top-1.5 right-1.5 w-7 h-7 bg-black/60 hover:bg-black/80 text-white rounded-full flex items-center justify-center text-xs backdrop-blur">✕</button>
-                    <span className="absolute top-1.5 left-1.5 bg-white/90 backdrop-blur text-xs font-bold px-1.5 py-0.5 rounded-full border border-slate-200">#{idx+1}</span>
+                    <button onClick={()=>removePreview(idx)} className="absolute top-1.5 right-1.5 w-7 h-7 bg-black/60 hover:bg-stone-900/80 text-white rounded-full flex items-center justify-center text-xs backdrop-blur">✕</button>
+                    <span className="absolute top-1.5 left-1.5 bg-white/90 backdrop-blur text-xs font-bold px-1.5 py-0.5 rounded-full border border-stone-200">#{idx+1}</span>
                   </div>
                 ))}
                 {/* Add more tile */}
-                <button type="button" onClick={()=> fileInputRef.current?.click()} className="border-2 border-dashed border-slate-300 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:bg-slate-50 min-h-[120px] sm:min-h-[140px] bg-white w-full">
-                  <span className="text-xl text-slate-400">+</span>
-                  <span className="text-xs text-slate-600 font-medium">Add more</span>
+                <button type="button" onClick={()=> fileInputRef.current?.click()} className="border-2 border-dashed border-stone-300 rounded-xl flex flex-col items-center justify-center cursor-pointer hover:bg-[#eef3ee] min-h-[120px] sm:min-h-[140px] bg-white w-full">
+                  <span className="text-xl text-stone-400">+</span>
+                  <span className="text-xs text-stone-600 font-medium">Add more</span>
                 </button>
               </div>
 
-              {uploadProgress && <p className="text-xs text-center font-medium text-indigo-600 bg-indigo-50 border border-indigo-100 rounded-lg py-2">{uploadProgress}</p>}
+              {uploadProgress && <p className="text-xs text-center font-medium text-[#9a3412] bg-[#fff1e7] border border-[#fecbb8] rounded-lg py-2">{uploadProgress}</p>}
 
               <div className="flex gap-2 sm:gap-3">
-                <button onClick={clearAll} className="flex-1 border border-slate-200 bg-white hover:bg-slate-50 rounded-xl py-3 text-sm font-medium min-h-[44px]">Clear</button>
-                <button onClick={submitBatch} disabled={uploading} className="flex-[2] bg-indigo-600 hover:bg-indigo-700 active:bg-indigo-800 disabled:opacity-50 text-white rounded-xl py-3 text-sm font-bold min-h-[44px] transition">
+                <button onClick={clearAll} className="flex-1 border border-stone-200 bg-white hover:bg-[#eef3ee] rounded-xl py-3 text-sm font-medium min-h-[44px]">Clear</button>
+                <button onClick={submitBatch} disabled={uploading} className="flex-[2] bg-[#9a3412] hover:bg-[#7c2d12] active:bg-[#7c2d12] disabled:opacity-50 text-white rounded-xl py-3 text-sm font-bold min-h-[44px] transition">
                   {uploading ? "Uploading..." : `Upload ${previews.length} & Process →`}
                 </button>
               </div>
-              <p className="text-xs text-slate-400 text-center">Processing happens in background. You can continue adding.</p>
+              <p className="text-xs text-stone-400 text-center">Processing happens in background. You can continue adding.</p>
             </div>
           )}
         </div>
 
         {/* Uploaded papers status */}
-        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-slate-200 shadow-sm">
+        <div className="bg-white rounded-2xl p-4 sm:p-5 border border-stone-200 shadow-sm">
           <div className="flex items-center justify-between">
-            <h3 className="font-semibold text-sm text-slate-900">Uploaded Papers</h3>
-            <span className="text-xs text-slate-500">{subs.length} total</span>
+            <h3 className="font-semibold text-sm text-stone-900">Uploaded Papers</h3>
+            <span className="text-xs text-stone-500">{subs.length} total</span>
           </div>
-          {subs.length===0 ? <p className="text-xs text-slate-400 mt-3 text-center py-6 border border-dashed border-slate-200 rounded-xl">No papers yet — upload above</p> :
+          {subs.length===0 ? <p className="text-xs text-stone-400 mt-3 text-center py-6 border border-dashed border-stone-200 rounded-xl">No papers yet — upload above</p> :
             <div className="mt-3 space-y-2 max-h-[50vh] overflow-y-auto pr-1">
               {subs.map((s,idx)=>{
                 const isClickable = s.status==="COMPLETED" || s.status==="REVIEW_REQUIRED";
@@ -336,7 +336,7 @@ export default function ScanPage() {
                     {s.status==="COMPLETED" && <span className="text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-full font-medium">✓ {s.score!==null?`${s.score}`: ""}</span>}
                     {s.status==="REVIEW_REQUIRED" && <span className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full font-medium">⚠ Review</span>}
                     {s.status==="PROCESSING" && <span className="text-xs bg-blue-50 text-blue-700 border border-blue-200 px-2.5 py-1 rounded-full animate-pulse font-medium">Processing...</span>}
-                    {s.status==="UPLOADED" && <span className="text-xs bg-slate-100 text-slate-600 border border-slate-200 px-2.5 py-1 rounded-full">Queued</span>}
+                    {s.status==="UPLOADED" && <span className="text-xs bg-stone-100 text-stone-600 border border-stone-200 px-2.5 py-1 rounded-full">Queued</span>}
                     {s.status==="FAILED" && <span className="text-xs bg-red-50 text-red-700 border border-red-200 px-2.5 py-1 rounded-full font-medium" title={(s as any).error || ""}>Failed</span>}
                   </>
                 );
@@ -345,18 +345,18 @@ export default function ScanPage() {
                     onClick={(e)=> deletePaper(e, s.id, label)}
                     disabled={deletingId===s.id}
                     title="Delete paper — frees backend space"
-                    className="w-7 h-7 rounded-full bg-white border border-slate-200 hover:bg-red-50 hover:border-red-200 hover:text-red-600 text-slate-400 flex items-center justify-center text-xs shrink-0 transition disabled:opacity-50"
+                    className="w-7 h-7 rounded-full bg-white border border-stone-200 hover:bg-red-50 hover:border-red-200 hover:text-red-600 text-stone-400 flex items-center justify-center text-xs shrink-0 transition disabled:opacity-50"
                   >
                     {deletingId===s.id ? "…" : "🗑"}
                   </button>
                 );
                 const cardInner = (
-                  <div className={`flex items-center justify-between border rounded-xl px-3 py-2.5 bg-white transition ${isClickable ? "border-slate-200 hover:border-indigo-200 hover:bg-indigo-50/50 cursor-pointer" : "border-slate-200 hover:bg-slate-50"}`}>
+                  <div className={`flex items-center justify-between border rounded-xl px-3 py-2.5 bg-white transition ${isClickable ? "border-stone-200 hover:border-[#fecbb8] hover:bg-[#fff1e7]/50 cursor-pointer" : "border-stone-200 hover:bg-[#eef3ee]"}`}>
                     <div className="flex items-center gap-3 min-w-0 flex-1">
-                      <span className="text-xs font-bold w-7 h-7 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0">{idx+1}</span>
+                      <span className="text-xs font-bold w-7 h-7 rounded-full bg-stone-100 border border-stone-200 flex items-center justify-center shrink-0">{idx+1}</span>
                       <div className="min-w-0">
-                        <p className="text-sm font-medium text-slate-900 truncate">{s.studentName || `Student ${idx+1}`}{isClickable && <span className="ml-1.5 text-[11px] text-indigo-500 font-normal">→ View</span>}</p>
-                        <p className="text-xs text-slate-500 truncate">{s.rollNumber ? `Roll ${s.rollNumber}` : s.originalName || s.imageUrl.split("/").pop()}</p>
+                        <p className="text-sm font-medium text-stone-900 truncate">{s.studentName || `Student ${idx+1}`}{isClickable && <span className="ml-1.5 text-[11px] text-[#9a3412] font-normal">→ View</span>}</p>
+                        <p className="text-xs text-stone-500 truncate">{s.rollNumber ? `Roll ${s.rollNumber}` : s.originalName || s.imageUrl.split("/").pop()}</p>
                       </div>
                     </div>
                     <div className="flex items-center gap-1.5 shrink-0 ml-2">
@@ -376,16 +376,16 @@ export default function ScanPage() {
             </div>
           }
           <div className="mt-4 flex gap-2 sm:gap-3">
-            <button onClick={()=>fetchData()} className="flex-1 border border-slate-200 bg-white hover:bg-slate-50 rounded-xl py-3 text-sm font-medium min-h-[44px]">Refresh</button>
-            <Link href={`/exam/${id}/results`} className="flex-1 bg-slate-900 hover:bg-black text-white rounded-xl py-3 text-sm text-center font-medium min-h-[44px] flex items-center justify-center">View Results</Link>
+            <button onClick={()=>fetchData()} className="flex-1 border border-stone-200 bg-white hover:bg-[#eef3ee] rounded-xl py-3 text-sm font-medium min-h-[44px]">Refresh</button>
+            <Link href={`/exam/${id}/results`} className="flex-1 bg-stone-900 hover:bg-stone-900 text-white rounded-xl py-3 text-sm text-center font-medium min-h-[44px] flex items-center justify-center">View Results</Link>
           </div>
-          <p className="text-xs text-slate-400 text-center mt-2">Polling every 2s • Up to {MAX_SHEETS} sheets per exam</p>
+          <p className="text-xs text-stone-400 text-center mt-2">Polling every 2s • Up to {MAX_SHEETS} sheets per exam</p>
         </div>
 
         <div className="flex items-center gap-2 text-xs pb-4">
-          <Link href="/" className="inline-flex items-center gap-1 text-sm font-semibold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-full px-4 py-2 transition">← Home</Link>
-          <span className="text-slate-300">|</span>
-          <Link href={`/exam/${id}/verify`} className="text-sm text-slate-500 hover:text-slate-700 hover:underline py-2 px-2">Edit Answer Key</Link>
+          <Link href="/" className="inline-flex items-center gap-1 text-sm font-semibold text-stone-700 hover:text-stone-900 bg-stone-100 hover:bg-stone-200 border border-stone-200 rounded-full px-4 py-2 transition">← Home</Link>
+          <span className="text-stone-300">|</span>
+          <Link href={`/exam/${id}/verify`} className="text-sm text-stone-500 hover:text-stone-700 hover:underline py-2 px-2">Edit Answer Key</Link>
         </div>
       </main>
     </div>
