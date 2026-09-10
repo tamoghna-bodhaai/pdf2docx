@@ -28,8 +28,7 @@ export async function extractAnswerSheet(
 function buildSystemPrompt(questionCount: number, sheetType: SheetType): string {
   const base = `Extract:
 1. Student name (handwritten at top, e.g. "Santosh Nag")
-2. Roll number if visible
-3. Marked answer for every question (1..${questionCount})`;
+2. Marked answer for every question (1..${questionCount})`;
 
   const format = `Allowed answers: A, B, C, D, E, BLANK, MULTIPLE, UNCERTAIN
 - E is valid if sheet has A-E options (otherwise ignore)

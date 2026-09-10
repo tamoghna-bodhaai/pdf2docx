@@ -1,0 +1,42 @@
+[
+  {
+    "id": "a285dd89-2ab7-4672-b624-dc9445cdddac-STU-001-mtv2bvvk",
+    "batchId": "a285dd89-2ab7-4672-b624-dc9445cdddac",
+    "name": "Alice Johnson",
+    "nameNorm": "alice johnson",
+    "studentCode": "STU-001",
+    "createdAt": "2026-09-10T05:04:23.072Z"
+  },
+  {
+    "id": "a285dd89-2ab7-4672-b624-dc9445cdddac-STU-002-mtv2bxn6",
+    "batchId": "a285dd89-2ab7-4672-b624-dc9445cdddac",
+    "name": "Bob Smith",
+    "nameNorm": "bob smith",
+    "studentCode": "STU-002",
+    "createdAt": "2026-09-10T05:04:25.362Z"
+  },
+  {
+    "id": "a285dd89-2ab7-4672-b624-dc9445cdddac-STU-003-mtv2bxn7",
+    "batchId": "a285dd89-2ab7-4672-b624-dc9445cdddac",
+    "name": "Charlie Brown",
+    "nameNorm": "charlie brown",
+    "studentCode": "STU-003",
+    "createdAt": "2026-09-10T05:04:25.363Z"
+  },
+  {
+    "id": "2b5bb7bb-f905-407e-9230-4e907cb5cf0a-STU-001-mtv4aa9l",
+    "batchId": "2b5bb7bb-f905-407e-9230-4e907cb5cf0a",
+    "name": "ABC",
+    "nameNorm": "abc",
+    "studentCode": "STU-001",
+    "createdAt": "2026-09-10T05:59:07.641Z"
+  },
+  {
+    "id": "2b5bb7bb-f905-407e-9230-4e907cb5cf0a-STU-002-mtv4bl3o",
+    "batchId": "2b5bb7bb-f905-407e-9230-4e907cb5cf0a",
+    "name": "X Y Z",
+    "nameNorm": "x y z",
+    "studentCode": "STU-002",
+    "createdAt": "2026-09-10T06:00:08.340Z"
+  }
+]

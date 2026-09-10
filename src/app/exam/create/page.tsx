@@ -1,23 +1,63 @@
 "use client";
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useState, useEffect, Suspense } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 
 type Section = { from: number; to: number; marks: number; negativeMarks: number };
 
-export default function CreateExamPage() {
+function CreateExamInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [form, setForm] = useState({ name:"", subject:"", questionCount:"30", marksPerQuestion:"1", negativeMarks:"0" });
   const [sheetType, setSheetType] = useState<"bubble"|"handwritten"|"auto">("auto");
   const [mode, setMode] = useState<"uniform"|"variable">("uniform");
   const [sections, setSections] = useState<Section[]>([{ from:1, to:30, marks:1, negativeMarks:0 }]);
+  const [batches, setBatches] = useState<any[]>([]);
+  const [subjects, setSubjects] = useState<any[]>([]);
+  const [batchId, setBatchId] = useState<string>(searchParams.get("batchId") || "");
+  const [subjectId, setSubjectId] = useState<string>(searchParams.get("subjectId") || "");
+  const [showNewSubject, setShowNewSubject] = useState(false);
+  const [newSubjectName, setNewSubjectName] = useState("");
+  const [newSubjectCode, setNewSubjectCode] = useState("");
   const [qpFile, setQpFile] = useState<File | null>(null);
   const [akFile, setAkFile] = useState<File | null>(null);
+  const [akTab, setAkTab] = useState<"doc"|"photo">("photo");
+  const [akPreviewUrl, setAkPreviewUrl] = useState<string | null>(null);
   const [manualKey, setManualKey] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const qc = parseInt(form.questionCount,10) || 0;
+
+  // Load batches
+  useEffect(()=>{
+    fetch("/api/batches").then(r=>r.json()).then(d=> { if(Array.isArray(d)) setBatches(d); }).catch(()=>{});
+  }, []);
+  // Load subjects when batch changes
+  useEffect(()=>{
+    if(!batchId){ setSubjects([]); return; }
+    fetch(`/api/subjects?batchId=${batchId}`).then(r=>r.json()).then(d=> { if(Array.isArray(d)) setSubjects(d); }).catch(()=>{});
+  }, [batchId]);
+  // If subjectId query came in but batch not set, fetch subject to infer batch
+  useEffect(()=>{
+    const qSub = searchParams.get("subjectId");
+    const qBatch = searchParams.get("batchId");
+    if(qSub && !qBatch){
+      fetch(`/api/subjects/${qSub}`).then(r=>r.json()).then(s=> { if(s?.batchId){ setBatchId(s.batchId); } }).catch(()=>{});
+    }
+  }, []);
+
+  const createSubjectInline = async ()=>{
+    if(!batchId || !newSubjectName.trim()) return;
+    try{
+      const res = await fetch("/api/subjects", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ batchId, name:newSubjectName.trim(), code:newSubjectCode.trim()||null })});
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.error||"Failed");
+      setSubjects(prev=>[data, ...prev]);
+      setSubjectId(data.id);
+      setNewSubjectName(""); setNewSubjectCode(""); setShowNewSubject(false);
+    } catch(e:any){ setError(e.message); }
+  };
 
   // Keep sections in sync with questionCount when in variable mode
   useEffect(()=>{
@@ -132,7 +172,13 @@ export default function CreateExamPage() {
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
-    if (!form.name || !form.subject) { setError("Name and subject required"); return; }
+    // subject derived from subjectId if chosen
+    let finalSubject = form.subject;
+    if(subjectId){
+      const chosen = subjects.find(s=>s.id===subjectId);
+      if(chosen) finalSubject = chosen.name;
+    }
+    if (!form.name || !finalSubject) { setError("Name and subject required — pick a subject or enter one"); return; }
     if(!qc || qc<1 || qc>200){ setError("Questions must be 1-200"); return; }
     if(mode==="variable"){
       const err = validateSections();
@@ -141,7 +187,9 @@ export default function CreateExamPage() {
     setLoading(true);
     const fd = new FormData();
     fd.append("name", form.name);
-    fd.append("subject", form.subject);
+    fd.append("subject", finalSubject);
+    if(batchId) fd.append("batchId", batchId);
+    if(subjectId) fd.append("subjectId", subjectId);
     fd.append("questionCount", form.questionCount);
     fd.append("sheetType", sheetType);
     if(mode==="uniform"){
@@ -177,15 +225,48 @@ export default function CreateExamPage() {
       <main className="max-w-2xl mx-auto px-3 sm:px-4 py-4 sm:py-6">
         <form onSubmit={submit} className="bg-white rounded-2xl p-4 sm:p-6 shadow-sm border border-slate-200 space-y-5">
           <h1 className="text-lg sm:text-xl font-bold text-slate-900">Create Exam</h1>
+          {searchParams.get("batchId") || searchParams.get("subjectId") ? (
+            <p className="text-xs text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2">Scoped creation — batch/subject prefilled from previous page. <Link href="/" className="underline">Change</Link></p>
+          ) : null}
 
           <div className="grid grid-cols-1 gap-4">
+            {/* Batch / Subject hierarchy */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">Batch / Class</span>
+                <select value={batchId} onChange={e=>{ setBatchId(e.target.value); setSubjectId(""); }} className="w-full border border-slate-200 rounded-xl px-3 py-3 sm:py-2.5 text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none">
+                  <option value="">Unassigned (legacy)</option>
+                  {batches.map((b:any)=>(<option key={b.id} value={b.id}>{b.name}{b.academicYear?` — ${b.academicYear}`:""}</option>))}
+                </select>
+                <span className="text-[11px] text-slate-400"><Link href="/" className="text-indigo-600 hover:underline">+ New Batch</Link> on home</span>
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-sm font-medium text-slate-700">Subject *</span>
+                {batchId ? (
+                  <div className="space-y-2">
+                    <select value={subjectId} onChange={e=>setSubjectId(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3 py-3 sm:py-2.5 text-sm bg-white focus:ring-2 focus:ring-indigo-500 outline-none" required={!!batchId}>
+                      <option value="">Select subject…</option>
+                      {subjects.map((s:any)=>(<option key={s.id} value={s.id}>{s.name}{s.code?` (${s.code})`:""}</option>))}
+                    </select>
+                    {!showNewSubject ? (
+                      <button type="button" onClick={()=>setShowNewSubject(true)} className="text-xs text-indigo-600 hover:underline">+ New subject in this batch</button>
+                    ) : (
+                      <div className="flex gap-2 items-end">
+                        <input value={newSubjectName} onChange={e=>setNewSubjectName(e.target.value)} placeholder="New subject" className="flex-1 border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white outline-none" />
+                        <input value={newSubjectCode} onChange={e=>setNewSubjectCode(e.target.value)} placeholder="Code" className="w-24 border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white outline-none" />
+                        <button type="button" onClick={createSubjectInline} className="text-xs bg-indigo-600 text-white px-3 py-2 rounded-full">Add</button>
+                        <button type="button" onClick={()=>setShowNewSubject(false)} className="text-xs border border-slate-200 px-3 py-2 rounded-full">Cancel</button>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <input value={form.subject} onChange={e=>setForm({...form, subject:e.target.value})} placeholder="Physics — or pick a Batch first" className="w-full border border-slate-200 rounded-xl px-3 py-3 sm:py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white" required={!subjectId} />
+                )}
+              </label>
+            </div>
             <label className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">Exam Name *</span>
               <input value={form.name} onChange={e=>setForm({...form, name:e.target.value})} placeholder="Physics Unit Test 1" className="w-full border border-slate-200 rounded-xl px-3 py-3 sm:py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white" required />
-            </label>
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Subject *</span>
-              <input value={form.subject} onChange={e=>setForm({...form, subject:e.target.value})} placeholder="Physics" className="w-full border border-slate-200 rounded-xl px-3 py-3 sm:py-2.5 text-sm focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none bg-white" required />
             </label>
             <label className="space-y-1.5">
               <span className="text-sm font-medium text-slate-700">Total Questions *</span>
@@ -284,19 +365,78 @@ export default function CreateExamPage() {
               )}
             </div>
 
+            {/* Question Paper — optional */}
             <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Upload Question Paper</span>
-              <span className="text-xs text-slate-500 block">PDF / DOCX — stored as original (not parsed)</span>
+              <span className="text-sm font-medium text-slate-700">Question Paper <span className="text-xs font-normal text-slate-400">(Optional)</span></span>
+              <span className="text-xs text-slate-500 block">Reference only — not used for grading. Skip if you only have the answer key. PDF / DOCX</span>
               <input type="file" accept=".pdf,.docx,.doc" onChange={e=>setQpFile(e.target.files?.[0]||null)} className="w-full border border-slate-200 rounded-xl px-3 py-3 sm:py-2.5 text-sm bg-slate-50 file:mr-3 file:bg-white file:border file:border-slate-200 file:rounded-full file:px-3 file:py-1 file:text-xs" />
               {qpFile && <span className="text-xs text-emerald-600 font-medium">{qpFile.name}</span>}
+              {!qpFile && <span className="text-[11px] text-slate-400">You can create the exam without this — grading only needs the answer key.</span>}
             </label>
 
-            <label className="space-y-1.5">
-              <span className="text-sm font-medium text-slate-700">Upload Answer Key</span>
-              <span className="text-xs text-slate-500 block">PDF / DOCX — auto-extracted via LLM/regex</span>
-              <input type="file" accept=".pdf,.docx,.doc,.txt" onChange={e=>setAkFile(e.target.files?.[0]||null)} className="w-full border border-slate-200 rounded-xl px-3 py-3 sm:py-2.5 text-sm bg-slate-50 file:mr-3 file:bg-white file:border file:border-slate-200 file:rounded-full file:px-3 file:py-1 file:text-xs" />
-              {akFile && <span className="text-xs text-emerald-600 font-medium">{akFile.name}</span>}
-            </label>
+            {/* Answer Key — unified: Doc or Photo (VLM) */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-slate-700">Answer Key <span className="text-red-500">*</span> <span className="text-xs font-normal text-slate-400">— Doc or Photo</span></span>
+                <span className="text-[11px] text-slate-400">{akFile ? `✓ ${akFile.name}` : manualKey.trim() ? "Manual" : "Required"}</span>
+              </div>
+              <p className="text-xs text-slate-500">Choose one: upload a document <em>or</em> take a photo. Photo uses Vision LLM (same pipeline as sheets) — e.g. <code className="bg-slate-100 px-1 rounded">1. B 2. A …</code> or handwritten <code className="bg-slate-100 px-1 rounded">1.a 2.b</code>. You’ll verify on next screen.</p>
+              <div className="flex bg-slate-100 border border-slate-200 rounded-full p-1 w-fit">
+                <button type="button" onClick={()=>setAkTab("photo")} className={`px-4 py-1.5 rounded-full text-xs font-medium transition ${akTab==="photo" ? "bg-indigo-600 text-white shadow" : "text-slate-600 hover:text-slate-900"}`}>📷 Photo (VLM)</button>
+                <button type="button" onClick={()=>setAkTab("doc")} className={`px-4 py-1.5 rounded-full text-xs font-medium transition ${akTab==="doc" ? "bg-indigo-600 text-white shadow" : "text-slate-600 hover:text-slate-900"}`}>📄 Document</button>
+              </div>
+
+              {akTab==="photo" ? (
+                <div className="border border-slate-200 rounded-xl p-3 bg-slate-50 space-y-3">
+                  <p className="text-[11px] text-slate-600">Take a picture of the printed/handwritten key — VLM extracts A-D per question. Supports JPG/PNG/WEBP/HEIC.</p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl py-3 flex flex-col items-center justify-center cursor-pointer transition min-h-[72px]">
+                      <span className="text-sm">📷</span>
+                      <span className="text-xs font-medium">Take Photo</span>
+                      <input type="file" accept="image/*,image/heic,image/heif" capture="environment" className="hidden" onChange={e=>{
+                        const f=e.target.files?.[0]||null;
+                        if(f){ setAkFile(f); try{ setAkPreviewUrl(URL.createObjectURL(f)); }catch{ setAkPreviewUrl(null); } }
+                        e.currentTarget.value="";
+                      }} />
+                    </label>
+                    <label className="border-2 border-dashed border-slate-300 hover:border-indigo-300 bg-white rounded-xl py-3 flex flex-col items-center justify-center cursor-pointer hover:bg-slate-50 transition min-h-[72px]">
+                      <span className="text-sm">🖼️</span>
+                      <span className="text-xs font-medium text-slate-700">Upload Image</span>
+                      <span className="text-[11px] text-slate-400">JPG PNG HEIC</span>
+                      <input type="file" accept="image/*,image/heic,image/heif,.jpg,.jpeg,.png,.webp,.heic,.heif" className="hidden" onChange={e=>{
+                        const f=e.target.files?.[0]||null;
+                        if(f){ setAkFile(f); try{ setAkPreviewUrl(URL.createObjectURL(f)); }catch{ setAkPreviewUrl(null); } }
+                        e.currentTarget.value="";
+                      }} />
+                    </label>
+                  </div>
+                  {akFile && (
+                    <div className="flex gap-3 items-center bg-white border border-slate-200 rounded-xl p-2">
+                      {akPreviewUrl && !akFile.name.toLowerCase().endsWith(".pdf") ? (
+                        <img src={akPreviewUrl} alt="key preview" className="w-16 h-16 object-cover rounded-lg border border-slate-200" />
+                      ) : (
+                        <div className="w-16 h-16 bg-slate-100 rounded-lg flex items-center justify-center text-lg border border-slate-200">🖼️</div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-medium text-slate-800 truncate">{akFile.name}</p>
+                        <p className="text-[11px] text-slate-400">{(akFile.size/1024).toFixed(0)} KB • VLM extraction</p>
+                      </div>
+                      <button type="button" onClick={()=>{ setAkFile(null); if(akPreviewUrl) URL.revokeObjectURL(akPreviewUrl); setAkPreviewUrl(null); }} className="text-xs border border-slate-200 bg-white px-3 py-1.5 rounded-full hover:bg-red-50 hover:text-red-600 hover:border-red-200">Remove</button>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="border border-slate-200 rounded-xl p-3 bg-slate-50 space-y-2">
+                  <p className="text-[11px] text-slate-600">PDF / DOCX / TXT — extracted via LLM + regex fallback (no vision needed).</p>
+                  <input type="file" accept=".pdf,.docx,.doc,.txt" onChange={e=>{
+                    const f=e.target.files?.[0]||null;
+                    if(f){ setAkFile(f); if(akPreviewUrl) { URL.revokeObjectURL(akPreviewUrl); setAkPreviewUrl(null); } }
+                  }} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white file:mr-3 file:bg-slate-900 file:text-white file:border-0 file:rounded-full file:px-3 file:py-1 file:text-xs" />
+                  {akFile && <span className="text-xs text-emerald-600 font-medium block">{akFile.name} • doc extraction</span>}
+                </div>
+              )}
+              {akFile && <p className="text-[11px] text-emerald-600">Selected — will be sent as <code className="bg-emerald-50 px-1 rounded border border-emerald-200">{akFile.name.split('.').pop()?.toLowerCase()}</code> and extracted before verify.</p>}
+            </div>
 
             <div className="border-t border-slate-200 pt-4">
               <span className="text-sm font-medium text-slate-700">Or enter answer key manually</span>
@@ -316,4 +456,8 @@ export default function CreateExamPage() {
       </main>
     </div>
   );
+}
+
+export default function CreateExamPage(){
+  return <Suspense fallback={<div className="min-h-screen bg-slate-50 p-8 text-sm text-slate-500">Loading…</div>}><CreateExamInner /></Suspense>;
 }

@@ -9,10 +9,37 @@ export interface MarkingSchemeSection {
   negativeMarks: number;
 }
 
+export interface Batch {
+  id: string;
+  name: string;
+  academicYear?: string | null;
+  description?: string | null;
+  createdAt: string;
+}
+
+export interface Subject {
+  id: string;
+  batchId: string;
+  name: string;
+  code?: string | null;
+  createdAt: string;
+}
+
+export interface Student {
+  id: string;
+  batchId: string;
+  name: string;
+  nameNorm: string;
+  studentCode: string; // STU-001 per batch, system-generated
+  createdAt: string;
+}
+
 export interface Exam {
   id: string;
   name: string;
   subject: string;
+  batchId?: string | null;
+  subjectId?: string | null;
   questionCount: number;
   marksPerQuestion: number; // deprecated: kept for backwards compat, use markingScheme
   negativeMarks: number; // deprecated
@@ -33,7 +60,9 @@ export interface Submission {
   imageUrl: string;
   originalName: string;
   studentName: string | null;
-  rollNumber: string | null;
+  rollNumber: string | null; // deprecated, kept for compat
+  studentId?: string | null;
+  studentCode?: string | null;
   extractedAnswers: Record<string, string> | null;
   uncertainQuestions: string[];
   sheetType?: SheetType; // how this sheet was interpreted; defaults to exam sheetType

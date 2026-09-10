@@ -38,6 +38,21 @@ export default function VerifyPage() {
   const [markingEdit, setMarkingEdit] = useState(false);
   const [sections, setSections] = useState<any[]>([]);
   const [markingSaving, setMarkingSaving] = useState(false);
+  const [breadcrumb, setBreadcrumb] = useState<{ batch?: any; subject?: any } | null>(null);
+
+  useEffect(()=>{
+    if(!exam?.batchId && !exam?.subjectId) return;
+    const load = async ()=>{
+      try{
+        const [b,s] = await Promise.all([
+          exam.batchId ? fetch(`/api/batches/${exam.batchId}`).then(r=>r.json()).catch(()=>null) : null,
+          exam.subjectId ? fetch(`/api/subjects/${exam.subjectId}`).then(r=>r.json()).catch(()=>null) : null,
+        ]);
+        setBreadcrumb({ batch: b?.id? b: null, subject: s?.id? s: null });
+      }catch{}
+    };
+    load();
+  },[exam?.batchId, exam?.subjectId]);
 
   useEffect(()=>{
     if(exam?.markingScheme){
@@ -77,8 +92,9 @@ export default function VerifyPage() {
     <div className="min-h-screen bg-slate-50">
       <header className="border-b border-slate-200 bg-white sticky top-0 z-10">
         <div className="max-w-2xl mx-auto px-3 sm:px-4 py-3 sm:py-4 flex items-center gap-3">
-          <Link href="/" className="text-sm text-slate-500 hover:text-slate-800 min-h-[32px] flex items-center px-2 -ml-2 rounded-lg active:bg-slate-100">← Home</Link>
+          <Link href={breadcrumb?.subject ? `/batch/${exam.batchId}/subject/${exam.subjectId}` : breadcrumb?.batch ? `/batch/${exam.batchId}` : "/"} className="text-sm text-slate-500 hover:text-slate-800 min-h-[32px] flex items-center px-2 -ml-2 rounded-lg active:bg-slate-100">← Back</Link>
           <span className="font-semibold text-slate-900">Verify Answer Key</span>
+          {breadcrumb?.batch && <span className="hidden sm:inline text-xs text-slate-400 ml-2 truncate">{breadcrumb.batch.name}{breadcrumb.subject?` › ${breadcrumb.subject.name}`:""}</span>}
         </div>
       </header>
       <main className="max-w-2xl mx-auto px-3 sm:px-4 py-4 sm:py-6">

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import fs from "fs";
-import { getExam, readSubmissions, writeSubmissions, getSubmissionsByExam, readExams, writeExams } from "@/lib/db";
+import { getExam, readSubmissions, writeSubmissions, getSubmissionsByExam, readExams, writeExams, resolveOrCreateStudent } from "@/lib/db";
 import { extractAnswerSheet } from "@/lib/visionExtractor";
 import { gradeSubmission } from "@/lib/grading";
 import { getMarkingScheme } from "@/lib/markingScheme";
@@ -140,8 +140,26 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
                 current = readSubmissions();
                 idx = current.findIndex((s) => s.id === sub.id);
                 if (idx === -1) return resolve();
-                current[idx].studentName = result.student_name;
-                current[idx].rollNumber = result.roll_number;
+                // System-generated student linkage (batch-scoped, no roll)
+                let studentId: string | null = current[idx].studentId || null;
+                let studentCode: string | null = current[idx].studentCode || null;
+                const rawName = (result.student_name || "").trim();
+                const batchIdForStudent = (exam as any).batchId || null;
+                if (rawName && batchIdForStudent) {
+                  try {
+                    const st = resolveOrCreateStudent(batchIdForStudent, rawName);
+                    studentId = st.id;
+                    studentCode = st.studentCode;
+                    current[idx].studentName = st.name;
+                  } catch {
+                    current[idx].studentName = rawName || result.student_name;
+                  }
+                } else {
+                  current[idx].studentName = result.student_name;
+                }
+                current[idx].rollNumber = null;
+                current[idx].studentId = studentId;
+                current[idx].studentCode = studentCode;
                 current[idx].extractedAnswers = result.answers;
                 current[idx].uncertainQuestions = result.uncertain_questions;
                 current[idx].score = grading.score;

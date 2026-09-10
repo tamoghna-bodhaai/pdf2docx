@@ -2,13 +2,17 @@ import { NextRequest, NextResponse } from "next/server";
 import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import fs from "fs";
-import { readExams, writeExams } from "@/lib/db";
+import { readExams, writeExams, getBatch, getSubject } from "@/lib/db";
 import { extractAnswerKey } from "@/lib/answerKeyExtractor";
 import { validateMarkingScheme, normalizeMarkingScheme } from "@/lib/markingScheme";
 import { MarkingSchemeSection, SheetType } from "@/lib/types";
 
-export async function GET() {
-  const exams = readExams().sort((a,b)=> new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime());
+export async function GET(req: NextRequest) {
+  const batchId = req.nextUrl.searchParams.get("batchId");
+  const subjectId = req.nextUrl.searchParams.get("subjectId");
+  let exams = readExams().sort((a,b)=> new Date(b.createdAt).getTime()-new Date(a.createdAt).getTime());
+  if (batchId) exams = exams.filter((e) => e.batchId === batchId);
+  if (subjectId) exams = exams.filter((e) => e.subjectId === subjectId);
   return NextResponse.json(exams);
 }
 
@@ -26,9 +30,31 @@ export async function POST(req: NextRequest) {
     const questionPaper = formData.get("questionPaper") as File | null;
     const answerKeyFile = formData.get("answerKey") as File | null;
     const manualAnswerKey = String(formData.get("manualAnswerKey") || "").trim();
+    const batchIdRaw = String(formData.get("batchId") || "").trim() || null;
+    const subjectIdRaw = String(formData.get("subjectId") || "").trim() || null;
 
     if (!name || !subject || !questionCount || questionCount < 1 || questionCount > 200) {
       return NextResponse.json({ error: "Invalid exam fields" }, { status: 400 });
+    }
+    let batchId: string | null = null;
+    let subjectId: string | null = null;
+    if (subjectIdRaw) {
+      const s = getSubject(subjectIdRaw);
+      if (!s) return NextResponse.json({ error: "Subject not found" }, { status: 400 });
+      subjectId = s.id;
+      batchId = s.batchId;
+      // sync subject string from Subject entity
+      // keep provided subject for compat but override display name
+    } else if (batchIdRaw) {
+      const b = getBatch(batchIdRaw);
+      if (!b) return NextResponse.json({ error: "Batch not found" }, { status: 400 });
+      batchId = b.id;
+    }
+    // If subjectId provided, override subject string with Subject name
+    let finalSubject = subject;
+    if (subjectId) {
+      const s = getSubject(subjectId)!;
+      finalSubject = s.name;
     }
 
     // Parse markingScheme if provided (variable scheme)
@@ -69,7 +95,7 @@ export async function POST(req: NextRequest) {
     let answerKeyName: string | null = null;
     let answerKeyJson: Record<string,string> | null = null;
 
-    // Save question paper if provided - use /tmp on Vercel (read-only FS)
+    // Save question paper if provided (OPTIONAL — reference only, grading uses answerKeyJson) - use /tmp on Vercel (read-only FS)
     if (questionPaper && questionPaper.size > 0) {
       const ext = questionPaper.name.split(".").pop() || "pdf";
       const filename = `${id}-qp.${ext}`;
@@ -84,7 +110,7 @@ export async function POST(req: NextRequest) {
       questionPaperName = questionPaper.name;
     }
 
-    // Save answer key file if provided
+    // Save answer key file if provided (UNIFIED: doc pdf/docx/txt OR image jpg/png/webp/heic via VLM)
     let answerKeyBuffer: Buffer | null = null;
     let answerKeyFilename: string | null = null;
     if (answerKeyFile && answerKeyFile.size > 0) {
@@ -126,7 +152,7 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // If file exists and no manual json, try LLM/Regex extraction
+    // If file exists and no manual json, try extraction (doc: LLM/regex, image: VLM)
     if (answerKeyBuffer && !answerKeyJson) {
       try {
         answerKeyJson = await extractAnswerKey(answerKeyBuffer, answerKeyFilename!, questionCount);
@@ -140,7 +166,9 @@ export async function POST(req: NextRequest) {
     const exam = {
       id,
       name,
-      subject,
+      subject: finalSubject,
+      batchId,
+      subjectId,
       questionCount,
       marksPerQuestion,
       negativeMarks,

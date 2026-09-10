@@ -1,0 +1,37 @@
+[
+  {
+    "id": "9ede142c-ed36-4e0b-bb76-ac0fe4731210",
+    "batchId": "a285dd89-2ab7-4672-b624-dc9445cdddac",
+    "name": "Physics",
+    "code": "PHY101",
+    "createdAt": "2026-09-10T05:04:22.963Z"
+  },
+  {
+    "id": "04f3fc8b-f5d9-4176-a3c7-4cc2e0e7fbe5",
+    "batchId": "a285dd89-2ab7-4672-b624-dc9445cdddac",
+    "name": "Chemistry",
+    "code": null,
+    "createdAt": "2026-09-10T05:04:22.974Z"
+  },
+  {
+    "id": "30489205-2332-4262-90cb-9f8889da2fde",
+    "batchId": "c5757e48-d34a-45a0-8fb4-09462a248fc1",
+    "name": "Physics",
+    "code": "PH1012",
+    "createdAt": "2026-09-10T05:14:58.428Z"
+  },
+  {
+    "id": "9fb8fb98-8b0c-4943-bb32-11dda836039c",
+    "batchId": "2b5bb7bb-f905-407e-9230-4e907cb5cf0a",
+    "name": "Physics",
+    "code": "Ph1",
+    "createdAt": "2026-09-10T05:45:55.854Z"
+  },
+  {
+    "id": "7270a9d0-5696-402e-99fe-75d0f63a6b9e",
+    "batchId": "2b5bb7bb-f905-407e-9230-4e907cb5cf0a",
+    "name": "Maths",
+    "code": "Mt102",
+    "createdAt": "2026-09-10T05:46:04.262Z"
+  }
+]

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "a285dd89-2ab7-4672-b624-dc9445cdddac",
+    "name": "12-A 2026-27",
+    "academicYear": "2026-27",
+    "description": "Test Batch",
+    "createdAt": "2026-09-10T05:04:19.896Z"
+  },
+  {
+    "id": "c5757e48-d34a-45a0-8fb4-09462a248fc1",
+    "name": "Saturday-Physics",
+    "academicYear": "2026-27",
+    "description": "Saturday class 12 physics evening",
+    "createdAt": "2026-09-10T05:14:40.564Z"
+  },
+  {
+    "id": "2b5bb7bb-f905-407e-9230-4e907cb5cf0a",
+    "name": "sat-morning-phy",
+    "academicYear": "2026-27",
+    "description": null,
+    "createdAt": "2026-09-10T05:45:45.421Z"
+  }
+]
