@@ -34,6 +34,8 @@ export interface Student {
   createdAt: string;
 }
 
+export type UncertainMarking = "zero" | "negative";
+
 export interface Exam {
   id: string;
   name: string;
@@ -45,6 +47,7 @@ export interface Exam {
   negativeMarks: number; // deprecated
   markingScheme: MarkingSchemeSection[];
   sheetType: SheetType; // "bubble" (OMR), "handwritten" (1.a 2.b list), "auto" (detect)
+  uncertainMarking?: UncertainMarking; // how to score UNCERTAIN/MULTIPLE: "zero" (0) default or "negative" (-neg)
   questionPaperUrl: string | null;
   questionPaperName: string | null;
   answerKeyUrl: string | null;
@@ -66,6 +69,8 @@ export interface Submission {
   extractedAnswers: Record<string, string> | null;
   uncertainQuestions: string[];
   sheetType?: SheetType; // how this sheet was interpreted; defaults to exam sheetType
+  imageHash?: string | null; // SHA256 of original upload for dedup/cache
+  visionMeta?: VisionMeta | null;
   status: SubmissionStatus;
   score: number | null;
   correct: number | null;
@@ -85,9 +90,22 @@ export interface GradingDetail {
   marks: number;
 }
 
+export interface VisionMeta {
+  model: string;
+  imageHash: string;
+  latencyMs: number;
+  confidences?: Record<string, number> | null;
+  detectedSheetType?: SheetType | null;
+  retryCount?: number;
+  cached?: boolean;
+}
+
 export interface VisionExtractionResult {
   student_name: string | null;
   roll_number: string | null;
   answers: Record<string, string>;
   uncertain_questions: string[];
+  confidences?: Record<string, number>;
+  detectedSheetType?: SheetType | null;
+  visionMeta?: VisionMeta | null;
 }

@@ -44,9 +44,10 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
     }
     subs[idx].extractedAnswers = cleaned;
 
-    // Re-grade
+    // Re-grade (respect exam-wide uncertainMarking)
     const scheme = getMarkingScheme(exam);
-    const grading = gradeSubmission(cleaned, exam.answerKeyJson, scheme);
+    const uncertainMarking = (exam as any).uncertainMarking || "zero";
+    const grading = gradeSubmission(cleaned, exam.answerKeyJson, scheme, uncertainMarking);
     subs[idx].score = grading.score;
     subs[idx].correct = grading.correct;
     subs[idx].incorrect = grading.incorrect;
@@ -86,7 +87,8 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         const currentExamId = (current[sIdx] as any).examId ?? sub.examId;
         const latestExam = getExam(currentExamId) ?? exam;
         const scheme2 = getMarkingScheme(latestExam);
-        const grading = gradeSubmission(result.answers, latestExam.answerKeyJson!, scheme2);
+        const uncertainMarking2 = (latestExam as any).uncertainMarking || "zero";
+        const grading = gradeSubmission(result.answers, latestExam.answerKeyJson!, scheme2, uncertainMarking2);
         current = readSubmissions();
         sIdx = current.findIndex(s=>s.id===submissionId);
         if (sIdx===-1) return;
@@ -94,6 +96,7 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
         current[sIdx].rollNumber = result.roll_number;
         current[sIdx].extractedAnswers = result.answers;
         current[sIdx].uncertainQuestions = result.uncertain_questions;
+        (current[sIdx] as any).visionMeta = (result as any).visionMeta || null;
         current[sIdx].score = grading.score;
         current[sIdx].correct = grading.correct;
         current[sIdx].incorrect = grading.incorrect;
@@ -122,15 +125,15 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
   if (!subToDelete) return NextResponse.json({ error: "Not found" }, { status:404});
   const filtered = subs.filter(s => s.id !== id);
   writeSubmissions(filtered);
-  // Free backend space: delete image file from disk (both /tmp and public bases — covers Vercel/Railway/local)
+  // Free backend space: delete image file from disk — Railway volume aware
   try {
     const fs = await import("fs");
     const path = await import("path");
     if (subToDelete.imageUrl) {
       const rel = subToDelete.imageUrl.replace(/^\//, "");
-      const candidates = rel.startsWith("uploads/")
-        ? [path.join(process.cwd(), "public", rel), path.join("/tmp", rel)]
-        : [path.join(process.cwd(), "public", rel), path.join("/tmp", rel), path.join(process.cwd(), rel)];
+      const candidates: string[] = [];
+      if (process.env.RAILWAY_VOLUME_MOUNT_PATH) candidates.push(path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, rel));
+      candidates.push(path.join(process.cwd(), "public", rel), path.join("/tmp", rel), path.join(process.cwd(), rel));
       for (const p of candidates) {
         try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
       }

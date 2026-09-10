@@ -27,6 +27,8 @@ export async function POST(req: NextRequest) {
     const markingSchemeRaw = String(formData.get("markingScheme") || "").trim();
     const sheetTypeRaw = String(formData.get("sheetType") || "auto").trim().toLowerCase();
     const sheetType: SheetType = (["bubble","handwritten","auto"].includes(sheetTypeRaw) ? sheetTypeRaw : "auto") as SheetType;
+    const uncertainMarkingRaw = String(formData.get("uncertainMarking") || "zero").trim().toLowerCase();
+    const uncertainMarking = (uncertainMarkingRaw === "negative" ? "negative" : "zero") as "zero" | "negative";
     const questionPaper = formData.get("questionPaper") as File | null;
     const answerKeyFile = formData.get("answerKey") as File | null;
     const manualAnswerKey = String(formData.get("manualAnswerKey") || "").trim();
@@ -95,13 +97,15 @@ export async function POST(req: NextRequest) {
     let answerKeyName: string | null = null;
     let answerKeyJson: Record<string,string> | null = null;
 
-    // Save question paper if provided (OPTIONAL — reference only, grading uses answerKeyJson) - use /tmp on Vercel (read-only FS)
+    // Save question paper if provided (OPTIONAL — reference only, grading uses answerKeyJson) - Railway volume aware
     if (questionPaper && questionPaper.size > 0) {
       const ext = questionPaper.name.split(".").pop() || "pdf";
       const filename = `${id}-qp.${ext}`;
-      const dir = process.env.VERCEL
-        ? path.join("/tmp", "uploads", "question-papers")
-        : path.join(process.cwd(), "public", "uploads", "question-papers");
+      const dir = process.env.RAILWAY_VOLUME_MOUNT_PATH
+        ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, "uploads", "question-papers")
+        : process.env.VERCEL
+          ? path.join("/tmp", "uploads", "question-papers")
+          : path.join(process.cwd(), "public", "uploads", "question-papers");
       fs.mkdirSync(dir, { recursive: true });
       const buffer = Buffer.from(await questionPaper.arrayBuffer());
       fs.writeFileSync(path.join(dir, filename), buffer);
@@ -116,9 +120,11 @@ export async function POST(req: NextRequest) {
     if (answerKeyFile && answerKeyFile.size > 0) {
       const ext = answerKeyFile.name.split(".").pop() || "pdf";
       const filename = `${id}-ak.${ext}`;
-      const dir = process.env.VERCEL
-        ? path.join("/tmp", "uploads", "answer-keys")
-        : path.join(process.cwd(), "public", "uploads", "answer-keys");
+      const dir = process.env.RAILWAY_VOLUME_MOUNT_PATH
+        ? path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, "uploads", "answer-keys")
+        : process.env.VERCEL
+          ? path.join("/tmp", "uploads", "answer-keys")
+          : path.join(process.cwd(), "public", "uploads", "answer-keys");
       fs.mkdirSync(dir, { recursive: true });
       answerKeyBuffer = Buffer.from(await answerKeyFile.arrayBuffer());
       fs.writeFileSync(path.join(dir, filename), answerKeyBuffer);
@@ -174,6 +180,7 @@ export async function POST(req: NextRequest) {
       negativeMarks,
       markingScheme,
       sheetType,
+      uncertainMarking,
       questionPaperUrl,
       questionPaperName,
       answerKeyUrl,

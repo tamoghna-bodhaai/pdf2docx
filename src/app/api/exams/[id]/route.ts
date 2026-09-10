@@ -29,22 +29,18 @@ export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ 
     writeSubmissions(remaining);
   }
 
-  // Best-effort file cleanup (ignore errors for MVP) - handle both /tmp (Vercel) and public (local)
+  // Best-effort file cleanup — Railway volume aware
   try {
     const fs = await import("fs");
     const path = await import("path");
     const toDelete: string[] = [];
-    const isVercel = !!process.env.VERCEL;
     const baseCandidates = (url: string) => {
       const rel = url.replace(/^\//, "");
-      // url is like /uploads/... -> map to both possible bases
-      if (rel.startsWith("uploads/")) {
-        return [
-          path.join(process.cwd(), "public", rel),
-          path.join("/tmp", rel),
-        ];
-      }
-      return [path.join(process.cwd(), "public", rel), path.join("/tmp", rel)];
+      const c: string[] = [];
+      if (process.env.RAILWAY_VOLUME_MOUNT_PATH) c.push(path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, rel));
+      c.push(path.join(process.cwd(), "public", rel));
+      c.push(path.join("/tmp", rel));
+      return c;
     };
     if (deletedExam.questionPaperUrl) toDelete.push(...baseCandidates(deletedExam.questionPaperUrl));
     if (deletedExam.answerKeyUrl) toDelete.push(...baseCandidates(deletedExam.answerKeyUrl));
@@ -80,6 +76,12 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
   if (body.sheetType && ["bubble","handwritten","auto"].includes(String(body.sheetType))) {
     exams[idx].sheetType = body.sheetType as any;
   }
+  // Allow updating uncertainMarking (exam-wide)
+  let uncertainMarkingChanged = false;
+  if (body.uncertainMarking && ["zero","negative"].includes(String(body.uncertainMarking))) {
+    exams[idx].uncertainMarking = body.uncertainMarking as any;
+    uncertainMarkingChanged = true;
+  }
 
   // Allow updating markingScheme (variable marking)
   let markingSchemeChanged = false;
@@ -101,16 +103,17 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 
   writeExams(exams);
 
-  // If marking scheme or answer key changed, re-grade existing submissions that have been graded
-  if ((markingSchemeChanged || body.answerKeyJson) && exams[idx].answerKeyJson) {
+  // If marking scheme or answer key or uncertainMarking changed, re-grade existing submissions that have been graded
+  if ((markingSchemeChanged || body.answerKeyJson || uncertainMarkingChanged) && exams[idx].answerKeyJson) {
     const subs = readSubmissions();
     let any = false;
     const scheme = getMarkingScheme(exams[idx]);
+    const uncertainMarking = (exams[idx] as any).uncertainMarking || "zero";
     for (const sub of subs) {
       if (sub.examId !== id) continue;
       if (!sub.extractedAnswers || !sub.details) continue;
       // Re-grade
-      const grading = gradeSubmission(sub.extractedAnswers, exams[idx].answerKeyJson!, scheme);
+      const grading = gradeSubmission(sub.extractedAnswers, exams[idx].answerKeyJson!, scheme, uncertainMarking);
       sub.score = grading.score;
       sub.correct = grading.correct;
       sub.incorrect = grading.incorrect;

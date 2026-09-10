@@ -10,8 +10,9 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ pat
 
   // Prevent path traversal
   const safe = segments.map((s) => path.basename(s)).join("/");
-  // Original URL was /uploads/<safe> -> file is at /tmp/uploads/<safe> on Vercel, public/uploads/<safe> locally
+  // Railway: RAILWAY_VOLUME_MOUNT_PATH/uploads/<safe>, Vercel: /tmp/uploads/<safe>, local: public/uploads/<safe>
   const candidates = [
+    ...(process.env.RAILWAY_VOLUME_MOUNT_PATH ? [path.join(process.env.RAILWAY_VOLUME_MOUNT_PATH, "uploads", safe)] : []),
     path.join("/tmp", "uploads", safe),
     path.join(process.cwd(), "public", "uploads", safe),
     path.join(process.cwd(), "uploads", safe),

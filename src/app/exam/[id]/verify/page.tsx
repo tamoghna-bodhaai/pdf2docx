@@ -85,6 +85,17 @@ export default function VerifyPage() {
     }catch(e:any){ setError(e.message)} finally{setMarkingSaving(false)}
   };
 
+  const [uncertainSaving, setUncertainSaving] = useState(false);
+  const updateUncertainMarking = async (val: "zero"|"negative")=>{
+    setUncertainSaving(true); setError("");
+    try{
+      const res = await fetch(`/api/exams/${id}`, { method:"PATCH", headers:{ "Content-Type":"application/json"}, body: JSON.stringify({ uncertainMarking: val })});
+      const data = await res.json();
+      if(!res.ok) throw new Error(data.error);
+      setExam(data);
+    }catch(e:any){ setError(e.message)} finally{ setUncertainSaving(false); }
+  };
+
   if(loading) return <div className="p-8 text-center text-sm text-stone-500">Loading...</div>;
   if(!exam) return <div className="p-8 text-center">Exam not found</div>;
 
@@ -101,6 +112,23 @@ export default function VerifyPage() {
         <div className="bg-white rounded-2xl p-4 sm:p-6 shadow-sm border border-stone-200">
           <h1 className="font-bold text-stone-900 leading-tight">{exam.name} — {exam.subject}</h1>
           <p className="text-xs text-stone-500 mt-1">{exam.questionCount} questions • {exam.markingScheme ? `${formatScheme(exam.markingScheme)} • Max ${computeMax(exam.markingScheme)}` : `${exam.marksPerQuestion} marks each`}</p>
+
+          {/* Uncertain scoring toggle */}
+          <div className="mt-4 border border-stone-200 rounded-xl p-3 bg-white">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-stone-800">Uncertain / Multiple Scoring</span>
+              <span className="text-[10px] text-stone-500 border border-stone-200 rounded-full px-2 py-1 bg-[#eef3ee]">Exam-wide</span>
+            </div>
+            <p className="text-[11px] text-stone-500 mt-1">How to score faint/double-mark <code className="bg-stone-100 px-1 rounded">UNCERTAIN</code>/<code className="bg-stone-100 px-1 rounded">MULTIPLE</code>. BLANK always 0. Change re-grades all submissions.</p>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              {(["zero","negative"] as const).map(v=>(
+                <button key={v} disabled={uncertainSaving} onClick={()=>updateUncertainMarking(v)} className={`border rounded-xl px-3 py-2.5 text-left transition ${ (exam.uncertainMarking||"zero")===v ? "bg-[#9a3412] text-white border-[#9a3412]" : "bg-[#eef3ee] border-stone-200 hover:bg-white text-stone-700"} disabled:opacity-50`}>
+                  <span className="block text-xs font-semibold leading-none">{v==="zero" ? "0 marks" : "- Negative"}</span>
+                  <span className={`block text-[11px] mt-1 ${ (exam.uncertainMarking||"zero")===v ? "text-[#ffe4d6]" : "text-stone-500"}`}>{v==="zero" ? "No penalty (default)" : "Deduct -Neg of section"}</span>
+                </button>
+              ))}
+            </div>
+          </div>
 
           {/* Marking Scheme Editor */}
           <div className="mt-4 border border-stone-200 rounded-xl p-3 bg-[#eef3ee]">

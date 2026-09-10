@@ -3,9 +3,11 @@ import { v4 as uuidv4 } from "uuid";
 import path from "path";
 import fs from "fs";
 import { getExam, readSubmissions, writeSubmissions, getSubmissionsByExam, readExams, writeExams, resolveOrCreateStudent } from "@/lib/db";
-import { extractAnswerSheet } from "@/lib/visionExtractor";
+import { extractAnswerSheet, extractAnswerSheetFromBuffer } from "@/lib/visionExtractor";
 import { gradeSubmission } from "@/lib/grading";
 import { getMarkingScheme } from "@/lib/markingScheme";
+import { sha256 } from "@/lib/imageHash";
+import { getUploadDir } from "@/lib/imagePreprocess";
 
 const MAX_SHEETS_PER_EXAM = 100;
 
@@ -46,9 +48,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     return NextResponse.json({ error: `Only ${MAX_SHEETS_PER_EXAM - subs.length} slots remaining (you tried to upload ${rawFiles.length})` }, { status: 400 });
   }
 
-  const dir = process.env.VERCEL
-    ? path.join("/tmp", "uploads", "student-sheets")
-    : path.join(process.cwd(), "public", "uploads", "student-sheets");
+  const dir = getUploadDir();
   fs.mkdirSync(dir, { recursive: true });
 
   const now = new Date().toISOString();
@@ -59,10 +59,17 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     const submissionId = uuidv4();
     const filename = `${submissionId}.${ext}`;
     const buffer = Buffer.from(await file.arrayBuffer());
+    const imageHash = sha256(buffer);
     fs.writeFileSync(path.join(dir, filename), buffer);
     const imageUrl = `/uploads/student-sheets/${filename}`;
 
-    const newSubmission = {
+    // Hash-based dedup: if same image already completed for this exam, reuse result (no VLLM call)
+    // Lookup by imageHash + examId + questionCount
+    const dedup = readSubmissions().find(
+      (s) => (s as any).imageHash === imageHash && s.examId === examId && s.status === "COMPLETED" && s.extractedAnswers
+    );
+
+    const newSubmission: any = {
       id: submissionId,
       examId,
       imageUrl,
@@ -71,6 +78,8 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       rollNumber: null,
       extractedAnswers: null,
       uncertainQuestions: [] as string[],
+      imageHash,
+      visionMeta: null,
       status: "UPLOADED" as const,
       score: null,
       correct: null,
@@ -80,6 +89,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
       createdAt: now,
       updatedAt: now,
     };
+
+    // If dedup hit, attach cached data for background step to copy without LLM
+    if (dedup) {
+      (newSubmission as any)._dedupSourceId = dedup.id;
+    }
+
     created.push(newSubmission);
   }
 
@@ -111,14 +126,13 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
     writeSubmissions(allForUpdate);
   }
 
-  // Background grading — use Next.js `after()` so Vercel keeps the function alive after 201 response
-  // Falls back to fire-and-forget locally; on Vercel `after` ensures OpenRouter Vision completes even with MOCK_VISION=false
+  // Background grading — Railway keeps container alive; `after()` is Vercel-only, fallback to fire-and-forget
   const processAll = async () => {
     await Promise.all(
       created.map(
         (sub) =>
           new Promise<void>((resolve) => {
-            const delay = 1500 + Math.random() * 2000;
+            const delay = 400 + Math.random() * 600;
             setTimeout(async () => {
               try {
                 let current = readSubmissions();
@@ -128,11 +142,46 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
                 current[idx].updatedAt = new Date().toISOString();
                 writeSubmissions(current);
 
-                const result = await extractAnswerSheet(sub.imageUrl, exam.questionCount, effectiveSheetType as any);
+                // Fast-path: hash dedup hit → copy from completed submission without VLLM
+                const dedupSourceId = (sub as any)._dedupSourceId as string | undefined;
+                let result: any = null;
+                let isCached = false;
+                if (dedupSourceId) {
+                  const src = readSubmissions().find((s) => s.id === dedupSourceId);
+                  if (src && src.extractedAnswers) {
+                    result = {
+                      student_name: src.studentName,
+                      roll_number: (src as any).rollNumber || null,
+                      answers: src.extractedAnswers,
+                      uncertain_questions: src.uncertainQuestions || [],
+                      confidences: (src as any).visionMeta?.confidences || null,
+                      detectedSheetType: (src as any).sheetType || null,
+                      visionMeta: { ...(src as any).visionMeta, cached: true, imageHash: (sub as any).imageHash },
+                    };
+                    isCached = true;
+                    console.log(`[dedup] ${sub.id} reused ${dedupSourceId} hash=${(sub as any).imageHash?.slice(0,12)}`);
+                  }
+                }
+                if (!result) {
+                  // Try buffer path for preprocess + seed determinism
+                  const hash = (sub as any).imageHash as string | undefined;
+                  const uploadDir = getUploadDir();
+                  const filePath = path.join(uploadDir, path.basename(sub.imageUrl));
+                  let buf: Buffer | null = null;
+                  try { buf = fs.readFileSync(filePath); } catch {}
+                  if (buf) {
+                    const ext = path.extname(sub.imageUrl).replace(".", "") || "jpeg";
+                    const mime = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : ext === "heic" ? "image/heic" : ext === "heif" ? "image/heif" : "image/jpeg";
+                    result = await extractAnswerSheetFromBuffer(buf, mime, exam.questionCount, effectiveSheetType as any, hash);
+                  } else {
+                    result = await extractAnswerSheet(sub.imageUrl, exam.questionCount, effectiveSheetType as any);
+                  }
+                }
 
                 const latestExam = getExam(examId) ?? exam;
                 const scheme = getMarkingScheme(latestExam);
-                const grading = gradeSubmission(result.answers, latestExam.answerKeyJson!, scheme);
+                const uncertainMarking = (latestExam as any).uncertainMarking || "zero";
+                const grading = gradeSubmission(result.answers, latestExam.answerKeyJson!, scheme, uncertainMarking);
                 const hasUncertain =
                   result.uncertain_questions.length > 0 ||
                   Object.values(result.answers).some((v) => v === "UNCERTAIN" || v === "MULTIPLE");
@@ -162,6 +211,11 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
                 current[idx].studentCode = studentCode;
                 current[idx].extractedAnswers = result.answers;
                 current[idx].uncertainQuestions = result.uncertain_questions;
+                // Remove internal dedup marker before persist
+                delete (current[idx] as any)._dedupSourceId;
+                (current[idx] as any).visionMeta = result.visionMeta
+                  ? { ...result.visionMeta, cached: isCached || (result.visionMeta as any).cached || false }
+                  : { model: "", imageHash: (sub as any).imageHash || "", latencyMs: 0, cached: isCached };
                 current[idx].score = grading.score;
                 current[idx].correct = grading.correct;
                 current[idx].incorrect = grading.incorrect;

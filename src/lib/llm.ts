@@ -67,3 +67,10 @@ export function getChatCompletionsUrl(baseUrl: string): string {
   if (baseUrl.endsWith("/chat/completions")) return baseUrl;
   return `${baseUrl}/chat/completions`;
 }
+
+export function getConfidenceThreshold(): number {
+  const raw = process.env.CONFIDENCE_THRESHOLD?.trim();
+  const n = raw ? parseFloat(raw) : NaN;
+  if (!isNaN(n) && n >= 0 && n <= 1) return n;
+  return 0.75;
+}

@@ -10,6 +10,7 @@ function CreateExamInner() {
   const searchParams = useSearchParams();
   const [form, setForm] = useState({ name:"", subject:"", questionCount:"30", marksPerQuestion:"1", negativeMarks:"0" });
   const [sheetType, setSheetType] = useState<"bubble"|"handwritten"|"auto">("auto");
+  const [uncertainMarking, setUncertainMarking] = useState<"zero"|"negative">("zero");
   const [mode, setMode] = useState<"uniform"|"variable">("uniform");
   const [sections, setSections] = useState<Section[]>([{ from:1, to:30, marks:1, negativeMarks:0 }]);
   const [batches, setBatches] = useState<any[]>([]);
@@ -192,6 +193,7 @@ function CreateExamInner() {
     if(subjectId) fd.append("subjectId", subjectId);
     fd.append("questionCount", form.questionCount);
     fd.append("sheetType", sheetType);
+    fd.append("uncertainMarking", uncertainMarking);
     if(mode==="uniform"){
       fd.append("marksPerQuestion", form.marksPerQuestion);
       fd.append("negativeMarks", form.negativeMarks);
@@ -296,6 +298,29 @@ function CreateExamInner() {
               </div>
               {sheetType==="handwritten" && <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">Students write options by hand (e.g. <code className="bg-amber-100 px-1 rounded">1. a  2. c  3. b</code>, <code className="bg-amber-100 px-1 rounded">1:a 2:b</code>, <code className="bg-amber-100 px-1 rounded">Q1 - A</code>) — upload the photo. Lower/upper case both ok.</p>}
               {sheetType==="auto" && <p className="text-[11px] text-stone-500">Auto detects bubble OMR vs handwritten list per photo. Best for mixed classes.</p>}
+            </div>
+
+            {/* Uncertain / Multiple scoring */}
+            <div className="border border-stone-200 rounded-xl p-3 sm:p-4 bg-white space-y-2">
+              <span className="text-sm font-semibold text-stone-800">Uncertain / Multiple Marks</span>
+              <p className="text-xs text-stone-500">How to score <code className="bg-stone-100 px-1 rounded">UNCERTAIN</code> / <code className="bg-stone-100 px-1 rounded">MULTIPLE</code> (faint, double-mark, illegible). BLANK always 0.</p>
+              <div className="grid grid-cols-2 gap-2">
+                {([
+                  { id:"zero", label:"0 marks", desc:"Default — no penalty" },
+                  { id:"negative", label:"- Negative", desc:"Use -Neg from scheme" },
+                ] as const).map(o=>(
+                  <button
+                    key={o.id}
+                    type="button"
+                    onClick={()=>setUncertainMarking(o.id)}
+                    className={`border rounded-xl px-3 py-2.5 text-left transition ${uncertainMarking===o.id ? "bg-[#9a3412] text-white border-[#9a3412] shadow" : "bg-[#eef3ee] border-stone-200 hover:border-[#fecbb8] hover:bg-white text-stone-700"}`}
+                  >
+                    <span className="block text-xs font-semibold leading-none">{o.label}</span>
+                    <span className={`block text-[11px] mt-1 ${uncertainMarking===o.id?"text-[#ffe4d6]":"text-stone-500"}`}>{o.desc}</span>
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-stone-400">Exam-wide. Change anytime in Verify → re-grades all submissions.</p>
             </div>
 
             {/* Marking Scheme Mode */}
