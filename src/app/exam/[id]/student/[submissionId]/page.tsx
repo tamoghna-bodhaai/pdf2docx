@@ -1,14 +1,16 @@
 "use client";
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 
 const OPTIONS = ["A","B","C","D","E","BLANK","MULTIPLE","UNCERTAIN"];
 
 export default function StudentReportPage(){
   const { id, submissionId } = useParams() as { id:string, submissionId:string };
+  const router = useRouter();
   const [exam, setExam] = useState<any>(null);
   const [sub, setSub] = useState<any>(null);
+  const [deleting, setDeleting] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [draftAnswers, setDraftAnswers] = useState<Record<string,string>>({});
   const [draftName, setDraftName] = useState("");
@@ -47,7 +49,26 @@ export default function StudentReportPage(){
             <h1 className="font-bold text-slate-900 truncate">{exam.name}</h1>
             <p className="text-xs text-slate-500">{exam.subject} • {schemeSummary} • Max {maxMarks}</p>
           </div>
-          <a href={`/api/submissions/${submissionId}/report`} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-full text-xs font-medium shrink-0 min-h-[36px] flex items-center">Download PDF</a>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={async()=>{
+                if(!confirm(`Delete "${sub?.studentName || sub?.originalName || "this paper"}"? Frees backend space. Cannot be undone.`)) return;
+                setDeleting(true);
+                try{
+                  const res = await fetch(`/api/submissions/${submissionId}`, { method: "DELETE" });
+                  const data = await res.json().catch(()=>({}));
+                  if(!res.ok) throw new Error(data.error || "Delete failed");
+                  router.push(`/exam/${id}/scan`);
+                }catch(e:any){ alert(e.message||"Delete failed"); setDeleting(false); }
+              }}
+              disabled={deleting}
+              className="bg-white border border-slate-200 hover:bg-red-50 hover:border-red-200 hover:text-red-600 text-slate-500 px-3 py-2.5 rounded-full text-xs font-medium min-h-[36px] flex items-center disabled:opacity-50"
+              title="Delete paper — frees backend space"
+            >
+              {deleting ? "…" : "🗑 Delete"}
+            </button>
+            <a href={`/api/submissions/${submissionId}/report`} className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2.5 rounded-full text-xs font-medium min-h-[36px] flex items-center">Download PDF</a>
+          </div>
         </div>
       </header>
 

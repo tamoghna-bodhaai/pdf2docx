@@ -118,8 +118,23 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ id
 export async function DELETE(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const subs = readSubmissions();
+  const subToDelete = subs.find(s => s.id === id);
+  if (!subToDelete) return NextResponse.json({ error: "Not found" }, { status:404});
   const filtered = subs.filter(s => s.id !== id);
-  if (filtered.length === subs.length) return NextResponse.json({ error: "Not found" }, { status:404});
   writeSubmissions(filtered);
+  // Free backend space: delete image file from disk (both /tmp and public bases — covers Vercel/Railway/local)
+  try {
+    const fs = await import("fs");
+    const path = await import("path");
+    if (subToDelete.imageUrl) {
+      const rel = subToDelete.imageUrl.replace(/^\//, "");
+      const candidates = rel.startsWith("uploads/")
+        ? [path.join(process.cwd(), "public", rel), path.join("/tmp", rel)]
+        : [path.join(process.cwd(), "public", rel), path.join("/tmp", rel), path.join(process.cwd(), rel)];
+      for (const p of candidates) {
+        try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch {}
+      }
+    }
+  } catch {}
   return NextResponse.json({ success:true });
 }

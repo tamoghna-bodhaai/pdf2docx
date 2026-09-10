@@ -8,6 +8,18 @@ export default function ResultsPage() {
   const [exam, setExam] = useState<any>(null);
   const [subs, setSubs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const handleDelete = async (subId: string, label: string) => {
+    if (!confirm(`Delete "${label}"? Frees backend storage. Cannot be undone.`)) return;
+    setDeletingId(subId);
+    try {
+      const res = await fetch(`/api/submissions/${subId}`, { method: "DELETE" });
+      const data = await res.json().catch(()=>({}));
+      if (!res.ok) throw new Error(data.error || "Delete failed");
+      await load();
+    } catch (e:any) { alert(e.message || "Delete failed"); }
+    finally { setDeletingId(null); }
+  };
 
   const load = async ()=>{
     const [eRes,sRes] = await Promise.all([fetch(`/api/exams/${id}`), fetch(`/api/exams/${id}/submissions`)]);
@@ -42,7 +54,7 @@ export default function ResultsPage() {
       <header className="border-b border-slate-200 bg-white sticky top-0 z-10">
         <div className="max-w-3xl mx-auto px-3 sm:px-4 py-3 sm:py-4 flex items-center justify-between gap-3">
           <div className="min-w-0 flex-1">
-            <Link href="/" className="text-xs text-slate-500 hover:text-slate-700">← Home</Link>
+            <Link href="/" className="inline-flex items-center gap-1 text-sm font-semibold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-full px-4 py-2 mb-1.5 transition" title="Back to home">← Home</Link>
             <h1 className="font-bold text-slate-900 truncate leading-tight">{exam.name}</h1>
             <p className="text-xs text-slate-500 truncate">{exam.subject} • {exam.questionCount} questions • {formatScheme(exam)} • Max {maxMarks} • {subs.length} sheets</p>
           </div>
@@ -69,6 +81,9 @@ export default function ResultsPage() {
                     {(s.status==="COMPLETED"||s.status==="REVIEW_REQUIRED") && <Link href={`/exam/${id}/student/${s.id}`} className="text-xs bg-slate-900 hover:bg-black text-white px-4 py-2 rounded-full text-center font-medium min-h-[32px] flex items-center justify-center">View</Link>}
                     {s.status==="FAILED" && <button onClick={async()=>{ await fetch(`/api/submissions/${s.id}`,{method:"PATCH", headers:{ "Content-Type":"application/json"}, body: JSON.stringify({retry:true})}); load();}} className="text-xs bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-full font-medium min-h-[32px]">Retry</button>}
                     {(s.status==="COMPLETED"||s.status==="REVIEW_REQUIRED") && <a href={`/api/submissions/${s.id}/report`} className="text-xs border border-slate-200 bg-white hover:bg-slate-50 px-4 py-2 rounded-full text-center font-medium min-h-[32px] flex items-center justify-center">PDF</a>}
+                    <button onClick={()=> handleDelete(s.id, s.studentName || s.originalName || "this paper")} disabled={deletingId===s.id} title="Delete paper — frees backend space" className="text-xs border border-slate-200 bg-white hover:bg-red-50 hover:border-red-200 hover:text-red-600 text-slate-500 px-3 py-2 rounded-full text-center font-medium min-h-[32px] flex items-center justify-center disabled:opacity-50">
+                      {deletingId===s.id ? "…" : "🗑 Delete"}
+                    </button>
                   </div>
                 </div>
               ))}

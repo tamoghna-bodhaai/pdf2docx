@@ -118,6 +118,20 @@ export default function ScanPage() {
     if (cameraInputRef.current) cameraInputRef.current.value="";
   };
 
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const deletePaper = async (e: React.MouseEvent, subId: string, label: string) => {
+    e.preventDefault(); e.stopPropagation();
+    if (!confirm(`Delete "${label}"? This removes the scan and frees backend storage. Cannot be undone.`)) return;
+    setDeletingId(subId);
+    try {
+      const res = await fetch(`/api/submissions/${subId}`, { method: "DELETE" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Delete failed");
+      await fetchData();
+    } catch (err: any) { alert(err.message || "Delete failed"); }
+    finally { setDeletingId(null); }
+  };
+
   const [updatingSheetType, setUpdatingSheetType] = useState(false);
   const updateSheetType = async (newType: string) => {
     setUpdatingSheetType(true);
@@ -164,6 +178,7 @@ export default function ScanPage() {
       <header className="border-b border-slate-200 bg-white sticky top-0 z-10">
         <div className="max-w-2xl mx-auto px-3 sm:px-4 py-3 flex items-center justify-between gap-3">
           <div className="min-w-0">
+            <Link href="/" className="inline-flex items-center gap-1 text-sm font-semibold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-full px-3.5 py-1.5 mb-2 transition" title="Back to home">← Home</Link>
             <p className="font-bold text-sm text-slate-900 truncate">{exam.name}</p>
             {(() => {
               const max = exam.markingScheme ? exam.markingScheme.reduce((s:number,a:any)=> s + (a.to-a.from+1)*a.marks,0) : exam.questionCount * exam.marksPerQuestion;
@@ -313,24 +328,51 @@ export default function ScanPage() {
           </div>
           {subs.length===0 ? <p className="text-xs text-slate-400 mt-3 text-center py-6 border border-dashed border-slate-200 rounded-xl">No papers yet — upload above</p> :
             <div className="mt-3 space-y-2 max-h-[50vh] overflow-y-auto pr-1">
-              {subs.map((s,idx)=>(
-                <div key={s.id} className="flex items-center justify-between border border-slate-200 rounded-xl px-3 py-2.5 bg-white hover:bg-slate-50 transition">
-                  <div className="flex items-center gap-3 min-w-0 flex-1">
-                    <span className="text-xs font-bold w-7 h-7 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0">{idx+1}</span>
-                    <div className="min-w-0">
-                      <p className="text-sm font-medium text-slate-900 truncate">{s.studentName || `Student ${idx+1}`}</p>
-                      <p className="text-xs text-slate-500 truncate">{s.rollNumber ? `Roll ${s.rollNumber}` : s.originalName || s.imageUrl.split("/").pop()}</p>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0 ml-2">
+              {subs.map((s,idx)=>{
+                const isClickable = s.status==="COMPLETED" || s.status==="REVIEW_REQUIRED";
+                const label = s.studentName || s.originalName || `Student ${idx+1}`;
+                const badge = (
+                  <>
                     {s.status==="COMPLETED" && <span className="text-xs bg-emerald-50 text-emerald-700 border border-emerald-200 px-2.5 py-1 rounded-full font-medium">✓ {s.score!==null?`${s.score}`: ""}</span>}
                     {s.status==="REVIEW_REQUIRED" && <span className="text-xs bg-amber-50 text-amber-700 border border-amber-200 px-2.5 py-1 rounded-full font-medium">⚠ Review</span>}
                     {s.status==="PROCESSING" && <span className="text-xs bg-blue-50 text-blue-700 border border-blue-200 px-2.5 py-1 rounded-full animate-pulse font-medium">Processing...</span>}
                     {s.status==="UPLOADED" && <span className="text-xs bg-slate-100 text-slate-600 border border-slate-200 px-2.5 py-1 rounded-full">Queued</span>}
                     {s.status==="FAILED" && <span className="text-xs bg-red-50 text-red-700 border border-red-200 px-2.5 py-1 rounded-full font-medium" title={(s as any).error || ""}>Failed</span>}
+                  </>
+                );
+                const deleteBtn = (
+                  <button
+                    onClick={(e)=> deletePaper(e, s.id, label)}
+                    disabled={deletingId===s.id}
+                    title="Delete paper — frees backend space"
+                    className="w-7 h-7 rounded-full bg-white border border-slate-200 hover:bg-red-50 hover:border-red-200 hover:text-red-600 text-slate-400 flex items-center justify-center text-xs shrink-0 transition disabled:opacity-50"
+                  >
+                    {deletingId===s.id ? "…" : "🗑"}
+                  </button>
+                );
+                const cardInner = (
+                  <div className={`flex items-center justify-between border rounded-xl px-3 py-2.5 bg-white transition ${isClickable ? "border-slate-200 hover:border-indigo-200 hover:bg-indigo-50/50 cursor-pointer" : "border-slate-200 hover:bg-slate-50"}`}>
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <span className="text-xs font-bold w-7 h-7 rounded-full bg-slate-100 border border-slate-200 flex items-center justify-center shrink-0">{idx+1}</span>
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium text-slate-900 truncate">{s.studentName || `Student ${idx+1}`}{isClickable && <span className="ml-1.5 text-[11px] text-indigo-500 font-normal">→ View</span>}</p>
+                        <p className="text-xs text-slate-500 truncate">{s.rollNumber ? `Roll ${s.rollNumber}` : s.originalName || s.imageUrl.split("/").pop()}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                      {badge}
+                      {deleteBtn}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+                return isClickable ? (
+                  <Link key={s.id} href={`/exam/${id}/student/${s.id}`} className="block" title="View individual report — click text, 🗑 to delete">
+                    {cardInner}
+                  </Link>
+                ) : (
+                  <div key={s.id}>{cardInner}</div>
+                );
+              })}
             </div>
           }
           <div className="mt-4 flex gap-2 sm:gap-3">
@@ -340,10 +382,10 @@ export default function ScanPage() {
           <p className="text-xs text-slate-400 text-center mt-2">Polling every 2s • Up to {MAX_SHEETS} sheets per exam</p>
         </div>
 
-        <div className="flex gap-2 text-xs pb-4">
-          <Link href="/" className="text-slate-500 hover:text-slate-700 hover:underline py-2">← Home</Link>
-          <span className="text-slate-300 py-2">|</span>
-          <Link href={`/exam/${id}/verify`} className="text-slate-500 hover:text-slate-700 hover:underline py-2">Edit Answer Key</Link>
+        <div className="flex items-center gap-2 text-xs pb-4">
+          <Link href="/" className="inline-flex items-center gap-1 text-sm font-semibold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-full px-4 py-2 transition">← Home</Link>
+          <span className="text-slate-300">|</span>
+          <Link href={`/exam/${id}/verify`} className="text-sm text-slate-500 hover:text-slate-700 hover:underline py-2 px-2">Edit Answer Key</Link>
         </div>
       </main>
     </div>
